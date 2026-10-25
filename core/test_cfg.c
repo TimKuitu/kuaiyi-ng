@@ -8,7 +8,7 @@ int wmain(void)
 {
     SetConsoleOutputCP(65001);
 
-    /* 1. 读原版 GBK config */
+    /* 1. 读取 GBK config */
     void *cfg = fy_cfg_open("D:\\Lenovo\\Desktop\\ToolBox\\快译\\fastT\\config");
     char v[256];
     if (!cfg) { printf("open failed\n"); return 1; }

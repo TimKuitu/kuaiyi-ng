@@ -1,4 +1,4 @@
-/* INI 配置：兼容原版 GBK 文件，未知段/键原样保留（方便与旧版互换） */
+/* INI 配置：GBK 文件，未知段/键原样保留 */
 #include "fastcore.h"
 #include "str.h"
 #include <windows.h>

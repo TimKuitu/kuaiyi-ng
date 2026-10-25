@@ -1,6 +1,5 @@
 ## 快译NG —— Bing 免费翻译（C 核心 + wNim 界面）
-## 功能对齐原版快译 v2.2：中英互译、历史记录、复制单词、全局热键、托盘；
-## 移除：发音功能及其设置；新增：缓存目录可改、Bing 翻译接口。
+## 中英互译、历史记录、复制单词、全局热键、托盘；缓存目录可改、Bing 免费翻译接口。
 
 import std/[os, strutils]
 import wNim
@@ -22,7 +21,7 @@ const
   HkHistDown = 3
   HkCopy = 4
 
-  # 热键默认值（与原版一致：功能键 1=Ctrl 2=Shift 4=Alt，键码=Windows 虚拟键码）
+  # 热键默认值（功能键 1=Ctrl 2=Shift 4=Alt 按位相加，键码=Windows 虚拟键码）
   DefToggle = (5, 70)
   DefHistUp = (5, 38)
   DefHistDown = (5, 40)
@@ -117,7 +116,7 @@ proc loadSettings() =
   g_set.hkHistDown = hk("下历史1", "下历史2", DefHistDown)
   g_set.hkCopy = hk("复制1", "复制2", DefCopy)
 
-# ---------------- 热键编码（原版 1=Ctrl 2=Shift 4=Alt；8=Win 为本版扩展） ----------------
+# ---------------- 热键编码（1=Ctrl 2=Shift 4=Alt 按位相加；8=Win 扩展位） ----------------
 proc origToWin(m: int): UINT =
   result = 0
   if (m and 1) != 0: result = result or MOD_CONTROL
@@ -533,7 +532,7 @@ proc main() =
 
   let app = App(wSystemDpiAware)
 
-  # 原版配置存的是物理像素；高 DPI 下统一用 wNim 的 dpiAutoScale 换算
+  # 配置存物理像素；高 DPI 下统一用 wNim 的 dpiAutoScale 换算
   block:
     let hdc = GetDC(0)
     g_dpiScale = float(GetDeviceCaps(hdc, LOGPIXELSX)) / 96.0
@@ -547,7 +546,7 @@ proc main() =
   loadSettings()
   g_hist = fy_hist_open(g_set.cacheDir.cstring)
 
-  # 主窗口：原版配置存的是物理像素，换算成 wNim 逻辑值传入
+  # 主窗口：配置存物理像素，换算成 wNim 逻辑值传入
   # 每次启动固定默认大小；运行期间用户调整的尺寸在隐藏/召唤间自动保留
   frame = Frame(title=AppTitle,
                 size=(int(453.0 * g_dpiScale), int(377.0 * g_dpiScale)))

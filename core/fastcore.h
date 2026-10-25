@@ -1,5 +1,5 @@
 /* 快译NG C 核心 - 对外接口
- * 约定：所有字符串参数/返回值一律 UTF-8；配置文件按原版 GBK 兼容读写。
+ * 约定：所有字符串参数/返回值一律 UTF-8；配置文件为 GBK 编码。
  */
 #ifndef FASTCORE_H
 #define FASTCORE_H
@@ -34,7 +34,7 @@ char *fy_translate(const char *utf8_text, int mode);
 /* 单词命名格式化：多词空格分隔，失败返回 NULL */
 char *fy_format_word(const char *utf8_text, int fmt);
 
-/* INI 配置（兼容原版 GBK 配置，保留未知段/键不丢） */
+/* INI 配置（GBK，保留未知段/键不丢） */
 void *fy_cfg_open(const char *utf8_path);
 int   fy_cfg_get(void *cfg, const char *sec, const char *key,
                  const char *utf8_def, char *out, int cap);
