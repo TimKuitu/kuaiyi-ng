@@ -5,6 +5,8 @@
 {.compile: "../core/http.c".}
 {.compile: "../core/json.c".}
 {.compile: "../core/bing.c".}
+{.compile: "../core/ai.c".}
+{.compile: "../core/update.c".}
 {.compile: "../core/cfg.c".}
 {.compile: "../core/hist.c".}
 {.compile: "../core/fmt.c".}
@@ -13,6 +15,12 @@ proc fy_free*(p: pointer) {.importc.}
 proc fy_strdup*(s: cstring): cstring {.importc.}
 proc fy_last_error*(): cstring {.importc.}
 proc fy_translate*(text: cstring, mode: cint): cstring {.importc.}
+proc fy_translate_ai*(text: cstring, mode: cint, baseUrl: cstring,
+                      apiKey: cstring, model: cstring): cstring {.importc.}
+proc fy_check_update*(localVer: cstring, verOut: cstring, vcap: cint,
+                      urlOut: cstring, ucap: cint): cint {.importc.}
+proc fy_download_update*(url: cstring, dest: cstring,
+    progress: proc (done: int64, total: int64) {.cdecl.}): cint {.importc.}
 proc fy_format_word*(text: cstring, fmt: cint): cstring {.importc.}
 proc fy_cfg_open*(path: cstring): pointer {.importc.}
 proc fy_cfg_get*(cfg: pointer, sec: cstring, key: cstring, def: cstring,

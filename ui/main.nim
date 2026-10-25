@@ -13,7 +13,9 @@ proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
 
 const
   AppTitle = "快译NG"
+  AppVersion = "1.1"
   WmAppTranslated = WM_APP + 0x71
+  WmAppUpdate = WM_APP + 0x72
 
   # 全局热键 ID
   HkToggle = 1
@@ -29,6 +31,13 @@ const
 
   FmtNames = ["原样", "全小写", "全大写", "驼峰", "下划线", "中划线"]
 
+  # AI 接口预设（名称, 地址, 模型）
+  AiPresets = [("", "", ""),
+               ("DeepSeek", "https://api.deepseek.com", "deepseek-chat"),
+               ("OpenAI", "https://api.openai.com", "gpt-4o-mini"),
+               ("Moonshot", "https://api.moonshot.cn", "moonshot-v1-8k"),
+               ("Ollama 本地", "http://localhost:11434", "qwen2.5:7b")]
+
 type
   Settings = object
     topmost: bool
@@ -38,6 +47,10 @@ type
     summonNearMouse: bool   # 热键显示窗口时出现在鼠标旁
     cacheDir: string
     wordFmt: int
+    aiEnabled: bool         # AI 接口翻译
+    aiUrl: string
+    aiKey: string
+    aiModel: string
     hkToggle: (int, int)
     hkHistUp: (int, int)
     hkHistDown: (int, int)
@@ -107,6 +120,10 @@ proc loadSettings() =
   if g_set.cacheDir.len == 0: g_set.cacheDir = g_appDir
   g_set.wordFmt = cfgInt("通用设置", "命名格式", FY_FMT_CAMEL)
   if g_set.wordFmt < 0 or g_set.wordFmt > 5: g_set.wordFmt = FY_FMT_CAMEL
+  g_set.aiEnabled = cfgBool("AI翻译", "启用", false)
+  g_set.aiUrl = cfgStr("AI翻译", "地址", "")
+  g_set.aiKey = cfgStr("AI翻译", "密钥", "")
+  g_set.aiModel = cfgStr("AI翻译", "模型", "deepseek-chat")
 
   proc hk(key1, key2: string, def: (int, int)): (int, int) =
     (cfgInt("快捷按键", key1, def[0]), cfgInt("快捷按键", key2, def[1]))
@@ -150,13 +167,18 @@ proc setAutoStart(enable, hideOnStart: bool) =
 # ---------------- 控件 ----------------
 var
   frame, setFrame: wFrame
-  panel, setPanel, page1, page2: wPanel
+  panel, setPanel, page1, page2, page3: wPanel
   input, resultBox, edtCache: wTextCtrl
+  edtAiUrl, edtAiKey, edtAiModel: wTextCtrl
   btnZh2En, btnEn2Zh, btnTrans, btnSettings: wButton
-  btnOpenCache, btnSaveSet1, btnSaveSet2, btnResetHot: wButton
+  btnOpenCache, btnSaveSet1, btnSaveSet2, btnSaveSet3, btnResetHot: wButton
+  btnCheckUpdate: wButton
+  lblUpdateStatus: wStaticText
   cmbFmt: wComboBox
-  chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon: wCheckBox
+  cmbAiPreset: wComboBox
+  chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi: wCheckBox
   hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl: wHotkeyCtrl
+  g_checkingUpdate = false
 
 # ---------------- 剪贴板 ----------------
 proc copyText(s: string) =
@@ -172,11 +194,31 @@ proc flashTitle(msg: string) =
 type TranslateJob = object
   text: cstring
   mode: cint
+  useAi: bool
+  aiUrl: cstring
+  aiKey: cstring
+  aiModel: cstring
 
 proc translateWorker(param: LPVOID): DWORD {.stdcall.} =
   let job = cast[ptr TranslateJob](param)
-  let res = fy_translate(job.text, job.mode)
+  var res: cstring = nil
+  if job.useAi:
+    res = fy_translate_ai(job.text, job.mode, job.aiUrl, job.aiKey, job.aiModel)
+    if res.isNil:
+      # AI 失败 → 回退必应，并在结果前说明原因
+      let bing = fy_translate(job.text, job.mode)
+      if not bing.isNil:
+        let err = fy_strdup(fy_last_error())
+        var buf = "（AI 接口失败，已用必应翻译：" & $err & "）\n" & $bing
+        fy_free(cast[pointer](err))
+        fy_free(cast[pointer](bing))
+        res = fy_strdup(buf.cstring)
+  else:
+    res = fy_translate(job.text, job.mode)
   fy_free(job.text)
+  fy_free(job.aiUrl)
+  fy_free(job.aiKey)
+  fy_free(job.aiModel)
   dealloc(job)
   PostMessageW(cast[HWND](frame.getHandle()), UINT(WmAppTranslated), 0,
                cast[LPARAM](res))
@@ -195,7 +237,108 @@ proc doTranslate(mode: int) =
   let job = cast[ptr TranslateJob](alloc(sizeof(TranslateJob)))
   job.text = fy_strdup(text.cstring)
   job.mode = cint(mode)
+  let useAi = g_set.aiEnabled and g_set.aiKey.len > 0 and g_set.aiUrl.len > 0
+  job.useAi = useAi
+  job.aiUrl = fy_strdup(if useAi: g_set.aiUrl else: "")
+  job.aiKey = fy_strdup(if useAi: g_set.aiKey else: "")
+  job.aiModel = fy_strdup(if useAi: g_set.aiModel else: "")
   discard CreateThread(nil, 0, translateWorker, cast[LPVOID](job), 0, nil)
+
+# ---------------- 检查更新（后台线程） ----------------
+const
+  UpdStageResult = 1      # lParam = UpdateInfo 指针（检查结果）
+  UpdStageProgress = 2    # lParam = 百分比整数
+  UpdStageDone = 3        # lParam = UpdateInfo 指针（下载完成，path 有效）
+  UpdStageFail = 4        # lParam = UpdateInfo 指针（下载失败，err 有效）
+
+type
+  UpdateInfo = object
+    hasNew: cint
+    ver: array[64, char]
+    url: array[512, char]
+    err: array[256, char]
+    path: array[512, char]
+
+var g_hwndMain: HWND      # 工作线程里 PostMessage 用
+
+proc postUpd(stage: UINT, lp: LPARAM) {.inline.} =
+  discard PostMessageW(g_hwndMain, UINT(WmAppUpdate), stage, lp)
+
+proc updateCheckWorker(param: LPVOID): DWORD {.stdcall.} =
+  let info = cast[ptr UpdateInfo](param)
+  let r = fy_check_update(AppVersion.cstring, cast[cstring](addr info.ver),
+                          64, cast[cstring](addr info.url), 512)
+  if r < 0:
+    info.hasNew = -1
+    let e = fy_last_error()
+    var i = 0
+    while e[i] != '\0' and i < sizeof(info.err) - 1:
+      info.err[i] = e[i]
+      inc i
+    info.err[i] = '\0'
+  else:
+    info.hasNew = r
+  postUpd(UpdStageResult, cast[LPARAM](info))
+  return 0
+
+proc dlProgress(done: int64, total: int64) {.cdecl.} =
+  var pct = 0
+  if total > 0: pct = int(done * 100 div total)
+  postUpd(UpdStageProgress, cast[LPARAM](pct))
+
+proc updateDownloadWorker(param: LPVOID): DWORD {.stdcall.} =
+  let info = cast[ptr UpdateInfo](param)
+  let dest = getTempDir() / "KuaiYiNG_Update.exe"
+  if fy_download_update(cast[cstring](addr info.url), dest.cstring, dlProgress) == 0:
+    copyMem(addr info.path, dest.cstring, min(dest.len + 1, sizeof(info.path)))
+    postUpd(UpdStageDone, cast[LPARAM](info))
+  else:
+    let e = fy_last_error()
+    var i = 0
+    while e[i] != '\0' and i < sizeof(info.err) - 1:
+      info.err[i] = e[i]
+      inc i
+    info.err[i] = '\0'
+    postUpd(UpdStageFail, cast[LPARAM](info))
+  return 0
+
+proc onUpdateMessage(stage: int, lp: LPARAM) =
+  case stage
+  of UpdStageResult:
+    let info = cast[ptr UpdateInfo](lp)
+    g_checkingUpdate = false
+    btnCheckUpdate.enable()
+    if info.hasNew == 1:
+      let msg = "发现新版本 " & ($cast[cstring](addr info.ver)) &
+                "（当前 v" & AppVersion & "）。\n\n是否下载并安装？"
+      let r = MessageBoxW(cast[HWND](frame.getHandle()), msg.newWideCString(),
+                          AppTitle.newWideCString(), 0x24)   # MB_YESNO|MB_ICONQUESTION
+      if r == 6:   # IDYES
+        lblUpdateStatus.label = "开始下载……"
+        let dl = cast[ptr UpdateInfo](alloc0(sizeof(UpdateInfo)))
+        copyMem(addr dl.url, addr info.url, sizeof(dl.url))
+        discard CreateThread(nil, 0, updateDownloadWorker, cast[LPVOID](dl), 0, nil)
+      else:
+        lblUpdateStatus.label = "已取消更新（可稍后再试）"
+    elif info.hasNew == 0:
+      lblUpdateStatus.label = "已是最新版本（v" & AppVersion & "）"
+    else:
+      lblUpdateStatus.label = "检查失败：" & $cast[cstring](addr info.err)
+    dealloc(info)
+  of UpdStageProgress:
+    lblUpdateStatus.label = "下载中 " & $int(lp) & "%……"
+  of UpdStageDone:
+    let info = cast[ptr UpdateInfo](lp)
+    lblUpdateStatus.label = "下载完成，启动安装程序……"
+    discard ShellExecuteW(0, "open", newWideCString($cast[cstring](addr info.path)),
+                          nil, nil, SW_SHOWNORMAL)
+    dealloc(info)
+  of UpdStageFail:
+    let info = cast[ptr UpdateInfo](lp)
+    lblUpdateStatus.label = "下载失败：" & $cast[cstring](addr info.err)
+    dealloc(info)
+  else:
+    discard
 
 proc onTranslated(res: cstring) =
   g_translating = false
@@ -356,6 +499,11 @@ proc openSettings() =
   chkAutoStart.setValue(g_set.autoStart)
   chkAutoHide.setValue(g_set.autoHide)
   chkSummon.setValue(g_set.summonNearMouse)
+  chkAi.setValue(g_set.aiEnabled)
+  edtAiUrl.setValue(g_set.aiUrl)
+  edtAiKey.setValue(g_set.aiKey)
+  edtAiModel.setValue(g_set.aiModel)
+  lblUpdateStatus.label = "当前版本 v" & AppVersion
   edtCache.setValue(g_set.cacheDir)
   cmbFmt.setSelection(g_set.wordFmt)
   hkToggleCtrl.setHotkey(origToWin(g_set.hkToggle[0]), g_set.hkToggle[1])
@@ -375,6 +523,11 @@ proc saveSettings() =
   g_set.cacheDir = edtCache.getValue().strip()
   if g_set.cacheDir.len == 0: g_set.cacheDir = g_appDir
   g_set.wordFmt = cmbFmt.getSelection()
+  g_set.aiEnabled = chkAi.getValue()
+  g_set.aiUrl = edtAiUrl.getValue().strip()
+  g_set.aiKey = edtAiKey.getValue().strip()
+  g_set.aiModel = edtAiModel.getValue().strip()
+  if g_set.aiModel.len == 0: g_set.aiModel = "deepseek-chat"
 
   let hkt = hkToggleCtrl.getHotkey()
   let hku = hkUpCtrl.getHotkey()
@@ -392,6 +545,10 @@ proc saveSettings() =
   fy_cfg_set(g_cfg, "通用设置", "鼠标召唤", if g_set.summonNearMouse: "1" else: "0")
   fy_cfg_set(g_cfg, "通用设置", "缓存目录", g_set.cacheDir)
   fy_cfg_set(g_cfg, "通用设置", "命名格式", $g_set.wordFmt)
+  fy_cfg_set(g_cfg, "AI翻译", "启用", if g_set.aiEnabled: "1" else: "0")
+  fy_cfg_set(g_cfg, "AI翻译", "地址", g_set.aiUrl)
+  fy_cfg_set(g_cfg, "AI翻译", "密钥", g_set.aiKey)
+  fy_cfg_set(g_cfg, "AI翻译", "模型", g_set.aiModel)
   fy_cfg_set(g_cfg, "快捷按键", "隐藏界面1", $g_set.hkToggle[0])
   fy_cfg_set(g_cfg, "快捷按键", "隐藏界面2", $g_set.hkToggle[1])
   fy_cfg_set(g_cfg, "快捷按键", "上历史1", $g_set.hkHistUp[0])
@@ -592,6 +749,8 @@ proc main() =
     showTrayMenu()
   frame.connect(UINT(WmAppTranslated)) do (event: wEvent):
     onTranslated(cast[cstring](event.getlParam()))
+  frame.connect(UINT(WmAppUpdate)) do (event: wEvent):
+    onUpdateMessage(int event.getwParam(), event.getlParam())
 
   btnZh2En.wEvent_Button do ():
     doTranslate(FY_ZH2EN)
@@ -624,6 +783,7 @@ proc main() =
     let nb = NoteBook(setPanel, pos=(8, 8), size=(544, 340))
     page1 = nb.addPage(text="通用设置")
     page2 = nb.addPage(text="快捷按键")
+    page3 = nb.addPage(text="AI 翻译")
 
     chkTop = CheckBox(page1, label="软件窗口永远在最上面", pos=(20, 14))
     chkCloseExit = CheckBox(page1, label="点击右上角关闭为退出程序（不勾选=隐藏到托盘）", pos=(20, 44))
@@ -637,6 +797,10 @@ proc main() =
 
     discard StaticText(page1, label="复制单词命名格式（Ctrl+双击输入框或热键复制时生效）", pos=(20, 224))
     cmbFmt = ComboBox(page1, style=wCbReadOnly, pos=(20, 248), size=(140, 26))
+
+    btnCheckUpdate = Button(page1, label="检查更新", pos=(20, 288), size=(92, 32))
+    lblUpdateStatus = StaticText(page1, label="当前版本 v" & AppVersion,
+                                 pos=(124, 296), size=(300, 24))
     btnSaveSet1 = Button(page1, label="保存设置", pos=(436, 288), size=(92, 32))
 
     discard StaticText(page2, label="显示/隐藏快译", pos=(20, 22))
@@ -654,8 +818,28 @@ proc main() =
     btnResetHot = Button(page2, label="恢复默认设置", pos=(180, 214), size=(120, 30))
     btnSaveSet2 = Button(page2, label="保存设置", pos=(436, 288), size=(92, 32))
 
+    # AI 翻译页
+    chkAi = CheckBox(page3, label="使用 AI 接口翻译（OpenAI 格式；未启用或密钥为空时用必应免费）",
+                     pos=(20, 16))
+    cmbAiPreset = ComboBox(page3, style=wCbReadOnly, pos=(360, 12), size=(160, 26))
+    discard StaticText(page3, label="接口地址（如 https://api.deepseek.com，可带 /v1）", pos=(20, 54))
+    edtAiUrl = TextCtrl(page3, pos=(20, 76), size=(500, 26))
+    discard StaticText(page3, label="API 密钥（sk-…）", pos=(20, 114))
+    edtAiKey = TextCtrl(page3, pos=(20, 136), size=(500, 26))
+    discard StaticText(page3, label="模型（如 deepseek-chat）", pos=(20, 174))
+    edtAiModel = TextCtrl(page3, pos=(20, 196), size=(500, 26))
+    discard StaticText(page3,
+      label="支持 DeepSeek / OpenAI / Moonshot / 本地 Ollama 等一切 OpenAI 格式接口；",
+      pos=(20, 234), size=(500, 22))
+    discard StaticText(page3, label="AI 失败时自动回退必应免费翻译；单词词典查询始终走必应。",
+      pos=(20, 256), size=(500, 22))
+    btnSaveSet3 = Button(page3, label="保存设置", pos=(436, 288), size=(92, 32))
+
   cmbFmt.append(FmtNames)
   cmbFmt.setSelection(g_set.wordFmt)
+  for p in AiPresets:
+    cmbAiPreset.append(if p[0].len == 0: "选择预设…" else: p[0])
+  cmbAiPreset.setSelection(0)
 
   setFrame.wEvent_Close do (event: wEvent):
     event.veto()
@@ -664,6 +848,22 @@ proc main() =
     saveSettings()
   btnSaveSet2.wEvent_Button do ():
     saveSettings()
+  btnSaveSet3.wEvent_Button do ():
+    saveSettings()
+  cmbAiPreset.wEvent_ComboBox do ():
+    # 预设填充地址与模型（第 0 项"选择预设…"不动）
+    let i = cmbAiPreset.getSelection()
+    if i > 0 and i < AiPresets.len:
+      edtAiUrl.setValue(AiPresets[i][1])
+      edtAiModel.setValue(AiPresets[i][2])
+      cmbAiPreset.setSelection(0)
+  btnCheckUpdate.wEvent_Button do ():
+    if g_checkingUpdate: return
+    g_checkingUpdate = true
+    btnCheckUpdate.disable()
+    lblUpdateStatus.label = "正在检查更新……"
+    let info = cast[ptr UpdateInfo](alloc0(sizeof(UpdateInfo)))
+    discard CreateThread(nil, 0, updateCheckWorker, cast[LPVOID](info), 0, nil)
   btnOpenCache.wEvent_Button do ():
     createDir(g_set.cacheDir)
     discard ShellExecuteW(0, "open", g_set.cacheDir.newWideCString(), nil, nil,
@@ -676,6 +876,7 @@ proc main() =
 
   # 应用启动状态
   let hwnd = cast[HWND](frame.getHandle())
+  g_hwndMain = hwnd
   if g_set.topmost:
     discard SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE or SWP_NOSIZE)
   registerHotkeys()
@@ -713,6 +914,14 @@ proc main() =
       showTrayMenu()
       testLog("after menu id")
     frame.startTimer(2.0, 77)
+
+  # 测试钩子：-testopensettings 启动 1.5 秒后自动打开设置窗口
+  if "-testopensettings" in commandLineParams():
+    frame.wEvent_Timer do (event: wEvent):
+      if event.timerId == 66:
+        frame.stopTimer(66)
+        openSettings()
+    frame.startTimer(1.5, 66)
 
   app.mainLoop()
 

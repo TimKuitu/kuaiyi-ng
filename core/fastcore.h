@@ -31,6 +31,16 @@ const char *fy_last_error(void);        /* 最近一次错误（UTF-8） */
 /* 翻译：返回多行 UTF-8 文本（'\n' 分隔），失败返回 NULL */
 char *fy_translate(const char *utf8_text, int mode);
 
+/* OpenAI 格式 AI 翻译（未配置时 UI 层自行回退到 fy_translate） */
+char *fy_translate_ai(const char *utf8_text, int mode, const char *base_url,
+                      const char *api_key, const char *model);
+
+/* 检查更新（GitHub Releases）：1=有新版 0=已最新 -1=失败 */
+int   fy_check_update(const char *local_ver, char *ver_out, int vcap,
+                      char *url_out, int ucap);
+int   fy_download_update(const char *url, const char *utf8_dest,
+                         void (*progress)(long long done, long long total));
+
 /* 单词命名格式化：多词空格分隔，失败返回 NULL */
 char *fy_format_word(const char *utf8_text, int fmt);
 

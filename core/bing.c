@@ -25,6 +25,12 @@ static void set_err(const char *msg)
     snprintf(g_err, sizeof(g_err), "%s", msg);
 }
 
+/* 供 ai.c / update.c 写入同一份错误信息 */
+void fy_set_error(const char *msg)
+{
+    set_err(msg);
+}
+
 /* 全角标点按 UTF-8 前缀比较（'，'= EF BC 8C，'；'= EF BC 9B） */
 static int at_fw(const char *p, const char *fw)
 {

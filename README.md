@@ -8,6 +8,9 @@
 ## 功能
 
 - **必应免费翻译**（无需 API Key）：句子走网页翻译接口，英文单词自动查必应词典（英/美音标 + 释义 + 网络释义 + 拼音）
+- **AI 接口翻译（可选）**：支持一切 OpenAI 格式接口（DeepSeek / OpenAI / Moonshot / 本地 Ollama 等），
+  设置页填地址、密钥、模型即可；**AI 失败自动回退必应免费**，未配置时完全不影响使用
+- **检查更新**：设置页一键检查 GitHub Releases 新版本，可直接下载并拉起安装包
 - 三个按钮 + 回车即译：`中 > 英`、`英 > 中`、`翻译`（按内容自动判断方向）
 - **全局热键**（可自定义）：
   - `Ctrl+Alt+F` 显示/隐藏窗口（可勾选"召唤时出现在鼠标旁"）
@@ -23,10 +26,10 @@
 
 到 [Releases](../../releases) 下载：
 
-| 文件 | 说明 |
-|---|---|
-| `KuaiYiNG_v*_Setup.exe` | 安装包：可选目录、桌面/开始菜单快捷方式、开机自启动、自带卸载器 |
-| `KuaiYiNG_v*_Portable.exe` | 便携版：单文件直接运行，数据存在同目录 `fastT\` |
+| 文件                       | 说明                                                            |
+| -------------------------- | --------------------------------------------------------------- |
+| `KuaiYiNG_v*_Setup.exe`    | 安装包：可选目录、桌面/开始菜单快捷方式、开机自启动、自带卸载器 |
+| `KuaiYiNG_v*_Portable.exe` | 便携版：单文件直接运行，数据存在同目录 `fastT\`                 |
 
 ## 从源码构建
 
@@ -51,6 +54,8 @@ makensis installer.nsi
 ```
 core\   纯 C 核心（gcc -O2 静态链入，无 DLL 依赖）
         bing.c   必应免费翻译 + 必应词典（IG/IID/token 会话管理）
+        ai.c     OpenAI 格式 AI 翻译（DeepSeek/OpenAI/Moonshot/Ollama 等）
+        update.c 检查更新（GitHub Releases 查询 + 安装包下载）
         http.c   WinINet 会话（自动 Cookie）
         json.c   极简 JSON 路径取值器
         cfg.c    INI 配置（GBK 编码）
