@@ -1,0 +1,17 @@
+# 构建产物（二进制走 GitHub Releases）
+快译NG.exe
+快译NG-安装包.exe
+res/app.res
+app.aps
+*.o
+*.obj
+*.exe
+!res/*.exe
+
+# Nim 编译缓存
+nimcache/
+*.nim.cache
+*.decls
+
+# 运行时生成的用户数据（配置/历史，不入库）
+fastT/
