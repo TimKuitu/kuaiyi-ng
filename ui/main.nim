@@ -5,6 +5,7 @@ import std/[os, strutils]
 import wNim
 import winim/lean
 import fastcore
+import naming_reducer
 
 # winim/lean 未包含 shellapi，这里单独引入打开目录所需的函数
 proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
@@ -13,7 +14,7 @@ proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
 
 const
   AppTitle = "快译NG"
-  AppVersion = "1.1.2"
+  AppVersion = "1.2.0"
   # wNim 自定义事件占用 WM_APP+0x10..0xE8，自定义消息必须避开（曾因冲突随机崩溃）
   WmAppTranslated = WM_APP + 0x0200
   WmAppUpdate = WM_APP + 0x0201
@@ -31,6 +32,8 @@ const
   DefCopy = (5, 67)
 
   FmtNames = ["原样", "全小写", "全大写", "驼峰", "下划线", "中划线"]
+
+  RowHeightPx = 32   # 按钮行高（物理像素，屏幕实测定死，不随 DPI 换算）
 
   # AI 接口预设（名称, 地址, 模型）
   AiPresets = [("", "", ""),
@@ -60,6 +63,8 @@ type
     hkHistUp: (int, int)
     hkHistDown: (int, int)
     hkCopy: (int, int)
+    maxWords: int           # 命名缩减预算（config-only，无界面控件）
+    maxChars: int
 
 # ---------------- 配置读写 ----------------
 var
@@ -144,6 +149,12 @@ proc loadSettings() =
   g_set.hkHistDown = hk("下历史1", "下历史2", DefHistDown)
   g_set.hkCopy = hk("复制1", "复制2", DefCopy)
 
+  # 命名缩减预算（[复制单词] 段，手动编辑 config 可调）
+  g_set.maxWords = cfgInt("复制单词", "最大词数", 4)
+  g_set.maxChars = cfgInt("复制单词", "最大字符数", 40)
+  if g_set.maxWords < 1: g_set.maxWords = 1
+  if g_set.maxChars < 4: g_set.maxChars = 4
+
 # ---------------- 热键编码（1=Ctrl 2=Shift 4=Alt 按位相加；8=Win 扩展位） ----------------
 proc origToWin(m: int): UINT =
   result = 0
@@ -186,7 +197,7 @@ var
   btnOpenCache, btnSaveSet1, btnSaveSet2, btnSaveSet3, btnResetHot: wButton
   btnCheckUpdate: wButton
   lblUpdateStatus: wStaticText
-  cmbFmt: wComboBox
+  cmbCopyMode: wComboBox   # 主窗口按钮行上的复制模式下拉，选中即生效
   cmbAiPreset: wComboBox
   chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi, chkBaidu: wCheckBox
   hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl: wHotkeyCtrl
@@ -396,11 +407,34 @@ proc layoutMain() =
   let h = cs.height
   panel.setSize((0, 0), (w, h))
   input.setSize((S(8), S(8)), (w - S(16), S(96)))
-  btnZh2En.setSize((S(8), S(112)), (S(92), S(30)))
-  btnEn2Zh.setSize((S(106), S(112)), (S(92), S(30)))
-  btnSettings.setSize((S(204), S(112)), (S(66), S(30)))
-  btnTrans.setSize((S(274), S(112)), (w - S(282), S(30)))
-  resultBox.setSize((S(8), S(150)), (w - S(16), h - S(158)))
+  # 行高固定为物理像素 32px（屏幕实测要求，不随 DPI 缩放换算）
+  btnZh2En.setSize((S(8), S(112)), (S(92), RowHeightPx))
+  btnEn2Zh.setSize((S(104), S(112)), (S(92), RowHeightPx))
+  btnSettings.setSize((S(200), S(112)), (S(62), RowHeightPx))
+  # 复制模式下拉与按钮同宽同高；翻译靠右吃剩余空间
+  cmbCopyMode.setSize((S(266), S(112)), (S(92), RowHeightPx))
+  btnTrans.setSize((S(362), S(112)), (w - S(370), RowHeightPx))
+  # 结果区上边距与"输入区→按钮行"的间距相同（都是 S(8)），
+  # 直接用物理像素算，避免逻辑值取整偏差；高度与输入区一致（S(96)）
+  let resultTop = S(112) + RowHeightPx + S(8)
+  resultBox.setSize((S(8), resultTop), (w - S(16), S(96)))
+
+proc fitComboVisibleHeight() =
+  # ComboBox 收起时的可视高度由 item 高度决定，setSize 设的是含下拉列表的总高。
+  # 发 CB_SETITEMHEIGHT 把可视高度校准到行高（32 物理像素），量两次收敛
+  let h = cmbCopyMode.getHandle()
+  let want = 32
+  var itemH = want - 8
+  var rc: RECT
+  for i in 1 .. 3:
+    discard SendMessageW(h, CB_SETITEMHEIGHT, WPARAM(0xFFFFFFFF), itemH)
+    discard SetWindowPos(h, HWND(0), 0, 0, 0, 0,
+                         SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or
+                         SWP_FRAMECHANGED)
+    discard GetWindowRect(h, rc)
+    let got = int(rc.bottom - rc.top)
+    if got == want: break
+    itemH += want - got
 
 # ---------------- 显示/隐藏 ----------------
 proc forceForeground(h: HWND) =
@@ -491,7 +525,8 @@ proc copyWord(formatted: bool) =
   if not formatted:
     copyText(text)
     flashTitle("（已复制）")
-  else:
+  elif g_set.wordFmt in {FY_FMT_RAW, FY_FMT_LOWER}:
+    # 原样/全小写维持旧行为：fy_format_word 后去空白
     let w = fy_format_word(text.cstring, cint(g_set.wordFmt))
     if not w.isNil:
       # 格式化后去掉所有空格（驼峰/下划线/中划线本身无空格，原样/大小写也按要求去空格）
@@ -499,6 +534,22 @@ proc copyWord(formatted: bool) =
       copyText(s)
       fy_free(cast[pointer](w))
       flashTitle("（已复制：" & s & "）")
+  else:
+    # 命名缩减：词表 + 预算裁剪 + 保留字校验（纯本地）
+    # 失败给原因不静默截断；驼峰/下划线/大写/中划线四种格式走这里
+    let style = case g_set.wordFmt
+                of FY_FMT_SNAKE: nsSnake
+                of FY_FMT_UPPER: nsScreamingSnake
+                of FY_FMT_KEBAB: nsKebab
+                else: nsCamel
+    let r = reduceName(text, style,
+                       maxWords = g_set.maxWords, maxChars = g_set.maxChars)
+    if r.ok:
+      copyText(r.name)
+      flashTitle("（已复制：" & r.name & "）")
+    else:
+      fy_log_write("缩减", "%s → %s", text.cstring, r.reason.cstring)
+      flashTitle("（无法缩减：" & r.reason & "）")
 
 # ---------------- 全局热键注册 ----------------
 proc registerHotkeys() =
@@ -543,7 +594,6 @@ proc openSettings() =
   edtBaiduUrl.setValue(g_set.baiduUrl)
   lblUpdateStatus.label = "当前版本 v" & AppVersion
   edtCache.setValue(g_set.cacheDir)
-  cmbFmt.setSelection(g_set.wordFmt)
   hkToggleCtrl.setHotkey(origToWin(g_set.hkToggle[0]), g_set.hkToggle[1])
   hkUpCtrl.setHotkey(origToWin(g_set.hkHistUp[0]), g_set.hkHistUp[1])
   hkDownCtrl.setHotkey(origToWin(g_set.hkHistDown[0]), g_set.hkHistDown[1])
@@ -560,7 +610,6 @@ proc saveSettings() =
   g_set.summonNearMouse = chkSummon.getValue()
   g_set.cacheDir = edtCache.getValue().strip()
   if g_set.cacheDir.len == 0: g_set.cacheDir = g_appDir
-  g_set.wordFmt = cmbFmt.getSelection()
   g_set.aiEnabled = chkAi.getValue()
   g_set.aiUrl = edtAiUrl.getValue().strip()
   g_set.aiKey = edtAiKey.getValue().strip()
@@ -586,7 +635,6 @@ proc saveSettings() =
   fy_cfg_set(g_cfg, "通用设置", "开机隐藏", if g_set.autoHide: "1" else: "0")
   fy_cfg_set(g_cfg, "通用设置", "鼠标召唤", if g_set.summonNearMouse: "1" else: "0")
   fy_cfg_set(g_cfg, "通用设置", "缓存目录", g_set.cacheDir)
-  fy_cfg_set(g_cfg, "通用设置", "命名格式", $g_set.wordFmt)
   fy_cfg_set(g_cfg, "AI翻译", "启用", if g_set.aiEnabled: "1" else: "0")
   fy_cfg_set(g_cfg, "AI翻译", "地址", g_set.aiUrl)
   fy_cfg_set(g_cfg, "AI翻译", "密钥", g_set.aiKey)
@@ -767,15 +815,25 @@ proc main() =
                 size=(int(453.0 * g_dpiScale), int(377.0 * g_dpiScale)))
   frame.icon = Icon("", 0)
   frame.dpiAutoScale:
-    frame.minSize = (320, 260)
+    frame.minSize = (440, 280)   # 宽度下限给按钮行；高度别顶住内容自适应
 
   panel = Panel(frame)
   input = TextCtrl(panel, style=wTeMultiLine or wTeRich)
   btnZh2En = Button(panel, label="中 > 英")
   btnEn2Zh = Button(panel, label="英 > 中")
   btnSettings = Button(panel, label="设置")
+  cmbCopyMode = ComboBox(panel, style=wCbReadOnly)
   btnTrans = Button(panel, label="翻译")
   resultBox = TextCtrl(panel, style=wTeMultiLine or wTeRich or wTeReadOnly)
+
+  # 窗口高度按内容自适应：边距8 + 输入96 + 间距8 + 按钮行 + 间距8 + 结果96 + 边距8
+  # 宽度仍默认 453；用实测的边框/标题栏差值把客户区顶到刚好放下内容
+  block:
+    let chrome = int(frame.getSize().height) - int(frame.getClientSize().height)
+    let contentH = int(8.0 * g_dpiScale) + int(96.0 * g_dpiScale) +
+                   int(8.0 * g_dpiScale) + RowHeightPx + int(8.0 * g_dpiScale) +
+                   int(96.0 * g_dpiScale) + int(8.0 * g_dpiScale)
+    frame.size = (int(453.0 * g_dpiScale), contentH + chrome)
 
   frame.wEvent_Size do ():
     layoutMain()
@@ -814,6 +872,12 @@ proc main() =
     doTranslate(FY_ZH2EN)
   btnEn2Zh.wEvent_Button do ():
     doTranslate(FY_EN2ZH)
+  cmbCopyMode.wEvent_ComboBox do ():
+    # 复制模式即时生效并写配置，不用进设置页保存
+    g_set.wordFmt = cmbCopyMode.getSelection()
+    fy_cfg_set(g_cfg, "通用设置", "命名格式", $g_set.wordFmt)
+    discard fy_cfg_save(g_cfg)
+    fy_log_write("设置", "复制模式即时切换=%d", cint(g_set.wordFmt))
   btnTrans.wEvent_Button do ():
     doTranslate(FY_AUTO)
   btnSettings.wEvent_Button do ():
@@ -829,6 +893,7 @@ proc main() =
     copyWord(ctrlDown)
 
   layoutMain()
+  fitComboVisibleHeight()
   frame.setTrayIcon(Icon("", 0), AppTitle & "（双击显示/隐藏）")
 
   # 设置窗口（子控件包在 dpiAutoScale 里按 1:1 物理尺寸渲染）
@@ -852,9 +917,6 @@ proc main() =
     discard StaticText(page1, label="缓存目录（历史记录存放位置，可修改）", pos=(20, 162))
     edtCache = TextCtrl(page1, pos=(20, 186), size=(430, 26))
     btnOpenCache = Button(page1, label="查看目录", pos=(460, 184), size=(76, 28))
-
-    discard StaticText(page1, label="复制单词命名格式（Ctrl+双击输入框或热键复制时生效）", pos=(20, 224))
-    cmbFmt = ComboBox(page1, style=wCbReadOnly, pos=(20, 248), size=(140, 26))
 
     btnCheckUpdate = Button(page1, label="检查更新", pos=(20, 288), size=(92, 32))
     lblUpdateStatus = StaticText(page1, label="当前版本 v" & AppVersion,
@@ -906,8 +968,8 @@ proc main() =
       pos=(20, 238), size=(500, 20))
     btnSaveSet3 = Button(page3, label="保存设置", pos=(436, 288), size=(92, 32))
 
-  cmbFmt.append(FmtNames)
-  cmbFmt.setSelection(g_set.wordFmt)
+  cmbCopyMode.append(FmtNames)
+  cmbCopyMode.setSelection(g_set.wordFmt)
   for p in AiPresets:
     cmbAiPreset.append(if p[0].len == 0: "选择预设…" else: p[0])
   cmbAiPreset.setSelection(0)
