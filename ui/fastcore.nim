@@ -2,6 +2,7 @@
 
 
 {.compile: "../core/str.c".}
+{.compile: "../core/log.c".}
 {.compile: "../core/http.c".}
 {.compile: "../core/json.c".}
 {.compile: "../core/md5.c".}
@@ -16,6 +17,9 @@
 proc fy_free*(p: pointer) {.importc.}
 proc fy_strdup*(s: cstring): cstring {.importc.}
 proc fy_last_error*(): cstring {.importc.}
+proc fy_log_open*(path: cstring) {.importc.}
+proc fy_log_write*(tag: cstring, fmt: cstring) {.importc, varargs.}
+proc fy_log_install_crash_filter*() {.importc.}
 proc fy_translate*(text: cstring, mode: cint): cstring {.importc.}
 proc fy_translate_ai*(text: cstring, mode: cint, baseUrl: cstring,
                       apiKey: cstring, model: cstring): cstring {.importc.}

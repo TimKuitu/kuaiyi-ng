@@ -74,6 +74,8 @@ var
   g_dpiScale = 1.0
   g_lastToEn = false      # 最近一次翻译的目标是否为英文（是则结果区是要复制的英文）
   g_resultValid = false   # 结果区当前是否有有效内容
+  g_testTranslate = false # -testtranslate 钩子：自动翻译一次后写 test.log 退出
+  g_hwndMain: HWND        # 主窗口句柄（工作线程里 PostMessage 用，避免碰 frame 对象）
 
 proc nimHasCjk(s: string): bool =
   # UTF-8 字节扫描：CJK 表意字符都是 3 字节序列
@@ -215,7 +217,8 @@ type TranslateJob = object
 
 proc translateWorker(param: LPVOID): DWORD {.stdcall.} =
   # 本线程由 CreateThread 创建，不经 Nim 运行时托管——
-  # 只调用 C 核心（回退链在 C 内完成），不触碰 Nim GC
+  # 只调用 C 核心（回退链在 C 内完成），不触碰 Nim GC。
+  # 窗口句柄用 g_hwndMain（纯值拷贝），不在裸线程里调 frame 的方法
   let job = cast[ptr TranslateJob](param)
   let res = fy_translate_chain(job.text, job.mode,
                                job.aiUrl, job.aiKey, job.aiModel,
@@ -228,8 +231,7 @@ proc translateWorker(param: LPVOID): DWORD {.stdcall.} =
   fy_free(job.baiduKey)
   fy_free(job.baiduUrl)
   dealloc(job)
-  PostMessageW(cast[HWND](frame.getHandle()), UINT(WmAppTranslated), 0,
-               cast[LPARAM](res))
+  PostMessageW(g_hwndMain, UINT(WmAppTranslated), 0, cast[LPARAM](res))
   return 0
 
 proc doTranslate(mode: int) =
@@ -242,16 +244,19 @@ proc doTranslate(mode: int) =
   g_lastToEn = (mode == FY_ZH2EN) or (mode == FY_AUTO and nimHasCjk(text))
   resultBox.setValue("正在翻译……")
   btnZh2En.disable(); btnEn2Zh.disable(); btnTrans.disable()
+  let useAi = g_set.aiEnabled and g_set.aiKey.len > 0 and g_set.aiUrl.len > 0
+  let useBaidu = g_set.baiduEnabled and g_set.baiduAppId.len > 0 and
+                 g_set.baiduKey.len > 0
+  fy_log_write("翻译", "开始 mode=%d 文本%u字节 预览=%.48s AI=%d 百度=%d",
+               cint(mode), cuint(text.len), text.cstring,
+               cint(ord(useAi)), cint(ord(useBaidu)))
   let job = cast[ptr TranslateJob](alloc0(sizeof(TranslateJob)))
   job.text = fy_strdup(text.cstring)
   job.mode = cint(mode)
-  let useAi = g_set.aiEnabled and g_set.aiKey.len > 0 and g_set.aiUrl.len > 0
   job.useAi = useAi
   job.aiUrl = fy_strdup(if useAi: g_set.aiUrl else: "")
   job.aiKey = fy_strdup(if useAi: g_set.aiKey else: "")
   job.aiModel = fy_strdup(if useAi: g_set.aiModel else: "")
-  let useBaidu = g_set.baiduEnabled and g_set.baiduAppId.len > 0 and
-                 g_set.baiduKey.len > 0
   job.useBaidu = useBaidu
   job.baiduAppId = fy_strdup(if useBaidu: g_set.baiduAppId else: "")
   job.baiduKey = fy_strdup(if useBaidu: g_set.baiduKey else: "")
@@ -272,8 +277,6 @@ type
     url: array[512, char]
     err: array[256, char]
     path: array[512, char]
-
-var g_hwndMain: HWND      # 工作线程里 PostMessage 用
 
 proc postUpd(stage: UINT, lp: LPARAM) {.inline.} =
   discard PostMessageW(g_hwndMain, UINT(WmAppUpdate), stage, lp)
@@ -354,12 +357,20 @@ proc onUpdateMessage(stage: int, lp: LPARAM) =
   else:
     discard
 
+proc quitApp()   # 前置声明：-testtranslate 钩子在 onTranslated 里提前用到
+
 proc onTranslated(res: cstring) =
   g_translating = false
   btnZh2En.enable(); btnEn2Zh.enable(); btnTrans.enable()
   if res.isNil:
     resultBox.setValue("翻译失败\n" & $fy_last_error())
     g_resultValid = false
+    fy_log_write("翻译", "失败")
+    if g_testTranslate:
+      let f = open(g_appDir / "test.log", fmAppend)
+      f.writeLine("TEST-RESULT: FAIL " & $fy_last_error())
+      f.close()
+      quitApp()
     return
   resultBox.setValue($res)
   g_resultValid = true
@@ -368,6 +379,12 @@ proc onTranslated(res: cstring) =
   if text.len != 0:
     fy_hist_push(g_hist, text.cstring)
     g_histIdx = -1
+  fy_log_write("翻译", "完成 结果%u字节", cuint(resultBox.getValue().len))
+  if g_testTranslate:
+    let f = open(g_appDir / "test.log", fmAppend)
+    f.writeLine("TEST-RESULT: OK " & resultBox.getValue())
+    f.close()
+    quitApp()
 
 # ---------------- 布局 ----------------
 proc layoutMain() =
@@ -493,11 +510,13 @@ proc registerHotkeys() =
   let hks = [(HkToggle, g_set.hkToggle), (HkHistUp, g_set.hkHistUp),
              (HkHistDown, g_set.hkHistDown), (HkCopy, g_set.hkCopy)]
   var log = ""
+  var fails = 0
   for pair in hks:
     if pair[1][1] != 0:
       let ok = RegisterHotKey(hwnd, UINT(pair[0]), origToWin(pair[1][0]),
                               UINT(pair[1][1]))
       if ok == 0:
+        inc fails
         log.add("RegisterHotKey id=" & $pair[0] & " mods=" & $pair[1][0] &
                 " vk=" & $pair[1][1] & " 失败 err=" & $GetLastError() & "\n")
   if log.len > 0:
@@ -505,6 +524,7 @@ proc registerHotkeys() =
     f.writeLine("--- tick=" & $GetTickCount64())
     f.write(log)
     f.close()
+    fy_log_write("热键", "注册失败 %d 个（详见 hotkey.log）", cint(fails))
 
 # ---------------- 设置窗口 ----------------
 proc openSettings() =
@@ -596,6 +616,8 @@ proc saveSettings() =
   g_hist = fy_hist_open(g_set.cacheDir.cstring)
   g_histIdx = -1
 
+  fy_log_write("设置", "已保存 AI=%d 百度=%d",
+               cint(ord(g_set.aiEnabled)), cint(ord(g_set.baiduEnabled)))
   setFrame.hide()
   discard MessageBoxW(cast[HWND](frame.getHandle()), "设置已保存。", AppTitle,
                       MB_OK or MB_ICONINFORMATION)
@@ -613,6 +635,7 @@ proc saveExitState() =
 proc quitApp() =
   if g_exiting: return
   g_exiting = true
+  fy_log_write("退出", "正常退出")
   saveExitState()
   fy_cfg_close(g_cfg)
   fy_hist_close(g_hist)
@@ -725,8 +748,17 @@ proc main() =
   g_appDir = getAppDir() / "fastT"
   createDir(g_appDir)
 
+  # 运行日志：上一次会话自动轮换为 run.last.log，闪退时异常码/地址也追加进同一份日志
+  fy_log_open((g_appDir / "run.log").cstring)
+  fy_log_install_crash_filter()
+
   g_cfg = fy_cfg_open((g_appDir / "config").cstring)
   loadSettings()
+  fy_log_write("启动", "v%s 缓存=%s AI=%d 地址=%s 百度=%d AppID=%s 地址=%s",
+               AppVersion.cstring, g_set.cacheDir.cstring,
+               cint(ord(g_set.aiEnabled)), g_set.aiUrl.cstring,
+               cint(ord(g_set.baiduEnabled)), g_set.baiduAppId.cstring,
+               g_set.baiduUrl.cstring)
   g_hist = fy_hist_open(g_set.cacheDir.cstring)
 
   # 主窗口：配置存物理像素，换算成 wNim 逻辑值传入
@@ -962,9 +994,21 @@ proc main() =
         openSettings()
     frame.startTimer(1.5, 66)
 
+  # 测试钩子：-testtranslate 启动后自动翻译一段固定文本，结果写入 test.log 后退出
+  # （配 mock 服务器做端到端验证用，也顺带验证 run.log 全链路埋点）
+  if "-testtranslate" in commandLineParams():
+    g_testTranslate = true
+    frame.startTimer(1.2, 65)
+    frame.wEvent_Timer do (event: wEvent):
+      if event.timerId == 65:
+        frame.stopTimer(65)
+        input.setValue("The quick brown fox jumps over the lazy dog.")
+        doTranslate(FY_AUTO)
+
   try:
     app.mainLoop()
   except Exception as e:
+    fy_log_write("异常", "MAINLOOP-EXC: %s", e.msg.cstring)
     let f = open(g_appDir / "crash.log", fmAppend)
     f.writeLine("MAINLOOP-EXC: " & e.msg)
     f.writeLine(getStackTrace())

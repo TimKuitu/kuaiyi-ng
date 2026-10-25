@@ -17,7 +17,9 @@ windres app.rc -O coff -o res\app.res
 if errorlevel 1 goto :err
 
 rem 中文路径会让链接器报错，先输出到 D:\ 再拷回
-%NIM% c --warnings:off --app:gui --opt:speed -d:mingw ^
+rem 必须 -d:release：关掉栈追踪。调试版每个 Nim 过程都要读写全局 framePtr，
+rem 翻译线程（CreateThread 裸线程）会和 UI 线程竞态写坏它 → 随机 0xC0000005 闪退
+%NIM% c --warnings:off --app:gui --opt:speed -d:release -d:mingw ^
   --path:"D:\ProgramFiles\wNim" ^
   --path:"D:\ProgramFiles\winim" ^
   --path:"D:\ProgramFiles\memlib" ^

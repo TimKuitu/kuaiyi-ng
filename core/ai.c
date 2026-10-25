@@ -78,8 +78,13 @@ char *fy_translate_ai(const char *utf8_text, int mode,
     if (json_escape(utf8_text, eText, sizeof(eText)) < 0) { fy_set_error("文本过长"); return NULL; }
 
     char eModel[128], eKey[512];
-    json_escape(model, eModel, sizeof(eModel));
-    json_escape(api_key, eKey, sizeof(eKey));
+    /* 同 baidu.c：转义失败时缓冲区没内容，不能继续拼请求体 */
+    if (json_escape(model, eModel, sizeof(eModel)) < 0 ||
+        json_escape(api_key, eKey, sizeof(eKey)) < 0) {
+        fy_set_error("模型名或密钥过长"); return NULL;
+    }
+
+    fy_log_write("AI", "请求 %s 模型=%s", base_url, model);
 
     char url[768], body[10240];
     build_url(base_url, url, sizeof(url));

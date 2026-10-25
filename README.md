@@ -82,6 +82,9 @@ ui\     Nim + wNim 原生控件界面
 
 - 发音（TTS）功能未包含
 - 配置文件 `fastT\config` 为 GBK 编码的 INI（段/键名见程序设置）
+- 遇到闪退：把 `fastT\run.log` 和 `fastT\run.last.log` 两个文件发给开发者即可定位
+  （每次启动自动把上次运行记录轮换为 run.last.log，闪退时异常码/地址也会记录在内；
+  日志不含密钥，被翻译的原文只保留前 48 字节预览）
 - 详细开发记录见 [说明.md](说明.md)
 
 ## License

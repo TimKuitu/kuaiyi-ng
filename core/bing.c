@@ -23,6 +23,7 @@ const char *fy_last_error(void) { return g_err; }
 static void set_err(const char *msg)
 {
     snprintf(g_err, sizeof(g_err), "%s", msg);
+    fy_log_write("错误", "%s", msg);   /* 全部错误走这里，日志里按时间排列 */
 }
 
 /* 供 ai.c / update.c 写入同一份错误信息 */
@@ -345,6 +346,11 @@ char *fy_translate_chain(const char *utf8_text, int mode,
 {
     if (!utf8_text || !utf8_text[0]) { set_err("请输入要翻译的内容"); return NULL; }
 
+    fy_log_write("链路", "开始 文本%u字节 mode=%d AI=%d 百度=%d",
+                 (unsigned)strlen(utf8_text), mode,
+                 (ai_url && ai_url[0] && ai_key && ai_key[0]) ? 1 : 0,
+                 (baidu_appid && baidu_appid[0] && baidu_secret && baidu_secret[0]) ? 1 : 0);
+
     char notes[512];
     size_t nlen = 0;
     notes[0] = 0;
@@ -353,31 +359,42 @@ char *fy_translate_chain(const char *utf8_text, int mode,
 
     /* 1. AI（OpenAI 格式） */
     if (!res && ai_url && ai_url[0] && ai_key && ai_key[0]) {
+        fy_log_write("链路", "AI 请求中");
         res = fy_translate_ai(utf8_text, mode, ai_url, ai_key, ai_model);
         if (!res) {
             const char *e = fy_last_error();
             nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "AI：%s；", e);
+        } else {
+            fy_log_write("链路", "AI 成功 %u字节", (unsigned)strlen(res));
         }
     }
 
     /* 2. 百度翻译开放平台 */
     if (!res && baidu_appid && baidu_appid[0] && baidu_secret && baidu_secret[0]) {
+        fy_log_write("链路", "百度 请求中");
         res = fy_translate_baidu(utf8_text, mode, baidu_appid, baidu_secret, baidu_url);
         if (!res) {
             const char *e = fy_last_error();
             nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "百度：%s；", e);
+        } else {
+            fy_log_write("链路", "百度 成功 %u字节", (unsigned)strlen(res));
         }
     }
 
     /* 3. 必应免费（兜底） */
     if (!res) {
+        fy_log_write("链路", "必应兜底 请求中");
         res = fy_translate(utf8_text, mode);
         if (!res) {
             const char *e = fy_last_error();
             nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "必应：%s；", e);
+            fy_log_write("链路", "全部失败");
             return NULL;   /* 全部失败 */
         }
         if (nlen > 0) {
+            /* notes 尾部固定带"；"，去掉再接"。"，避免出现"；。" */
+            size_t L = strlen(notes);
+            if (L >= 3 && strncmp(notes + L - 3, "；", 3) == 0) notes[L - 3] = 0;
             size_t rlen = strlen(res);
             size_t cap = nlen + rlen + 48;
             char *out = (char *)malloc(cap);

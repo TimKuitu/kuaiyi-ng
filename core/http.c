@@ -72,9 +72,13 @@ char *fy_http_get(const char *url, const char *extra_headers)
                                        INTERNET_FLAG_RELOAD |
                                        INTERNET_FLAG_NO_CACHE_WRITE |
                                        INTERNET_FLAG_KEEP_CONNECTION, 0);
-    if (!hFile) return NULL;
+    if (!hFile) {
+        fy_log_write("HTTP", "GET %s 失败 err=%lu", url, (unsigned long)GetLastError());
+        return NULL;
+    }
     char *body = read_all(hFile);
     InternetCloseHandle(hFile);
+    if (body) fy_log_write("HTTP", "GET %s 返回 %u字节", url, (unsigned)strlen(body));
     return body;
 }
 
@@ -87,13 +91,21 @@ char *fy_http_post(const char *url, const char *referer, const char *form)
     uc.dwStructSize = sizeof(uc);
     uc.lpszHostName = host;      uc.dwHostNameLength = sizeof(host);
     uc.lpszUrlPath = path;       uc.dwUrlPathLength = sizeof(path);
-    if (!InternetCrackUrlA(url, 0, 0, &uc)) return NULL;
+    if (!InternetCrackUrlA(url, 0, 0, &uc)) {
+        fy_log_write("HTTP", "POST 地址解析失败 err=%lu %s",
+                     (unsigned long)GetLastError(), url);
+        return NULL;
+    }
 
     int secure = (uc.nScheme == INTERNET_SCHEME_HTTPS);
     HINTERNET hConn = InternetConnectA(g_session, host,
                                        uc.nPort ? uc.nPort : (secure ? 443 : 80),
                                        NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
-    if (!hConn) return NULL;
+    if (!hConn) {
+        fy_log_write("HTTP", "POST 连接 %s 失败 err=%lu",
+                     host, (unsigned long)GetLastError());
+        return NULL;
+    }
 
     char hdr[768];
     snprintf(hdr, sizeof(hdr),
@@ -107,13 +119,32 @@ char *fy_http_post(const char *url, const char *referer, const char *form)
     if (secure) flags |= INTERNET_FLAG_SECURE;
     HINTERNET hReq = HttpOpenRequestA(hConn, "POST", path, "HTTP/1.1", NULL, NULL,
                                       flags, 0);
-    if (!hReq) { InternetCloseHandle(hConn); return NULL; }
+    if (!hReq) {
+        fy_log_write("HTTP", "POST 打开请求失败 err=%lu",
+                     (unsigned long)GetLastError());
+        InternetCloseHandle(hConn);
+        return NULL;
+    }
+
+    fy_log_write("HTTP", "POST %s form=%u字节", url, (unsigned)strlen(form));
 
     char *body = NULL;
-    if (HttpSendRequestA(hReq, hdr, (DWORD)-1L, (LPVOID)form, (DWORD)strlen(form)))
+    DWORD send_err = 0;
+    int sent = 0;
+    if (HttpSendRequestA(hReq, hdr, (DWORD)-1L, (LPVOID)form, (DWORD)strlen(form))) {
+        sent = 1;
         body = read_all(hReq);
+    } else {
+        send_err = GetLastError();
+    }
     InternetCloseHandle(hReq);
     InternetCloseHandle(hConn);
+    if (body)
+        fy_log_write("HTTP", "POST 返回 %u字节", (unsigned)strlen(body));
+    else if (sent)
+        fy_log_write("HTTP", "POST 响应读取失败");
+    else
+        fy_log_write("HTTP", "POST 发送失败 err=%lu", (unsigned long)send_err);
     return body;
 }
 

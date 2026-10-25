@@ -61,11 +61,16 @@ char *fy_translate_baidu(const char *utf8_text, int mode,
         fy_set_error("文本过长"); return NULL;
     }
     char eappid[256], esalt[64], efrom[32], eto[32], esign[96];
-    fy_urlencode(appid, eappid, sizeof(eappid));
-    fy_urlencode(salt, esalt, sizeof(esalt));
-    fy_urlencode(from, efrom, sizeof(efrom));
-    fy_urlencode(to, eto, sizeof(eto));
-    fy_urlencode(sign, esign, sizeof(esign));
+    /* urlencode 失败（-1）时缓冲区未写入，绝不能再拿去拼表单 */
+    if (fy_urlencode(appid, eappid, sizeof(eappid)) < 0 ||
+        fy_urlencode(salt, esalt, sizeof(esalt)) < 0 ||
+        fy_urlencode(from, efrom, sizeof(efrom)) < 0 ||
+        fy_urlencode(to, eto, sizeof(eto)) < 0 ||
+        fy_urlencode(sign, esign, sizeof(esign)) < 0) {
+        fy_set_error("百度参数过长或含异常字符"); return NULL;
+    }
+
+    fy_log_write("百度", "请求 %u字节 to=%s", (unsigned)strlen(utf8_text), to);
 
     char url[1024], form[15360];
     snprintf(url, sizeof(url), "%s", api_url);
@@ -98,7 +103,7 @@ char *fy_translate_baidu(const char *utf8_text, int mode,
 
     /* 拼接全部 dst（多句时换行连接） */
     char out[8192];
-    int off = 0;
+    int off = 0, segs = 0;
     for (int i = 0; i < 32; i++) {
         char path[40], dst[2048];
         snprintf(path, sizeof(path), "trans_result[%d].dst", i);
@@ -107,10 +112,12 @@ char *fy_translate_baidu(const char *utf8_text, int mode,
         int n = snprintf(out + off, sizeof(out) - (size_t)off, "%s", dst);
         if (n < 0) break;
         off += n;
+        segs++;
         if (off >= (int)sizeof(out) - 1) break;
     }
     free(resp);
     if (!off) { fy_set_error("百度返回内容解析失败"); return NULL; }
+    fy_log_write("百度", "解析出 %d 段", segs);
 
     char *result = fy_strdup(out);
     if (!result) fy_set_error("内存不足");

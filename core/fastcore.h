@@ -28,6 +28,13 @@ void  fy_free(void *p);                 /* 释放核心返回的堆内存 */
 char *fy_strdup(const char *s);         /* C 堆复制（跨线程传递用） */
 const char *fy_last_error(void);        /* 最近一次错误（UTF-8） */
 
+/* 运行日志（fastT\run.log，UTF-8）：每次启动自动把上次内容轮换为 run.last.log。
+ * 写入线程安全，未开启时为空操作；fy_log_write 的 fmt 用 printf 风格。
+ * fy_log_install_crash_filter 在闪退时把异常码/地址追加进同一份日志。 */
+void  fy_log_open(const char *utf8_path);   /* 空串/NULL 关闭日志 */
+void  fy_log_write(const char *tag, const char *fmt, ...);
+void  fy_log_install_crash_filter(void);
+
 /* 翻译：返回多行 UTF-8 文本（'\n' 分隔），失败返回 NULL */
 char *fy_translate(const char *utf8_text, int mode);
 
