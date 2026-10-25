@@ -54,10 +54,14 @@ char *fy_translate_baidu(const char *utf8_text, int mode,
         free(raw);
     }
 
-    /* q 两次 URL 编码（官方要求，防 & 等特殊字符截断） */
-    char e1[8192], e2[12288];
-    if (fy_urlencode(utf8_text, e1, (int)sizeof(e1)) < 0 ||
-        fy_urlencode(e1, e2, (int)sizeof(e2)) < 0) {
+    /* q 只做一次 URL 编码随表单发送，签名用编码前原文——官方规则是
+       服务端解码一次后按 MD5(appid+q原文+salt+密钥) 校验。
+       之前误传两次编码，真接口必回 54001 Invalid Sign（mock 测不出） */
+    if (strlen(utf8_text) > 6000) {
+        fy_set_error("文本超过百度接口 6000 字节上限"); return NULL;
+    }
+    char qenc[18432];
+    if (fy_urlencode(utf8_text, qenc, (int)sizeof(qenc)) < 0) {
         fy_set_error("文本过长"); return NULL;
     }
     char eappid[256], esalt[64], efrom[32], eto[32], esign[96];
@@ -72,11 +76,11 @@ char *fy_translate_baidu(const char *utf8_text, int mode,
 
     fy_log_write("百度", "请求 %u字节 to=%s", (unsigned)strlen(utf8_text), to);
 
-    char url[1024], form[15360];
+    char url[1024], form[18432];
     snprintf(url, sizeof(url), "%s", api_url);
     snprintf(form, sizeof(form),
              "q=%s&from=%s&to=%s&appid=%s&salt=%s&sign=%s",
-             e2, efrom, eto, eappid, esalt, esign);
+             qenc, efrom, eto, eappid, esalt, esign);
 
     char *resp = fy_http_post(url, "https://fanyi-api.baidu.com", form);
     if (!resp) { fy_set_error("百度接口连接失败（网络错误）"); return NULL; }
