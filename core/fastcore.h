@@ -31,9 +31,21 @@ const char *fy_last_error(void);        /* 最近一次错误（UTF-8） */
 /* 翻译：返回多行 UTF-8 文本（'\n' 分隔），失败返回 NULL */
 char *fy_translate(const char *utf8_text, int mode);
 
+/* 多引擎回退链：AI（如启用）→ 百度（如启用）→ 必应。
+ * 任一参数可为 NULL/空表示该引擎未启用。结果可能带 "（...已用必应翻译）" 前缀。 */
+char *fy_translate_chain(const char *utf8_text, int mode,
+                         const char *ai_url, const char *ai_key, const char *ai_model,
+                         const char *baidu_appid, const char *baidu_secret,
+                         const char *baidu_url);
+
 /* OpenAI 格式 AI 翻译（未配置时 UI 层自行回退到 fy_translate） */
 char *fy_translate_ai(const char *utf8_text, int mode, const char *base_url,
                       const char *api_key, const char *model);
+
+/* 百度翻译开放平台 API（appid + 密钥，MD5 签名；api_url 为空用官方端点） */
+char *fy_translate_baidu(const char *utf8_text, int mode,
+                         const char *appid, const char *secret,
+                         const char *api_url);
 
 /* 检查更新（GitHub Releases）：1=有新版 0=已最新 -1=失败 */
 int   fy_check_update(const char *local_ver, char *ver_out, int vcap,

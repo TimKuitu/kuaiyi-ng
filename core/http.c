@@ -89,8 +89,9 @@ char *fy_http_post(const char *url, const char *referer, const char *form)
     uc.lpszUrlPath = path;       uc.dwUrlPathLength = sizeof(path);
     if (!InternetCrackUrlA(url, 0, 0, &uc)) return NULL;
 
+    int secure = (uc.nScheme == INTERNET_SCHEME_HTTPS);
     HINTERNET hConn = InternetConnectA(g_session, host,
-                                       uc.nPort ? uc.nPort : INTERNET_DEFAULT_HTTPS_PORT,
+                                       uc.nPort ? uc.nPort : (secure ? 443 : 80),
                                        NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
     if (!hConn) return NULL;
 
@@ -102,10 +103,10 @@ char *fy_http_post(const char *url, const char *referer, const char *form)
              "Referer: %s\r\n",
              host, referer ? referer : url);
 
+    DWORD flags = INTERNET_FLAG_KEEP_CONNECTION | INTERNET_FLAG_NO_CACHE_WRITE;
+    if (secure) flags |= INTERNET_FLAG_SECURE;
     HINTERNET hReq = HttpOpenRequestA(hConn, "POST", path, "HTTP/1.1", NULL, NULL,
-                                      INTERNET_FLAG_SECURE |
-                                      INTERNET_FLAG_KEEP_CONNECTION |
-                                      INTERNET_FLAG_NO_CACHE_WRITE, 0);
+                                      flags, 0);
     if (!hReq) { InternetCloseHandle(hConn); return NULL; }
 
     char *body = NULL;

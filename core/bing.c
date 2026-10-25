@@ -336,3 +336,58 @@ char *fy_translate(const char *utf8_text, int mode)
     free(text);
     return out;
 }
+
+/* ---------- 多引擎回退链（C 实现，避免 UI 线程外触碰 Nim GC） ---------- */
+char *fy_translate_chain(const char *utf8_text, int mode,
+                         const char *ai_url, const char *ai_key, const char *ai_model,
+                         const char *baidu_appid, const char *baidu_secret,
+                         const char *baidu_url)
+{
+    if (!utf8_text || !utf8_text[0]) { set_err("请输入要翻译的内容"); return NULL; }
+
+    char notes[512];
+    size_t nlen = 0;
+    notes[0] = 0;
+
+    char *res = NULL;
+
+    /* 1. AI（OpenAI 格式） */
+    if (!res && ai_url && ai_url[0] && ai_key && ai_key[0]) {
+        res = fy_translate_ai(utf8_text, mode, ai_url, ai_key, ai_model);
+        if (!res) {
+            const char *e = fy_last_error();
+            nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "AI：%s；", e);
+        }
+    }
+
+    /* 2. 百度翻译开放平台 */
+    if (!res && baidu_appid && baidu_appid[0] && baidu_secret && baidu_secret[0]) {
+        res = fy_translate_baidu(utf8_text, mode, baidu_appid, baidu_secret, baidu_url);
+        if (!res) {
+            const char *e = fy_last_error();
+            nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "百度：%s；", e);
+        }
+    }
+
+    /* 3. 必应免费（兜底） */
+    if (!res) {
+        res = fy_translate(utf8_text, mode);
+        if (!res) {
+            const char *e = fy_last_error();
+            nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "必应：%s；", e);
+            return NULL;   /* 全部失败 */
+        }
+        if (nlen > 0) {
+            size_t rlen = strlen(res);
+            size_t cap = nlen + rlen + 48;
+            char *out = (char *)malloc(cap);
+            if (!out) { free(res); set_err("内存不足"); return NULL; }
+            int off = snprintf(out, cap, "（%s。已用必应翻译）\n", notes);
+            if (off < 0 || (size_t)off >= cap) off = 0;
+            memcpy(out + off, res, rlen + 1);
+            free(res);
+            return out;
+        }
+    }
+    return res;
+}

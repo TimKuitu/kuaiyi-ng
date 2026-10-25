@@ -14,8 +14,9 @@ proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
 const
   AppTitle = "快译NG"
   AppVersion = "1.1"
-  WmAppTranslated = WM_APP + 0x71
-  WmAppUpdate = WM_APP + 0x72
+  # wNim 自定义事件占用 WM_APP+0x10..0xE8，自定义消息必须避开（曾因冲突随机崩溃）
+  WmAppTranslated = WM_APP + 0x0200
+  WmAppUpdate = WM_APP + 0x0201
 
   # 全局热键 ID
   HkToggle = 1
@@ -51,6 +52,10 @@ type
     aiUrl: string
     aiKey: string
     aiModel: string
+    baiduEnabled: bool      # 百度翻译 API
+    baiduAppId: string
+    baiduKey: string
+    baiduUrl: string        # 可选：接口地址（默认官方）
     hkToggle: (int, int)
     hkHistUp: (int, int)
     hkHistDown: (int, int)
@@ -124,6 +129,10 @@ proc loadSettings() =
   g_set.aiUrl = cfgStr("AI翻译", "地址", "")
   g_set.aiKey = cfgStr("AI翻译", "密钥", "")
   g_set.aiModel = cfgStr("AI翻译", "模型", "deepseek-chat")
+  g_set.baiduEnabled = cfgBool("百度翻译", "启用", false)
+  g_set.baiduAppId = cfgStr("百度翻译", "AppID", "")
+  g_set.baiduKey = cfgStr("百度翻译", "密钥", "")
+  g_set.baiduUrl = cfgStr("百度翻译", "地址", "")
 
   proc hk(key1, key2: string, def: (int, int)): (int, int) =
     (cfgInt("快捷按键", key1, def[0]), cfgInt("快捷按键", key2, def[1]))
@@ -170,13 +179,14 @@ var
   panel, setPanel, page1, page2, page3: wPanel
   input, resultBox, edtCache: wTextCtrl
   edtAiUrl, edtAiKey, edtAiModel: wTextCtrl
+  edtBaiduAppId, edtBaiduKey, edtBaiduUrl: wTextCtrl
   btnZh2En, btnEn2Zh, btnTrans, btnSettings: wButton
   btnOpenCache, btnSaveSet1, btnSaveSet2, btnSaveSet3, btnResetHot: wButton
   btnCheckUpdate: wButton
   lblUpdateStatus: wStaticText
   cmbFmt: wComboBox
   cmbAiPreset: wComboBox
-  chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi: wCheckBox
+  chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi, chkBaidu: wCheckBox
   hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl: wHotkeyCtrl
   g_checkingUpdate = false
 
@@ -198,27 +208,25 @@ type TranslateJob = object
   aiUrl: cstring
   aiKey: cstring
   aiModel: cstring
+  useBaidu: bool
+  baiduAppId: cstring
+  baiduKey: cstring
+  baiduUrl: cstring
 
 proc translateWorker(param: LPVOID): DWORD {.stdcall.} =
+  # 本线程由 CreateThread 创建，不经 Nim 运行时托管——
+  # 只调用 C 核心（回退链在 C 内完成），不触碰 Nim GC
   let job = cast[ptr TranslateJob](param)
-  var res: cstring = nil
-  if job.useAi:
-    res = fy_translate_ai(job.text, job.mode, job.aiUrl, job.aiKey, job.aiModel)
-    if res.isNil:
-      # AI 失败 → 回退必应，并在结果前说明原因
-      let bing = fy_translate(job.text, job.mode)
-      if not bing.isNil:
-        let err = fy_strdup(fy_last_error())
-        var buf = "（AI 接口失败，已用必应翻译：" & $err & "）\n" & $bing
-        fy_free(cast[pointer](err))
-        fy_free(cast[pointer](bing))
-        res = fy_strdup(buf.cstring)
-  else:
-    res = fy_translate(job.text, job.mode)
+  let res = fy_translate_chain(job.text, job.mode,
+                               job.aiUrl, job.aiKey, job.aiModel,
+                               job.baiduAppId, job.baiduKey, job.baiduUrl)
   fy_free(job.text)
   fy_free(job.aiUrl)
   fy_free(job.aiKey)
   fy_free(job.aiModel)
+  fy_free(job.baiduAppId)
+  fy_free(job.baiduKey)
+  fy_free(job.baiduUrl)
   dealloc(job)
   PostMessageW(cast[HWND](frame.getHandle()), UINT(WmAppTranslated), 0,
                cast[LPARAM](res))
@@ -234,7 +242,7 @@ proc doTranslate(mode: int) =
   g_lastToEn = (mode == FY_ZH2EN) or (mode == FY_AUTO and nimHasCjk(text))
   resultBox.setValue("正在翻译……")
   btnZh2En.disable(); btnEn2Zh.disable(); btnTrans.disable()
-  let job = cast[ptr TranslateJob](alloc(sizeof(TranslateJob)))
+  let job = cast[ptr TranslateJob](alloc0(sizeof(TranslateJob)))
   job.text = fy_strdup(text.cstring)
   job.mode = cint(mode)
   let useAi = g_set.aiEnabled and g_set.aiKey.len > 0 and g_set.aiUrl.len > 0
@@ -242,6 +250,12 @@ proc doTranslate(mode: int) =
   job.aiUrl = fy_strdup(if useAi: g_set.aiUrl else: "")
   job.aiKey = fy_strdup(if useAi: g_set.aiKey else: "")
   job.aiModel = fy_strdup(if useAi: g_set.aiModel else: "")
+  let useBaidu = g_set.baiduEnabled and g_set.baiduAppId.len > 0 and
+                 g_set.baiduKey.len > 0
+  job.useBaidu = useBaidu
+  job.baiduAppId = fy_strdup(if useBaidu: g_set.baiduAppId else: "")
+  job.baiduKey = fy_strdup(if useBaidu: g_set.baiduKey else: "")
+  job.baiduUrl = fy_strdup(if useBaidu: g_set.baiduUrl else: "")
   discard CreateThread(nil, 0, translateWorker, cast[LPVOID](job), 0, nil)
 
 # ---------------- 检查更新（后台线程） ----------------
@@ -503,6 +517,10 @@ proc openSettings() =
   edtAiUrl.setValue(g_set.aiUrl)
   edtAiKey.setValue(g_set.aiKey)
   edtAiModel.setValue(g_set.aiModel)
+  chkBaidu.setValue(g_set.baiduEnabled)
+  edtBaiduAppId.setValue(g_set.baiduAppId)
+  edtBaiduKey.setValue(g_set.baiduKey)
+  edtBaiduUrl.setValue(g_set.baiduUrl)
   lblUpdateStatus.label = "当前版本 v" & AppVersion
   edtCache.setValue(g_set.cacheDir)
   cmbFmt.setSelection(g_set.wordFmt)
@@ -528,6 +546,10 @@ proc saveSettings() =
   g_set.aiKey = edtAiKey.getValue().strip()
   g_set.aiModel = edtAiModel.getValue().strip()
   if g_set.aiModel.len == 0: g_set.aiModel = "deepseek-chat"
+  g_set.baiduEnabled = chkBaidu.getValue()
+  g_set.baiduAppId = edtBaiduAppId.getValue().strip()
+  g_set.baiduKey = edtBaiduKey.getValue().strip()
+  g_set.baiduUrl = edtBaiduUrl.getValue().strip()
 
   let hkt = hkToggleCtrl.getHotkey()
   let hku = hkUpCtrl.getHotkey()
@@ -549,6 +571,10 @@ proc saveSettings() =
   fy_cfg_set(g_cfg, "AI翻译", "地址", g_set.aiUrl)
   fy_cfg_set(g_cfg, "AI翻译", "密钥", g_set.aiKey)
   fy_cfg_set(g_cfg, "AI翻译", "模型", g_set.aiModel)
+  fy_cfg_set(g_cfg, "百度翻译", "启用", if g_set.baiduEnabled: "1" else: "0")
+  fy_cfg_set(g_cfg, "百度翻译", "AppID", g_set.baiduAppId)
+  fy_cfg_set(g_cfg, "百度翻译", "密钥", g_set.baiduKey)
+  fy_cfg_set(g_cfg, "百度翻译", "地址", g_set.baiduUrl)
   fy_cfg_set(g_cfg, "快捷按键", "隐藏界面1", $g_set.hkToggle[0])
   fy_cfg_set(g_cfg, "快捷按键", "隐藏界面2", $g_set.hkToggle[1])
   fy_cfg_set(g_cfg, "快捷按键", "上历史1", $g_set.hkHistUp[0])
@@ -783,7 +809,7 @@ proc main() =
     let nb = NoteBook(setPanel, pos=(8, 8), size=(544, 340))
     page1 = nb.addPage(text="通用设置")
     page2 = nb.addPage(text="快捷按键")
-    page3 = nb.addPage(text="AI 翻译")
+    page3 = nb.addPage(text="翻译接口")
 
     chkTop = CheckBox(page1, label="软件窗口永远在最上面", pos=(20, 14))
     chkCloseExit = CheckBox(page1, label="点击右上角关闭为退出程序（不勾选=隐藏到托盘）", pos=(20, 44))
@@ -818,21 +844,34 @@ proc main() =
     btnResetHot = Button(page2, label="恢复默认设置", pos=(180, 214), size=(120, 30))
     btnSaveSet2 = Button(page2, label="保存设置", pos=(436, 288), size=(92, 32))
 
-    # AI 翻译页
-    chkAi = CheckBox(page3, label="使用 AI 接口翻译（OpenAI 格式；未启用或密钥为空时用必应免费）",
-                     pos=(20, 16))
-    cmbAiPreset = ComboBox(page3, style=wCbReadOnly, pos=(360, 12), size=(160, 26))
-    discard StaticText(page3, label="接口地址（如 https://api.deepseek.com，可带 /v1）", pos=(20, 54))
-    edtAiUrl = TextCtrl(page3, pos=(20, 76), size=(500, 26))
-    discard StaticText(page3, label="API 密钥（sk-…）", pos=(20, 114))
-    edtAiKey = TextCtrl(page3, pos=(20, 136), size=(500, 26))
-    discard StaticText(page3, label="模型（如 deepseek-chat）", pos=(20, 174))
-    edtAiModel = TextCtrl(page3, pos=(20, 196), size=(500, 26))
+    # 翻译接口页（AI → 百度 → 必应 依次回退）
+    chkAi = CheckBox(page3, label="AI 接口（OpenAI 格式）", pos=(20, 14))
+    cmbAiPreset = ComboBox(page3, style=wCbReadOnly, pos=(190, 10), size=(160, 26))
+    discard StaticText(page3, label="地址（可带 /v1）", pos=(390, 16), size=(140, 22))
+    edtAiUrl = TextCtrl(page3, pos=(20, 38), size=(310, 24))
+    discard StaticText(page3, label="密钥", pos=(340, 40), size=(40, 22))
+    edtAiKey = TextCtrl(page3, pos=(380, 38), size=(140, 24))
+    discard StaticText(page3, label="模型", pos=(20, 70), size=(40, 22))
+    edtAiModel = TextCtrl(page3, pos=(60, 68), size=(200, 24))
+
+    chkBaidu = CheckBox(page3, label="百度翻译开放平台（免费标准版，fanyi-api.baidu.com 注册）",
+                        pos=(20, 106))
+    discard StaticText(page3, label="AppID", pos=(20, 134), size=(50, 22))
+    edtBaiduAppId = TextCtrl(page3, pos=(70, 132), size=(200, 24))
+    discard StaticText(page3, label="密钥", pos=(290, 134), size=(40, 22))
+    edtBaiduKey = TextCtrl(page3, pos=(330, 132), size=(190, 24))
+    discard StaticText(page3, label="地址（可选，默认官方接口）", pos=(20, 166), size=(190, 22))
+    edtBaiduUrl = TextCtrl(page3, pos=(210, 164), size=(310, 24))
+
     discard StaticText(page3,
-      label="支持 DeepSeek / OpenAI / Moonshot / 本地 Ollama 等一切 OpenAI 格式接口；",
-      pos=(20, 234), size=(500, 22))
-    discard StaticText(page3, label="AI 失败时自动回退必应免费翻译；单词词典查询始终走必应。",
-      pos=(20, 256), size=(500, 22))
+      label="翻译顺序：AI → 百度 → 必应免费（前面的未启用或失败自动用后面的）。",
+      pos=(20, 198), size=(500, 20))
+    discard StaticText(page3,
+      label="单词词典（音标/释义）始终走必应；百度免费版每秒 1 次、每月 5 万字符。",
+      pos=(20, 218), size=(500, 20))
+    discard StaticText(page3,
+      label="Ollama 本地无需密钥（密钥随意填）；百度需实名注册后开通“通用文本翻译”。",
+      pos=(20, 238), size=(500, 20))
     btnSaveSet3 = Button(page3, label="保存设置", pos=(436, 288), size=(92, 32))
 
   cmbFmt.append(FmtNames)
@@ -923,7 +962,13 @@ proc main() =
         openSettings()
     frame.startTimer(1.5, 66)
 
-  app.mainLoop()
+  try:
+    app.mainLoop()
+  except Exception as e:
+    let f = open(g_appDir / "crash.log", fmAppend)
+    f.writeLine("MAINLOOP-EXC: " & e.msg)
+    f.writeLine(getStackTrace())
+    f.close()
 
 when isMainModule:
   main()
