@@ -13,16 +13,17 @@ void fy_set_error(const char *msg);   /* bing.c 提供 */
 #define UPDATE_API  "https://api.github.com/repos/" UPDATE_REPO "/releases/latest"
 #define UPDATE_PAGE "https://github.com/" UPDATE_REPO "/releases/latest"
 
-/* "1.2" vs "1.1" 比较：remote > local 返回 1 */
+/* "1.2.1" vs "1.2" 比较：remote > local 返回 1（支持 N.N / N.N.N） */
 static int version_newer(const char *remote, const char *local)
 {
-    int rmaj = 0, rmin = 0, lmaj = 0, lmin = 0;
+    int r[3] = {0, 0, 0}, l[3] = {0, 0, 0};
     if (remote[0] == 'v' || remote[0] == 'V') remote++;
     if (local[0]  == 'v' || local[0]  == 'V') local++;
-    sscanf(remote, "%d.%d", &rmaj, &rmin);
-    sscanf(local,  "%d.%d", &lmaj, &lmin);
-    if (rmaj != lmaj) return rmaj > lmaj;
-    return rmin > lmin;
+    sscanf(remote, "%d.%d.%d", &r[0], &r[1], &r[2]);
+    sscanf(local,  "%d.%d.%d", &l[0], &l[1], &l[2]);
+    for (int i = 0; i < 3; i++)
+        if (r[i] != l[i]) return r[i] > l[i];
+    return 0;
 }
 
 /* 从 releases/latest 页面 HTML 里提取 "/releases/tag/vX.Y" */
