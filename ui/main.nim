@@ -1,7 +1,7 @@
 ## 快译NG —— Bing 免费翻译（C 核心 + wNim 界面）
 ## 中英互译、历史记录、复制单词、全局热键、托盘；缓存目录可改、Bing 免费翻译接口。
 
-import std/[os, strutils, sets, tables, algorithm]
+import std/[os, strutils, sets, tables, algorithm, math]
 import wNim
 import winim/lean
 import fastcore
@@ -14,7 +14,7 @@ proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
 
 const
   AppTitle = "快译NG"
-  AppVersion = "1.3.0"
+  AppVersion = "1.4.0"
   # wNim 自定义事件占用 WM_APP+0x10..0xE8，自定义消息必须避开（曾因冲突随机崩溃）
   WmAppTranslated = WM_APP + 0x0200
   WmAppUpdate = WM_APP + 0x0201
@@ -33,7 +33,11 @@ const
 
   FmtNames = ["原样", "全小写", "全大写", "驼峰", "下划线", "中划线"]
 
-  RowHeightPx = 32   # 按钮行高（物理像素，屏幕实测定死，不随 DPI 换算）
+  # 字体缩放可选档位（百分比）
+  UiScalePresets = ["75", "100", "110", "125", "150", "175", "200"]
+  MinFontPx = 9.0          # 字号下限，最小档（75%）也有 13px
+
+  RowHeightLogical = 32   # 按钮行高（100% 时的像素，随「字体缩放」放大）
 
   # AI 接口预设（名称, 地址, 模型）
   AiPresets = [("", "", ""),
@@ -65,6 +69,11 @@ type
     hkCopy: (int, int)
     maxWords: int           # 命名缩减预算（config-only，无界面控件）
     maxChars: int
+    winW: int               # 主窗口外框尺寸（像素；0 = 默认自适应高度）
+    winH: int
+    uiScale: int            # 字体缩放（百分比，作用于设置窗口与翻译窗口）
+    setW: int               # 旧版记录过设置窗口尺寸，现在窗口固定尺寸，不再使用
+    setH: int
 
 # ---------------- 配置读写 ----------------
 var
@@ -76,7 +85,12 @@ var
   g_translating = false
   g_exiting = false
   g_stateSaved = false
-  g_dpiScale = 1.0
+  g_uiScale = 1.0             # 界面缩放（来自「字体缩放」档位）
+  g_setFont: HFONT = HFONT(0) # 设置窗口自己的字体（随窗口大小变）
+  g_setDesignScale = 1.0      # 设置页设计坐标当前已乘过的系数
+  g_uiFont: HFONT = HFONT(0)  # 统一界面字体
+  g_defWinW = 453             # 默认窗口尺寸（逻辑像素）
+  g_defWinH = 377
   g_lastToEn = false      # 最近一次翻译的目标是否为英文（是则结果区是要复制的英文）
   g_resultValid = false   # 结果区当前是否有有效内容
   g_testTranslate = false # -testtranslate 钩子：自动翻译一次后写 test.log 退出
@@ -154,6 +168,13 @@ proc loadSettings() =
   g_set.maxChars = cfgInt("复制单词", "最大字符数", 40)
   if g_set.maxWords < 1: g_set.maxWords = 1
   if g_set.maxChars < 4: g_set.maxChars = 4
+  g_set.winW = cfgInt("通用设置", "窗口宽", 0)
+  g_set.winH = cfgInt("通用设置", "窗口高", 0)
+  g_set.setW = cfgInt("通用设置", "设置宽", 0)
+  g_set.setH = cfgInt("通用设置", "设置高", 0)
+  g_set.uiScale = cfgInt("通用设置", "界面缩放", 100)
+  if g_set.uiScale < 75: g_set.uiScale = 75      # 50% 及以下已取消，最小 75%
+  if g_set.uiScale > 200: g_set.uiScale = 200
 
 # ---------------- 热键编码（1=Ctrl 2=Shift 4=Alt 按位相加；8=Win 扩展位） ----------------
 proc origToWin(m: int): UINT =
@@ -197,6 +218,10 @@ var
   btnOpenCache, btnSaveSet1, btnSaveSet2, btnSaveSet3, btnResetHot: wButton
   btnCheckUpdate: wButton
   lblUpdateStatus: wStaticText
+  edtWinW, edtWinH: wTextCtrl
+  btnResetSize: wButton
+  cmbUiScale: wComboBox
+  lblScaleHint: wStaticText
   cmbCopyMode: wComboBox   # 主窗口按钮行上的复制模式下拉，选中即生效
   cmbAiPreset: wComboBox
   chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi, chkBaidu: wCheckBox
@@ -209,9 +234,9 @@ var
 #   忽略页删行 = 该内置泛词保留（文件里记 `+原词`）
 # 每行控件懒创建、只隐藏不销毁（运行期销毁 wNim 控件不安全），行槽上限 AbbrMaxRows。
 const
-  AbbrTop = 48          # 行区起始 y（逻辑像素）
+  AbbrTop = 116         # 行区起始 y（逻辑像素；上方两行提示各占 50）
   AbbrRowH = 32         # 行距
-  AbbrViewRows = 7      # 每页可见行数
+  AbbrViewRows = 10     # 每页可见行数
   AbbrMaxRows = 240     # 行槽上限（内置约 130 条，其余留给自定义）
 
 type
@@ -239,9 +264,92 @@ var
   g_abbrOverflow = false  # 文件条数超过行槽上限：禁止保存，避免静默截断
   g_ignOverflow = false
 
+proc rowH(): int {.inline.} =
+  # 按钮行高：逻辑 32px 按 DPI 放大，跟字号一起变
+  max(10, int(float(RowHeightLogical) * g_uiScale))
+
+# —— 统一界面字体 ——
+# 字号只跟「字体缩放」走（g_fontScale = 0.9 × 档位）；窗口与控件尺寸固定不变，
+# 所以放大字号时字会变大但窗口不动，缩小时反之。
+const
+  UiFontFace = "Microsoft YaHei UI"
+  # 富文本字符格式（winim/lean 没带 richedit.h，这里只补用到的最小定义）
+  EmSetCharFormat = WM_USER + 68
+  ScfAll = 0x0004
+  CfmSize = 0x80000000'i32
+  CfmFace = 0x20000000'i32
+  UiFontPx = 18.0            # 100% 缩放时的字号（像素）
+
+type CharFormatW = object
+  cbSize: UINT
+  dwMask: DWORD
+  dwEffects: DWORD
+  yHeight: LONG
+  yOffset: LONG
+  crTextColor: COLORREF
+  bCharSet: BYTE
+  bPitchAndFamily: BYTE
+  szFaceName: array[32, WCHAR]
+
+proc makeFontAt(px: float): HFONT =
+  var lf: LOGFONTW
+  zeroMem(addr lf, sizeof(LOGFONTW))
+  lf.lfHeight = -int(max(MinFontPx, px))
+  if lf.lfHeight > -5: lf.lfHeight = -5
+  lf.lfWeight = FW_NORMAL
+  lf.lfCharSet = DEFAULT_CHARSET
+  lf.lfQuality = CLEARTYPE_QUALITY
+  lf.lfPitchAndFamily = BYTE(DEFAULT_PITCH or FF_DONTCARE)
+  for i in 0 ..< UiFontFace.len: lf.lfFaceName[i] = WCHAR(ord(UiFontFace[i]))
+  CreateFontIndirectW(addr lf)
+
+proc fontEnumProc2(h: HWND, lp: LPARAM): WINBOOL {.stdcall.} =
+  SendMessageW(h, WM_SETFONT, WPARAM(lp), LPARAM(1))
+  result = TRUE
+
+proc makeUiFont(): HFONT =
+  makeFontAt(UiFontPx * g_uiScale)
+
+proc applyFont(w: wWindow, f: HFONT) =
+  ## 只换字体、不动控件几何（设置窗口缩放时用）
+  if w == nil or f == HFONT(0): return
+  let h = cast[HWND](w.getHandle())
+  SendMessageW(h, WM_SETFONT, WPARAM(f), LPARAM(1))
+  discard EnumChildWindows(h, fontEnumProc2, LPARAM(f))
+
+proc richFont(h: HWND) =
+  ## 富文本控件（输入框/结果框）不吃 WM_SETFONT 的字号，要显式设字符格式。
+  ## yHeight 单位是 twips：像素 * 72/96 * 20 = 像素 * 15。
+  var cls: array[64, WCHAR]
+  let n = GetClassNameW(h, cast[LPWSTR](addr cls[0]), 64)
+  if n <= 0: return
+  var cn = newString(n)
+  for i in 0 ..< n: cn[i] = char(cls[i])
+  if not cn.toLowerAscii().startsWith("richedit"): return
+  var cf: CharFormatW
+  zeroMem(addr cf, sizeof(CharFormatW))
+  cf.cbSize = UINT(sizeof(CharFormatW))
+  cf.dwMask = cast[DWORD](CfmSize) or cast[DWORD](CfmFace)
+  cf.yHeight = LONG(int(max(MinFontPx, UiFontPx * g_uiScale)) * 15)
+  for i in 0 ..< UiFontFace.len: cf.szFaceName[i] = WCHAR(ord(UiFontFace[i]))
+  discard SendMessageW(h, EmSetCharFormat, WPARAM(ScfAll), cast[LPARAM](addr cf))
+
+proc fontEnumProc(h: HWND, lp: LPARAM): WINBOOL {.stdcall.} =
+  SendMessageW(h, WM_SETFONT, WPARAM(lp), LPARAM(1))
+  richFont(h)
+  result = TRUE
+
+proc applyUiFont(w: wWindow) =
+  # 递归套用统一字体；行控件是懒创建的，openSettings 里会再套一次
+  if g_uiFont == HFONT(0) or w == nil: return
+  let h = w.getHandle()
+  SendMessageW(h, WM_SETFONT, WPARAM(g_uiFont), LPARAM(1))
+  richFont(h)
+  discard EnumChildWindows(h, fontEnumProc, LPARAM(g_uiFont))
+
 proc dpx(v: int): int {.inline.} =
   ## 逻辑像素 → 物理像素（wNim 的 pos/size 收物理像素）
-  int(float(v) * g_dpiScale)
+  int(float(v) * g_uiScale)
 
 proc isPlainWord(s: string): bool =
   ## 缩略/忽略词只支持单个英文单词或数字（引擎按词查表，短语永远匹配不到）
@@ -260,8 +368,8 @@ proc warnBox(msg: string) =
 const
   WmMouseWheel = 0x020A
   WheelSubId = 0x4B59        # 本程序的 subclass id（comctl32 按窗口区分）
-  # 注意：这两个 tag 必须用常量名传参。dpiAutoScale 宏会把块里的**整数字面量**
-  # 乘上 g_dpiScale，直接写 hookWheel(pageAbbr, 1) 在 150% 下会变成 2。
+  # 注意：这两个 tag 必须用常量名传参。老版本用过 dpiAutoScale 宏（会把块里的整数
+  # 字面量整体乘缩放系数），直接写 hookWheel(pageAbbr, 1) 在非 100% 下会变成 2。
   WheelTagAbbr = 1
   WheelTagIgnore = 2
 
@@ -332,13 +440,13 @@ proc renderAbbr() =
   ## 只摆可见行（滚动窗口），宽高按页面实际宽度换算
   ensureAbbrRows(abbrCount)
   if pageAbbr.isNil: return
-  var pw = int(float(pageAbbr.getSize().width) / g_dpiScale)
+  var pw = int(float(pageAbbr.getSize().width) / g_uiScale)
   if pw < 200: pw = 520            # 页面还没布局时兜底
   let maxS = max(0, abbrCount - AbbrViewRows)
   if abbrScroll > maxS: abbrScroll = maxS
   if abbrScroll < 0: abbrScroll = 0
-  let left = 14
-  let right = pw - 14 - 18 - 6     # 右侧让出滚动条
+  let left = 24
+  let right = pw - 24 - 18 - 4     # 右侧让出滚动条
   let delW = 56
   let arrowW = 20
   let gap = 8
@@ -362,7 +470,7 @@ proc renderAbbr() =
       abbrRows[i].arrow.hide()
       abbrRows[i].abbr.hide()
       abbrRows[i].del.hide()
-  sbAbbr.setSize(dpx(pw - 14 - 18), dpx(AbbrTop), dpx(18),
+  sbAbbr.setSize(dpx(pw - 24 - 18), dpx(AbbrTop), dpx(18),
                  dpx(AbbrViewRows * AbbrRowH - 8))
   sbAbbr.setScrollbar(abbrScroll, AbbrViewRows, max(abbrCount - 1, 1))
   if abbrCount > AbbrViewRows: sbAbbr.enable() else: sbAbbr.disable()
@@ -514,13 +622,13 @@ proc collectIgnoreSlots(): seq[string] =
 proc renderIgnore() =
   ensureIgnoreRows(ignoreCount)
   if pageIgnore.isNil: return
-  var pw = int(float(pageIgnore.getSize().width) / g_dpiScale)
+  var pw = int(float(pageIgnore.getSize().width) / g_uiScale)
   if pw < 200: pw = 520
   let maxS = max(0, ignoreCount - AbbrViewRows)
   if ignoreScroll > maxS: ignoreScroll = maxS
   if ignoreScroll < 0: ignoreScroll = 0
-  let left = 14
-  let right = pw - 14 - 18 - 6
+  let left = 24
+  let right = pw - 24 - 18 - 4
   let delW = 56
   let gap = 8
   let delX = right - delW
@@ -536,7 +644,7 @@ proc renderIgnore() =
     else:
       ignoreRows[i].word.hide()
       ignoreRows[i].del.hide()
-  sbIgnore.setSize(dpx(pw - 14 - 18), dpx(AbbrTop), dpx(18),
+  sbIgnore.setSize(dpx(pw - 24 - 18), dpx(AbbrTop), dpx(18),
                    dpx(AbbrViewRows * AbbrRowH - 8))
   sbIgnore.setScrollbar(ignoreScroll, AbbrViewRows, max(ignoreCount - 1, 1))
   if ignoreCount > AbbrViewRows: sbIgnore.enable() else: sbIgnore.disable()
@@ -859,31 +967,37 @@ proc onTranslated(res: cstring) =
 
 # ---------------- 布局 ----------------
 proc layoutMain() =
-  # wNim 的 pos/size 参数是逻辑单位（按 96dpi 设计，高 DPI 下自动缩小渲染），
-  # getClientSize 返回物理像素；两者换算后混用。
-  template S(x: int): int = int(float(x) * g_dpiScale)
+  # pos/size 都是像素；整体按 g_uiScale（字体缩放）等比换算，别混用。
+  template S(x: int): int = int(float(x) * g_uiScale)
   let cs = frame.getClientSize()
   let w = cs.width
   let h = cs.height
+  let gap = S(8)
+  let rh = rowH()
   panel.setSize((0, 0), (w, h))
-  input.setSize((S(8), S(8)), (w - S(16), S(96)))
-  # 行高固定为物理像素 32px（屏幕实测要求，不随 DPI 缩放换算）
-  btnZh2En.setSize((S(8), S(112)), (S(92), RowHeightPx))
-  btnEn2Zh.setSize((S(104), S(112)), (S(92), RowHeightPx))
-  btnSettings.setSize((S(200), S(112)), (S(62), RowHeightPx))
+  # 输入区与结果区默认各 96 逻辑像素；窗口拉高时余量平分，两者永远等高
+  let fixedH = gap * 4 + rh                 # 上下边距 + 两个间距 + 按钮行
+  var extra = h - (fixedH + S(96) + S(96))
+  if extra < 0: extra = 0
+  let inH = S(96) + extra div 2
+  let resH = S(96) + (extra - extra div 2)
+  input.setSize((gap, gap), (w - gap * 2, inH))
+  # 按钮行：行高随 DPI 缩放，和字号同步
+  let rowY = gap + inH + gap
+  btnZh2En.setSize((S(8), rowY), (S(92), rh))
+  btnEn2Zh.setSize((S(104), rowY), (S(92), rh))
+  btnSettings.setSize((S(200), rowY), (S(62), rh))
   # 复制模式下拉与按钮同宽同高；翻译靠右吃剩余空间
-  cmbCopyMode.setSize((S(266), S(112)), (S(92), RowHeightPx))
-  btnTrans.setSize((S(362), S(112)), (w - S(370), RowHeightPx))
-  # 结果区上边距与"输入区→按钮行"的间距相同（都是 S(8)），
-  # 直接用物理像素算，避免逻辑值取整偏差；高度与输入区一致（S(96)）
-  let resultTop = S(112) + RowHeightPx + S(8)
-  resultBox.setSize((S(8), resultTop), (w - S(16), S(96)))
+  cmbCopyMode.setSize((S(266), rowY), (S(92), rh))
+  btnTrans.setSize((S(362), rowY), (w - S(370), rh))
+  let resultTop = rowY + rh + gap
+  resultBox.setSize((gap, resultTop), (w - gap * 2, resH))
 
 proc fitComboVisibleHeight() =
   # ComboBox 收起时的可视高度由 item 高度决定，setSize 设的是含下拉列表的总高。
   # 发 CB_SETITEMHEIGHT 把可视高度校准到行高（32 物理像素），量两次收敛
   let h = cmbCopyMode.getHandle()
-  let want = 32
+  let want = rowH()
   var itemH = want - 8
   var rc: RECT
   for i in 1 .. 3:
@@ -1038,6 +1152,87 @@ proc registerHotkeys() =
     fy_log_write("热键", "注册失败 %d 个（详见 hotkey.log）", cint(fails))
 
 # ---------------- 设置窗口 ----------------
+proc syncSizeFields() =
+  # 把主窗口当前外框尺寸（像素）回填到设置页
+  let sz = frame.getSize()
+  edtWinW.setValue($sz.width)
+  edtWinH.setValue($sz.height)
+
+# —— 设置窗口缩放 ——
+# 窗口拖多大，里面的字号和按钮就等比例多大；按钮的相对位置不变（整体等比缩放，
+# 所以按钮的宽高比也不变）。行控件（缩略词/忽略词）由 render* 重排。
+var g_setDesign: seq[tuple[h: HWND, x, y, w, hh: int]]
+var g_setZoom = 1.0        # 设置页当前实际应用的系数
+var g_pageHwnds: seq[HWND] = @[]
+
+proc isSettingsPage(h: HWND): bool =
+  for p in g_pageHwnds:
+    if p == h: return true
+
+proc setDesignProc(h: HWND, lp: LPARAM): WINBOOL {.stdcall.} =
+  if isSettingsPage(h): return TRUE          # 页面本身由笔记本自动撑满
+  var r: RECT
+  if GetWindowRect(h, addr r) == 0: return TRUE
+  let par = GetParent(h)
+  var pt: POINT
+  pt.x = r.left
+  pt.y = r.top
+  if par != HWND(0): discard ScreenToClient(par, addr pt)
+  g_setDesign.add((h, int(pt.x), int(pt.y), int(r.right - r.left), int(r.bottom - r.top)))
+  result = TRUE
+
+proc recordSettingsDesign(f: float) =
+  g_setDesign.setLen(0)
+  if setPanel != nil:
+    discard EnumChildWindows(cast[HWND](setPanel.getHandle()), setDesignProc, LPARAM(0))
+  g_setZoom = f
+
+proc defSettingsSize(): tuple[w, h: int] =
+  (max(440, int(544.0 * g_uiScale) + 22), max(340, int(534.0 * g_uiScale) + 56))
+
+proc nearSize(actual: tuple[w, h: int], expect: tuple[w, h: int], tol = 4): bool =
+  abs(actual.w - expect.w) <= tol and abs(actual.h - expect.h) <= tol
+
+proc relayoutSettings(target: float) =
+  if setFrame.isNil or g_setDesign.len == 0: return
+  let k = target / g_setZoom
+  if abs(k - 1.0) >= 0.005:
+    for e in g_setDesign:
+      discard SetWindowPos(e.h, HWND(0),
+        int(round(float(e.x) * k)), int(round(float(e.y) * k)),
+        int(round(float(e.w) * k)), int(round(float(e.hh) * k)),
+        SWP_NOZORDER or SWP_NOACTIVATE)
+  g_setZoom = target
+  let old = g_setFont
+  g_setFont = makeFontAt(UiFontPx * target)
+  applyFont(setFrame, g_setFont)
+  if old != HFONT(0): discard DeleteObject(old)
+
+proc refreshSettings(target: float) =
+  ## 应用新的缩放：先缩放静态控件，再按同一系数重排行控件
+  relayoutSettings(target)
+  let saved = g_uiScale
+  g_uiScale = target
+  loadAbbrRows()
+  loadIgnoreRows()
+  g_uiScale = saved
+  recordSettingsDesign(target)
+  applyFont(setFrame, g_setFont)
+
+proc computeDefWinSize(): tuple[w, h: int] =
+  ## 默认窗口尺寸：宽 453、高度刚好放下 输入框/按钮行/结果框（随字体缩放变化）
+  let chrome = int(frame.getSize().height) - int(frame.getClientSize().height)
+  let contentH = dpx(8) + dpx(96) + dpx(8) + rowH() + dpx(8) + dpx(96) + dpx(8)
+  result.w = max(280, int(453.0 * g_uiScale))
+  result.h = max(200, contentH + chrome)
+
+proc applyWinSize(w, h: int) =
+  var wl = float(w)
+  var hl = float(h)
+  if wl < 420.0: wl = 420.0
+  if hl < 260.0: hl = 260.0
+  frame.size = (int(wl), int(hl))
+
 proc openSettings() =
   chkTop.setValue(g_set.topmost)
   chkCloseExit.setValue(g_set.closeExit)
@@ -1060,6 +1255,14 @@ proc openSettings() =
   hkCopyCtrl.setHotkey(origToWin(g_set.hkCopy[0]), g_set.hkCopy[1])
   loadAbbrRows()
   loadIgnoreRows()
+  applyUiFont(setFrame)     # 行控件是懒创建的，这里补一次统一字体
+  if abs(g_setZoom - g_uiScale) >= 0.01: refreshSettings(g_uiScale)
+  else: recordSettingsDesign(g_uiScale)
+  var pidx = 0
+  for i, pct in UiScalePresets:
+    if pct == $g_set.uiScale: pidx = i
+  cmbUiScale.setSelection(pidx)
+  syncSizeFields()
   setFrame.center()
   setFrame.show()
   forceForeground(cast[HWND](setFrame.getHandle()))
@@ -1105,6 +1308,64 @@ proc saveSettings() =
   fy_cfg_set(g_cfg, "百度翻译", "AppID", g_set.baiduAppId)
   fy_cfg_set(g_cfg, "百度翻译", "密钥", g_set.baiduKey)
   fy_cfg_set(g_cfg, "百度翻译", "地址", g_set.baiduUrl)
+  # 窗口大小：先按输入框里的值（用户可能直接手填）调整，再读实际尺寸落盘
+  var tw = 0
+  var th = 0
+  try: tw = parseInt(edtWinW.getValue().strip())
+  except ValueError: tw = 0
+  try: th = parseInt(edtWinH.getValue().strip())
+  except ValueError: th = 0
+  if tw >= 420 and th >= 260: applyWinSize(tw, th)
+  # 字体缩放：设置窗口重启后按新比例重建；翻译窗口当场生效
+  var newScale = 100
+  let sel = cmbUiScale.getSelection()
+  if sel >= 0 and sel < UiScalePresets.len:
+    try: newScale = parseInt(UiScalePresets[sel])
+    except ValueError: newScale = g_set.uiScale
+  if newScale != g_set.uiScale:
+    let oldPct = g_set.uiScale
+    g_set.uiScale = newScale
+    g_uiScale = float(newScale) / 100.0
+    let ratio = float(newScale) / float(max(1, oldPct))
+    # 翻译窗口：按比例缩放当前尺寸（用户自定义的大小也跟着走），再保证装得下内容
+    let oldDef = (g_defWinW, g_defWinH)     # 旧档位的默认尺寸，用来判断"有没有自定义过"
+    let def = computeDefWinSize()
+    let cur = frame.getSize()
+    g_uiFont = makeUiFont()
+    applyUiFont(frame)
+    if nearSize((int(cur.width), int(cur.height)), oldDef):
+      frame.size = (def.w, def.h)          # 没自定义过：直接用新档位的默认尺寸
+    else:
+      frame.size = (max(def.w, int(round(float(cur.width) * ratio))),
+                    max(def.h, int(round(float(cur.height) * ratio))))
+    g_defWinW = def.w
+    g_defWinH = def.h
+    layoutMain()
+    fitComboVisibleHeight()
+    syncSizeFields()
+    # 设置窗口：同样按比例缩放，并立刻重排里面的字和控件
+    if not setFrame.isNil and setFrame.getHandle() != HWND(0):
+      let sc = setFrame.getSize()
+      let oldDef = (max(440, int(544.0 * float(oldPct) / 100.0) + 22),
+                    max(340, int(534.0 * float(oldPct) / 100.0) + 56))
+      let nd = defSettingsSize()
+      var nw = nd.w
+      var nh = nd.h
+      if not nearSize((int(sc.width), int(sc.height)), oldDef):
+        nw = max(nd.w, int(round(float(sc.width) * ratio)))
+        nh = max(nd.h, int(round(float(sc.height) * ratio)))
+      setFrame.minSize = (nw, nh)
+      setFrame.maxSize = (nw, nh)
+      setFrame.size = (nw, nh)
+      refreshSettings(g_uiScale)
+    lblScaleHint.label = "已应用 $1%（两个窗口都已缩放）" % [$newScale]
+  fy_cfg_set(g_cfg, "通用设置", "界面缩放", $g_set.uiScale)
+  # 只在这里落盘（退出时只存位置），下次启动按保存值还原
+  let wsz = frame.getSize()
+  g_set.winW = int(wsz.width)
+  g_set.winH = int(wsz.height)
+  fy_cfg_set(g_cfg, "通用设置", "窗口宽", $g_set.winW)
+  fy_cfg_set(g_cfg, "通用设置", "窗口高", $g_set.winH)
   fy_cfg_set(g_cfg, "快捷按键", "隐藏界面1", $g_set.hkToggle[0])
   fy_cfg_set(g_cfg, "快捷按键", "隐藏界面2", $g_set.hkToggle[1])
   fy_cfg_set(g_cfg, "快捷按键", "上历史1", $g_set.hkHistUp[0])
@@ -1133,7 +1394,7 @@ proc saveSettings() =
                       MB_OK or MB_ICONINFORMATION)
 
 proc saveExitState() =
-  # 退出/销毁时只保存窗口位置（尺寸不保存：每次启动恢复默认大小）
+  # 退出/销毁时只保存窗口位置；尺寸只在设置页点「保存设置」时落盘
   if g_cfg.isNil or g_stateSaved: return
   g_stateSaved = true
   if not frame.isNil:
@@ -1248,12 +1509,9 @@ proc main() =
 
   let app = App(wSystemDpiAware)
 
-  # 配置存物理像素；高 DPI 下统一用 wNim 的 dpiAutoScale 换算
-  block:
-    let hdc = GetDC(0)
-    g_dpiScale = float(GetDeviceCaps(hdc, LOGPIXELSX)) / 96.0
-    ReleaseDC(0, hdc)
-    if g_dpiScale < 1.0: g_dpiScale = 1.0
+  # 界面缩放**不跟系统 DPI 走**（方案 A：同一套像素在任何 DPI 的机器上长得一样），
+  # 而是由设置页「字体缩放」决定，默认 100%。loadSettings 之后立刻取值。
+  g_uiScale = 1.0
 
   g_appDir = getAppDir() / "fastT"
   createDir(g_appDir)
@@ -1264,6 +1522,7 @@ proc main() =
 
   g_cfg = fy_cfg_open((g_appDir / "config").cstring)
   loadSettings()
+  g_uiScale = float(g_set.uiScale) / 100.0
   fy_log_write("启动", "v%s 缓存=%s AI=%d 地址=%s 百度=%d AppID=%s 地址=%s",
                AppVersion.cstring, g_set.cacheDir.cstring,
                cint(ord(g_set.aiEnabled)), g_set.aiUrl.cstring,
@@ -1280,10 +1539,9 @@ proc main() =
   # 主窗口：配置存物理像素，换算成 wNim 逻辑值传入
   # 每次启动固定默认大小；运行期间用户调整的尺寸在隐藏/召唤间自动保留
   frame = Frame(title=AppTitle,
-                size=(int(453.0 * g_dpiScale), int(377.0 * g_dpiScale)))
+                size=(int(453.0 * g_uiScale), int(377.0 * g_uiScale)))
   frame.icon = Icon("", 0)
-  frame.dpiAutoScale:
-    frame.minSize = (440, 280)   # 宽度下限给按钮行；高度别顶住内容自适应
+  frame.minSize = (280, 200)   # 固定最小尺寸，不随档位变（档位随时可改）
 
   panel = Panel(frame)
   input = TextCtrl(panel, style=wTeMultiLine or wTeRich)
@@ -1297,11 +1555,24 @@ proc main() =
   # 窗口高度按内容自适应：边距8 + 输入96 + 间距8 + 按钮行 + 间距8 + 结果96 + 边距8
   # 宽度仍默认 453；用实测的边框/标题栏差值把客户区顶到刚好放下内容
   block:
-    let chrome = int(frame.getSize().height) - int(frame.getClientSize().height)
-    let contentH = int(8.0 * g_dpiScale) + int(96.0 * g_dpiScale) +
-                   int(8.0 * g_dpiScale) + RowHeightPx + int(8.0 * g_dpiScale) +
-                   int(96.0 * g_dpiScale) + int(8.0 * g_dpiScale)
-    frame.size = (int(453.0 * g_dpiScale), contentH + chrome)
+    # 默认尺寸：宽 453、高度刚好放下内容；设置页保存过就沿用保存值（像素）
+    let def = computeDefWinSize()
+    g_defWinW = def.w
+    g_defWinH = def.h
+    var wl = float(g_defWinW)
+    var hl = float(g_defWinH)
+    if g_set.winW >= 420 and g_set.winH >= 260:
+      wl = float(g_set.winW)
+      hl = float(g_set.winH)
+    # 换过显示器时保存值可能比当前屏还大，按屏幕兜一层
+    let maxW = float(GetSystemMetrics(SM_CXSCREEN)) - 16.0
+    let maxH = float(GetSystemMetrics(SM_CYSCREEN)) - 48.0
+    if wl > maxW: wl = maxW
+    if hl > maxH: hl = maxH
+    if wl < float(g_defWinW): wl = float(g_defWinW)
+    # 保存值是按旧缩放存的，字体放大后可能装不下 → 至少给到内容高度
+    if hl < float(g_defWinH): hl = float(g_defWinH)
+    frame.size = (int(wl), int(hl))
 
   frame.wEvent_Size do ():
     layoutMain()
@@ -1360,100 +1631,170 @@ proc main() =
     let ctrlDown = (GetKeyState(VK_CONTROL) and 0x8000) != 0
     copyWord(ctrlDown)
 
+  g_uiFont = makeUiFont()
+  applyUiFont(frame)
   layoutMain()
   fitComboVisibleHeight()
   frame.setTrayIcon(Icon("", 0), AppTitle & "（双击显示/隐藏）")
 
-  # 设置窗口（子控件包在 dpiAutoScale 里按 1:1 物理尺寸渲染）
-  setFrame = Frame(title=AppTitle & " - 设置",
-                   size=(int(560.0 * g_dpiScale), int(420.0 * g_dpiScale)),
+  # 设置窗口：按「字体缩放」给默认尺寸建窗（先量客户区当缩放基准），再套用用户保存的大小
+  let dw = max(440, int(544.0 * g_uiScale) + 22)
+  let dh = max(340, int(534.0 * g_uiScale) + 56)
+  # 固定尺寸：不给 wResizeBorder（拖边不能改大小）、不给 wMaximizeBox（无最大化）
+  setFrame = Frame(title=AppTitle & " - 设置", size=(dw, dh),
                    style=wCaption or wSystemMenu or wMinimizeBox)
   setFrame.icon = Icon("", 0)
+  setFrame.minSize = (dw, dh)      # 固定尺寸：最小 = 最大 = 内容尺寸
+  setFrame.maxSize = (dw, dh)
   setPanel = Panel(setFrame)
-  setFrame.dpiAutoScale:
-    nbSet = NoteBook(setPanel, pos=(8, 8), size=(544, 340))
-    page1 = nbSet.addPage(text="通用设置")
-    page2 = nbSet.addPage(text="快捷按键")
-    page3 = nbSet.addPage(text="翻译接口")
-    pageAbbr = nbSet.addPage(text="缩略词")
-    pageIgnore = nbSet.addPage(text="忽略词")
+  const PadL = 24
+  const ContW = 496            # 544 - 2*24
+  const PageH = 496            # 页面内容高度（设计像素）
+  nbSet = NoteBook(setPanel, pos=(dpx(8), dpx(8)), size=(dpx(544), dpx(PageH + 38)))
+  page1 = nbSet.addPage(text="通用设置")
+  page2 = nbSet.addPage(text="快捷按键")
+  page3 = nbSet.addPage(text="翻译接口")
+  pageAbbr = nbSet.addPage(text="缩略词")
+  pageIgnore = nbSet.addPage(text="忽略词")
+  g_pageHwnds = @[]
+  for pp in [page1, page2, page3, pageAbbr, pageIgnore]:
+    g_pageHwnds.add(cast[HWND](pp.getHandle()))
+  # 页签加宽加高（TCM_SETPADDING），点起来松快
+  const TCM_SETPADDING = 0x1300 + 43
+  discard SendMessage(cast[HWND](nbSet.getHandle()), TCM_SETPADDING, 0,
+                      LPARAM(18 or (8 shl 16)))
 
-    chkTop = CheckBox(page1, label="软件窗口永远在最上面", pos=(20, 14))
-    chkCloseExit = CheckBox(page1, label="点击右上角关闭为退出程序（不勾选=隐藏到托盘）", pos=(20, 44))
-    chkAutoStart = CheckBox(page1, label="开机自动启动快译NG", pos=(20, 74))
-    chkAutoHide = CheckBox(page1, label="开机启动后隐藏界面", pos=(40, 102))
-    chkSummon = CheckBox(page1, label="热键召唤窗口时出现在鼠标旁边", pos=(20, 132))
+  # ---------- 通用设置页：分三组，左右留白 24，组间 22，行距 33 ----------
+  var cy = dpx(16)
+  let by = dpx(PageH - 48)     # 底部操作条（检查更新 / 保存设置）统一基线
 
-    discard StaticText(page1, label="缓存目录（历史记录存放位置，可修改）", pos=(20, 162))
-    edtCache = TextCtrl(page1, pos=(20, 186), size=(430, 26))
-    btnOpenCache = Button(page1, label="查看目录", pos=(460, 184), size=(76, 28))
+  template setTitle(txt: string) =
+    discard StaticText(page1, label="▍" & txt,
+                       pos=(dpx(PadL), cy), size=(dpx(280), dpx(26)))
+    cy += dpx(26)
+  template setDivider() =
+    cy += dpx(5)
+    discard StaticText(page1, pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(2)),
+                       style=0x10)      # SS_ETCHEDHORZ，浅灰分割线
+    cy += dpx(17)
 
-    btnCheckUpdate = Button(page1, label="检查更新", pos=(20, 288), size=(92, 32))
-    lblUpdateStatus = StaticText(page1, label="当前版本 v" & AppVersion,
-                                 pos=(124, 296), size=(300, 24))
-    btnSaveSet1 = Button(page1, label="保存设置", pos=(436, 288), size=(92, 32))
+  setTitle("基础设置")
+  chkTop = CheckBox(page1, label="软件窗口永远在最上面", pos=(dpx(PadL), cy))
+  cy += dpx(33)
+  chkCloseExit = CheckBox(page1, label="点击右上角关闭为退出程序（不勾选=隐藏到托盘）",
+                          pos=(dpx(PadL), cy))
+  cy += dpx(33)
 
-    discard StaticText(page2, label="显示/隐藏快译", pos=(20, 22))
-    hkToggleCtrl = HotkeyCtrl(page2, pos=(180, 16), size=(220, 28))
-    discard StaticText(page2, label="上一个历史记录", pos=(20, 62))
-    hkUpCtrl = HotkeyCtrl(page2, pos=(180, 56), size=(220, 28))
-    discard StaticText(page2, label="下一个历史记录", pos=(20, 102))
-    hkDownCtrl = HotkeyCtrl(page2, pos=(180, 96), size=(220, 28))
-    discard StaticText(page2, label="复制单词", pos=(20, 142))
-    hkCopyCtrl = HotkeyCtrl(page2, pos=(180, 136), size=(220, 28))
-    discard StaticText(page2,
-      label="点击输入框后直接按下组合键（Ctrl/Shift/Alt 任意组合 + 普通键）",
-      pos=(20, 180), size=(500, 26))
+  setDivider()
+  setTitle("启动设置")
+  chkAutoStart = CheckBox(page1, label="开机自动启动快译NG", pos=(dpx(PadL), cy))
+  cy += dpx(33)
+  chkAutoHide = CheckBox(page1, label="     开机启动后隐藏界面", pos=(dpx(PadL), cy))
+  cy += dpx(33)
+  chkSummon = CheckBox(page1, label="热键召唤窗口时出现在鼠标旁边", pos=(dpx(PadL), cy))
+  cy += dpx(33)
 
-    btnResetHot = Button(page2, label="恢复默认设置", pos=(180, 214), size=(120, 30))
-    btnSaveSet2 = Button(page2, label="保存设置", pos=(436, 288), size=(92, 32))
+  setDivider()
+  setTitle("缓存与窗口")
+  discard StaticText(page1, label="缓存目录（历史记录存放位置，可修改）",
+                     pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
+  cy += dpx(26)
+  edtCache = TextCtrl(page1, pos=(dpx(PadL), cy), size=(dpx(336), dpx(30)))
+  btnOpenCache = Button(page1, label="查看目录", pos=(dpx(PadL + 348), cy),
+                        size=(dpx(96), dpx(30)))
+  cy += dpx(34)
 
-    # 翻译接口页（AI → 百度 → 必应 依次回退）
-    chkAi = CheckBox(page3, label="AI 接口（OpenAI 格式）", pos=(20, 14))
-    cmbAiPreset = ComboBox(page3, style=wCbReadOnly, pos=(190, 10), size=(160, 26))
-    discard StaticText(page3, label="地址（可带 /v1）", pos=(390, 16), size=(140, 22))
-    edtAiUrl = TextCtrl(page3, pos=(20, 38), size=(310, 24))
-    discard StaticText(page3, label="密钥", pos=(340, 40), size=(40, 22))
-    edtAiKey = TextCtrl(page3, pos=(380, 38), size=(140, 24))
-    discard StaticText(page3, label="模型", pos=(20, 70), size=(40, 22))
-    edtAiModel = TextCtrl(page3, pos=(60, 68), size=(200, 24))
+  # 窗口大小：宽 × 高（像素）—— 标签与输入框垂直居中
+  discard StaticText(page1, label="窗口大小", pos=(dpx(PadL), cy + 5), size=(dpx(76), dpx(22)))
+  edtWinW = TextCtrl(page1, pos=(dpx(PadL + 80), cy), size=(dpx(64), dpx(30)))
+  discard StaticText(page1, label="×", pos=(dpx(PadL + 152), cy + 5), size=(dpx(16), dpx(22)))
+  edtWinH = TextCtrl(page1, pos=(dpx(PadL + 176), cy), size=(dpx(64), dpx(30)))
+  discard StaticText(page1, label="像素", pos=(dpx(PadL + 248), cy + 5), size=(dpx(40), dpx(22)))
+  btnResetSize = Button(page1, label="恢复默认", pos=(dpx(PadL + 300), cy),
+                        size=(dpx(92), dpx(30)))
+  cy += dpx(34)
 
-    chkBaidu = CheckBox(page3, label="百度翻译开放平台（免费标准版，fanyi-api.baidu.com 注册）",
-                        pos=(20, 106))
-    discard StaticText(page3, label="AppID", pos=(20, 134), size=(50, 22))
-    edtBaiduAppId = TextCtrl(page3, pos=(70, 132), size=(200, 24))
-    discard StaticText(page3, label="密钥", pos=(290, 134), size=(40, 22))
-    edtBaiduKey = TextCtrl(page3, pos=(330, 132), size=(190, 24))
-    discard StaticText(page3, label="地址（可选，默认官方接口）", pos=(20, 166), size=(190, 22))
-    edtBaiduUrl = TextCtrl(page3, pos=(210, 164), size=(310, 24))
+  # 字体缩放：设置窗口 + 翻译窗口一起放大（不吃系统 DPI，自己说了算）
+  discard StaticText(page1, label="字体缩放", pos=(dpx(PadL), cy + 5), size=(dpx(76), dpx(22)))
+  cmbUiScale = ComboBox(page1, style=wCbReadOnly,
+                        pos=(dpx(PadL + 80), cy), size=(dpx(92), dpx(30)))
+  for pct in UiScalePresets: cmbUiScale.append(pct & "%")
+  lblScaleHint = StaticText(page1, label="整窗等比缩放，设置窗口固定尺寸",
+                            pos=(dpx(PadL + 184), cy + 5), size=(dpx(300), dpx(22)))
 
-    discard StaticText(page3,
-      label="翻译顺序：AI → 百度 → 必应免费（前面的未启用或失败自动用后面的）。",
-      pos=(20, 198), size=(500, 20))
-    discard StaticText(page3,
-      label="单词词典（音标/释义）始终走必应；百度免费版每秒 1 次、每月 5 万字符。",
-      pos=(20, 218), size=(500, 20))
-    discard StaticText(page3,
-      label="Ollama 本地无需密钥（密钥随意填）；百度需实名注册后开通“通用文本翻译”。",
-      pos=(20, 238), size=(500, 20))
-    btnSaveSet3 = Button(page3, label="保存设置", pos=(436, 288), size=(92, 32))
+  btnCheckUpdate = Button(page1, label="检查更新", pos=(dpx(PadL), by), size=(dpx(92), dpx(32)))
+  lblUpdateStatus = StaticText(page1, label="当前版本 v" & AppVersion,
+                               pos=(dpx(PadL + 104), by + 6), size=(dpx(240), dpx(22)))
+  btnSaveSet1 = Button(page1, label="保存设置", pos=(dpx(544 - PadL - 92), by),
+                       size=(dpx(92), dpx(32)))
+
+  # ---------- 快捷按键页 ----------
+  discard StaticText(page2, label="显示/隐藏快译", pos=(dpx(PadL), dpx(24)))
+  hkToggleCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(18)), size=(dpx(220), dpx(32)))
+  discard StaticText(page2, label="上一个历史记录", pos=(dpx(PadL), dpx(70)))
+  hkUpCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(64)), size=(dpx(220), dpx(32)))
+  discard StaticText(page2, label="下一个历史记录", pos=(dpx(PadL), dpx(116)))
+  hkDownCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(110)), size=(dpx(220), dpx(32)))
+  discard StaticText(page2, label="复制单词", pos=(dpx(PadL), dpx(162)))
+  hkCopyCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(156)), size=(dpx(220), dpx(32)))
+  discard StaticText(page2,
+    label="点击输入框后直接按下组合键（Ctrl/Shift/Alt 任意组合 + 普通键）",
+    pos=(dpx(PadL), dpx(208)), size=(dpx(ContW), dpx(24)))
+  btnResetHot = Button(page2, label="恢复默认设置", pos=(dpx(200), dpx(250)),
+                       size=(dpx(120), dpx(32)))
+  btnSaveSet2 = Button(page2, label="保存设置", pos=(dpx(544 - PadL - 92), by),
+                       size=(dpx(92), dpx(32)))
+
+  # ---------- 翻译接口页（AI → 百度 → 必应 依次回退） ----------
+  chkAi = CheckBox(page3, label="AI 接口（OpenAI 格式）", pos=(dpx(PadL), dpx(14)))
+  cmbAiPreset = ComboBox(page3, style=wCbReadOnly, pos=(dpx(210), dpx(10)),
+                         size=(dpx(160), dpx(30)))
+  discard StaticText(page3, label="地址（可带 /v1）", pos=(dpx(390), dpx(16)),
+                     size=(dpx(140), dpx(22)))
+  edtAiUrl = TextCtrl(page3, pos=(dpx(PadL), dpx(48)), size=(dpx(300), dpx(30)))
+  discard StaticText(page3, label="密钥", pos=(dpx(340), dpx(52)), size=(dpx(40), dpx(22)))
+  edtAiKey = TextCtrl(page3, pos=(dpx(384), dpx(48)), size=(dpx(136), dpx(30)))
+  discard StaticText(page3, label="模型", pos=(dpx(PadL), dpx(90)), size=(dpx(40), dpx(22)))
+  edtAiModel = TextCtrl(page3, pos=(dpx(68), dpx(86)), size=(dpx(200), dpx(30)))
+
+  chkBaidu = CheckBox(page3, label="百度翻译开放平台（免费标准版，fanyi-api.baidu.com 注册）",
+                      pos=(dpx(PadL), dpx(134)))
+  discard StaticText(page3, label="AppID", pos=(dpx(PadL), dpx(170)), size=(dpx(50), dpx(22)))
+  edtBaiduAppId = TextCtrl(page3, pos=(dpx(78), dpx(166)), size=(dpx(200), dpx(30)))
+  discard StaticText(page3, label="密钥", pos=(dpx(296), dpx(170)), size=(dpx(40), dpx(22)))
+  edtBaiduKey = TextCtrl(page3, pos=(dpx(340), dpx(166)), size=(dpx(180), dpx(30)))
+  discard StaticText(page3, label="地址（可选，默认官方接口）", pos=(dpx(PadL), dpx(208)),
+                     size=(dpx(200), dpx(22)))
+  edtBaiduUrl = TextCtrl(page3, pos=(dpx(232), dpx(204)), size=(dpx(288), dpx(30)))
+
+  discard StaticText(page3,
+    label="翻译顺序：AI → 百度 → 必应免费（前面的未启用或失败自动用后面的）。",
+    pos=(dpx(PadL), dpx(254)), size=(dpx(ContW), dpx(22)))
+  discard StaticText(page3,
+    label="单词词典（音标/释义）始终走必应；百度免费版每秒 1 次、每月 5 万字符。",
+    pos=(dpx(PadL), dpx(278)), size=(dpx(ContW), dpx(22)))
+  discard StaticText(page3,
+    label="Ollama 本地无需密钥（密钥随意填）；百度需实名注册后开通“通用文本翻译”。",
+    pos=(dpx(PadL), dpx(302)), size=(dpx(ContW), dpx(22)))
+  btnSaveSet3 = Button(page3, label="保存设置", pos=(dpx(544 - PadL - 92), by),
+                       size=(dpx(92), dpx(32)))
 
   # 缩略词 / 忽略词两页：行控件由 ensureXxxRows 懒创建，这里只放文案、滚动条和按钮
   let hintAbbr1 = StaticText(pageAbbr,
     label="每行一条：原词 → 缩写，例 Initialization → Init（内置已列出）",
-    pos=(dpx(14), dpx(8)), size=(dpx(500), dpx(20)))
+    pos=(dpx(PadL), dpx(10)), size=(dpx(ContW), dpx(50)))
   let hintAbbr2 = StaticText(pageAbbr,
     label="可改可删：删行＝该词不再缩写；空白行忽略，保存后立即生效。",
-    pos=(dpx(14), dpx(26)), size=(dpx(500), dpx(20)))
+    pos=(dpx(PadL), dpx(60)), size=(dpx(ContW), dpx(50)))
   sbAbbr = ScrollBar(pageAbbr, pos=(dpx(496), dpx(AbbrTop)),
                      size=(dpx(18), dpx(AbbrViewRows * AbbrRowH - 8)),
                      style=wSbVertical)
   btnAddAbbr = Button(pageAbbr, label="添加一行",
-                      pos=(dpx(14), dpx(288)), size=(dpx(92), dpx(32)))
+                      pos=(dpx(PadL), by), size=(dpx(92), dpx(32)))
   lblAbbrStatus = StaticText(pageAbbr, label="",
-                             pos=(dpx(116), dpx(296)), size=(dpx(310), dpx(24)))
+                             pos=(dpx(PadL + 104), by + 6), size=(dpx(300), dpx(22)))
   btnSaveAbbr = Button(pageAbbr, label="保存",
-                       pos=(dpx(436), dpx(288)), size=(dpx(92), dpx(32)))
+                       pos=(dpx(544 - PadL - 92), by), size=(dpx(92), dpx(32)))
   # 页面上的每一块都挂滚轮：说明文字/状态栏/按钮/滚动条上滚也能滚列表
   hookWheel(hintAbbr1, WheelTagAbbr)
   hookWheel(hintAbbr2, WheelTagAbbr)
@@ -1464,19 +1805,19 @@ proc main() =
 
   let hintIgn1 = StaticText(pageIgnore,
     label="每行一个英文单词，生成命名时直接删掉（内置泛词已列出）",
-    pos=(dpx(14), dpx(8)), size=(dpx(500), dpx(20)))
+    pos=(dpx(PadL), dpx(10)), size=(dpx(ContW), dpx(50)))
   let hintIgn2 = StaticText(pageIgnore,
     label="删掉某行＝保留该词；中文先经内置词表转英文（如 状态 → state）再判断。",
-    pos=(dpx(14), dpx(26)), size=(dpx(500), dpx(20)))
+    pos=(dpx(PadL), dpx(60)), size=(dpx(ContW), dpx(50)))
   sbIgnore = ScrollBar(pageIgnore, pos=(dpx(496), dpx(AbbrTop)),
                        size=(dpx(18), dpx(AbbrViewRows * AbbrRowH - 8)),
                        style=wSbVertical)
   btnAddIgnore = Button(pageIgnore, label="添加一行",
-                        pos=(dpx(14), dpx(288)), size=(dpx(92), dpx(32)))
+                        pos=(dpx(PadL), by), size=(dpx(92), dpx(32)))
   lblIgnoreStatus = StaticText(pageIgnore, label="",
-                               pos=(dpx(116), dpx(296)), size=(dpx(310), dpx(24)))
+                               pos=(dpx(PadL + 104), by + 6), size=(dpx(300), dpx(22)))
   btnSaveIgnore = Button(pageIgnore, label="保存",
-                         pos=(dpx(436), dpx(288)), size=(dpx(92), dpx(32)))
+                         pos=(dpx(544 - PadL - 92), by), size=(dpx(92), dpx(32)))
   # 页面本体 + 页面上每一块都挂滚轮：说明文字/状态栏/按钮/滚动条上滚也能滚列表
   hookWheel(pageAbbr, WheelTagAbbr)
   hookWheel(pageIgnore, WheelTagIgnore)
@@ -1494,6 +1835,8 @@ proc main() =
   cmbAiPreset.setSelection(0)
 
   setFrame.wEvent_Close do (event: wEvent):
+    # 关掉设置页时记住窗口大小
+    discard fy_cfg_save(g_cfg)
     event.veto()
     setFrame.hide()
   btnSaveSet1.wEvent_Button do ():
@@ -1523,6 +1866,9 @@ proc main() =
       edtAiUrl.setValue(AiPresets[i][1])
       edtAiModel.setValue(AiPresets[i][2])
       cmbAiPreset.setSelection(0)
+  btnResetSize.wEvent_Button do ():
+    applyWinSize(g_defWinW, g_defWinH)
+    syncSizeFields()
   btnCheckUpdate.wEvent_Button do ():
     if g_checkingUpdate: return
     g_checkingUpdate = true
