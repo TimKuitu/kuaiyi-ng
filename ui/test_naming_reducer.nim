@@ -1,7 +1,7 @@
 ## naming_reducer 单元测试：nim c -r ui/test_naming_reducer.nim
 ## 全部通过退出码 0，有失败退出码 1
 
-import std/strutils
+import std/[strutils, os]
 import naming_reducer
 
 var gPass, gFail = 0
@@ -66,6 +66,161 @@ block:
   if validateIdent("config-file-path", reservedSet): inc v else: inc gFail
   gPass += v
   echo "PASS  validateIdent 直测 " & $v & "/4"
+
+# —— 自定义缩写：覆盖内置 / 坏行拒绝 / 清空恢复 ——
+block:
+  let tmp = getTempDir() / "ky_abbr_test.txt"
+  removeFile(tmp)
+
+  var v = 0
+  # 无文件 → 纯内置：configuration→config
+  let n0 = loadCustomAbbreviations(tmp)
+  if n0 == 0 and reduceName("configuration reader", nsCamel, 4, 40).name == "configReader":
+    inc v
+  else: dec v; echo "  [自定义] 初始内置异常: n0=" & $n0
+
+  # 覆盖内置：configuration→cfg；service 本是泛词，自定义后豁免删除并缩写
+  let s1 = saveCustomAbbreviations(tmp, "configuration = cfg\nservice = svc\n")
+  if s1.badLine == 0 and s1.count == 2 and
+      reduceName("configuration reader", nsCamel, 4, 40).name == "cfgReader" and
+      reduceName("service status", nsCamel, 4, 40).name == "svcStatus":
+    inc v
+  else: dec v; echo "  [自定义] 覆盖内置异常: " & $s1.count & "," & $s1.badLine
+
+  # 坏行（缺 =）拒绝保存，原表不受影响
+  let s2 = saveCustomAbbreviations(tmp, "novalue\nservice = svc\n")
+  if s2.badLine == 1 and reduceName("configuration reader", nsCamel, 4, 40).name == "cfgReader":
+    inc v
+  else: dec v; echo "  [自定义] 坏行拒绝异常: badLine=" & $s2.badLine
+
+  # 清空文本 → 恢复纯内置
+  let s3 = saveCustomAbbreviations(tmp, "# 全删\n\n")
+  if s3.badLine == 0 and s3.count == 0 and
+      reduceName("configuration reader", nsCamel, 4, 40).name == "configReader":
+    inc v
+  else: dec v; echo "  [自定义] 清空恢复异常: " & $s3.count
+
+  removeFile(tmp)
+  if v == 4:
+    inc gPass
+    echo "PASS  自定义缩写 4/4（覆盖内置/坏行拒绝/清空恢复）"
+  else:
+    gFail += 4 - v
+    echo "FAIL  自定义缩写 " & $v & "/4"
+
+# —— 自定义忽略词：命中即删 / 优先于缩写 / 取数排序 / 清空恢复 ——
+block:
+  let tmpAbbr = getTempDir() / "ky_abbr_test2.txt"
+  let tmpIgn = getTempDir() / "ky_ignore_test.txt"
+  removeFile(tmpAbbr)
+  removeFile(tmpIgn)
+  discard loadCustomAbbreviations(tmpAbbr)
+  discard loadCustomIgnore(tmpIgn)
+
+  var v = 0
+  # 无文件：status 是核心词，照旧保留
+  let base = reduceName("user login status cache", nsCamel, 4, 40).name
+  if base == "userLoginStatusCache": inc v
+  else: dec v; echo "  [忽略] 基线异常: " & base
+
+  # 加入忽略：status 被直接删掉
+  let n1 = saveCustomIgnore(tmpIgn, "# 测试\nstatus\n\n")
+  let r1 = reduceName("user login status cache", nsCamel, 4, 40).name
+  if n1 == 1 and r1 == "userLoginCache": inc v
+  else: dec v; echo "  [忽略] 生效异常: n=" & $n1 & " -> " & r1
+
+  # 忽略优先于自定义缩写（service 两边都填 → 删掉）；取数按字母序
+  discard saveCustomAbbreviations(tmpAbbr, "service = svc\n")
+  discard saveCustomIgnore(tmpIgn, "zeta\nalpha\nservice\n")
+  let r2 = reduceName("service login", nsCamel, 4, 40)
+  let words = customIgnoreWords()
+  if r2.ok and r2.name == "login" and words == @["alpha", "service", "zeta"]:
+    inc v
+  else:
+    dec v
+    echo "  [忽略] 优先级/取数异常: " & $r2.ok & "," & r2.name & "," & $words
+
+  # 清空 → 恢复
+  if saveCustomIgnore(tmpIgn, "") == 0 and
+      reduceName("user login status cache", nsCamel, 4, 40).name ==
+        "userLoginStatusCache":
+    inc v
+  else: dec v; echo "  [忽略] 清空恢复异常"
+
+  discard saveCustomAbbreviations(tmpAbbr, "")
+  removeFile(tmpAbbr)
+  removeFile(tmpIgn)
+  if v == 4:
+    inc gPass
+    echo "PASS  自定义忽略词 4/4（生效/优先于缩写/取数排序/清空恢复）"
+  else:
+    gFail += 4 - v
+    echo "FAIL  自定义忽略词 " & $v & "/4"
+
+# —— 内置行可删可改：禁用缩写 "-" / 保留泛词 "+" ——
+block:
+  let tmpAbbr = getTempDir() / "ky_abbr_test3.txt"
+  let tmpIgn = getTempDir() / "ky_ignore_test3.txt"
+  removeFile(tmpAbbr)
+  removeFile(tmpIgn)
+  discard loadCustomAbbreviations(tmpAbbr)
+  discard loadCustomIgnore(tmpIgn)
+
+  var v = 0
+  # 基线：内置把 initialization 缩成 init，detail 作为内置泛词被删
+  let b0 = reduceName("initialization detail", nsCamel, 3, 40)
+  if b0.ok and b0.name == "init": inc v
+  else: dec v; echo "  [内置] 基线异常: " & b0.name
+
+  # 删掉内置缩写行（原词=-）：该词保留、不再缩写，复数同样不缩
+  discard saveCustomAbbreviations(tmpAbbr, "initialization=-\n")
+  let d1 = reduceName("initialization", nsCamel, 3, 40)
+  let d2 = reduceName("initializations", nsCamel, 3, 40)
+  if d1.ok and d1.name == "initialization" and d2.ok and d2.name == "initializations":
+    inc v
+  else: dec v; echo "  [禁用缩写] 异常: " & d1.name & " / " & d2.name
+
+  # 删掉内置泛词行（+detail）：detail 不再被删
+  discard saveCustomIgnore(tmpIgn, "+detail\n")
+  let k1 = reduceName("initialization detail", nsCamel, 3, 40)
+  if k1.ok and k1.name == "initializationDetail": inc v
+  else: dec v; echo "  [保留泛词] 异常: " & k1.name
+
+  # 取数：禁用项只在 entries 里，pairs 不含；保留词单独一列；内置表有序
+  var entriesHasDash = false
+  for (w, a) in customAbbrEntries():
+    if w == "initialization" and a == "-": entriesHasDash = true
+  var pairsHasInit = false
+  for (w, a) in customAbbrPairs():
+    if w == "initialization": pairsHasInit = true
+  let stops = builtinStopWords()
+  var sortedOk = stops.len > 50
+  for i in 1 ..< stops.len:
+    if cmp(stops[i - 1], stops[i]) > 0: sortedOk = false
+  if entriesHasDash and not pairsHasInit and
+      customKeepWords() == @["detail"] and sortedOk and
+      builtinAbbreviations().len > 30:
+    inc v
+  else:
+    dec v
+    echo "  [取数] 异常: dash=" & $entriesHasDash & " pairs=" & $pairsHasInit &
+         " keep=" & $customKeepWords() & " stops=" & $stops.len
+
+  # 清空 → 恢复默认
+  discard saveCustomAbbreviations(tmpAbbr, "")
+  discard saveCustomIgnore(tmpIgn, "")
+  let z = reduceName("initialization detail", nsCamel, 3, 40)
+  if z.ok and z.name == "init" and customKeepWords().len == 0: inc v
+  else: dec v; echo "  [清空恢复] 异常: " & z.name
+
+  removeFile(tmpAbbr)
+  removeFile(tmpIgn)
+  if v == 5:
+    inc gPass
+    echo "PASS  内置行可删可改 5/5（禁用缩写/复数/保留泛词/取数/清空恢复）"
+  else:
+    gFail += 5 - v
+    echo "FAIL  内置行可删可改 " & $v & "/5"
 
 echo "----------------------------------------"
 echo "总计: " & $gPass & " 通过, " & $gFail & " 失败"

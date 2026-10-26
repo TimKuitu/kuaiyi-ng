@@ -5,7 +5,7 @@
 ## 流水线：拆词 → 删泛词 → 缩写映射 → 预算裁剪 → 拼格式 → 校验
 ## 失败一律带原因返回（ReduceResult.reason），不静默截断字符串。
 
-import std/[strutils, tables, sets, unicode]
+import std/[strutils, tables, sets, unicode, os, algorithm]
 
 type
   NamingStyle* = enum
@@ -182,6 +182,10 @@ const zhTerms* = [
 let g_stop = toHashSet(stopWords)
 let g_abbrev = toTable(abbreviations)
 let g_zh = toTable(zhTerms)
+
+# 用户自定义缩写（设置页编辑，存 fastT\custom_abbr.txt），同名覆盖内置
+var g_custom = initTable[string, string]()
+var g_active = g_abbrev   # 内置 + 自定义合并后的生效表
 let g_verbs = toHashSet([
   "get", "set", "read", "write", "load", "save", "init", "parse", "convert",
   "update", "delete", "remove", "create", "add", "check", "gen", "calc",
@@ -193,6 +197,133 @@ let g_verbs = toHashSet([
 
 # 校验用的保留字集合（validateIdent 的 reserved 实参）
 let reservedSet* = toHashSet(reservedWords)
+
+# ---------------- 自定义缩写（fastT\custom_abbr.txt，每行 原词=缩写，# 注释） ----------------
+
+proc parseAbbrText(text: string): tuple[table: Table[string, string], badLine: int] =
+  ## 解析编辑框文本；badLine>0 = 该行缺 '='，整体拒绝
+  result.table = initTable[string, string]()
+  var i = 0
+  for raw in strutils.splitLines(text):
+    inc i
+    let line = strutils.strip(raw)
+    if line.len == 0 or line.startsWith("#"): continue
+    let eq = line.find('=')
+    if eq <= 0:
+      result.badLine = i
+      return
+    let k = strutils.strip(line[0 ..< eq]).toLowerAscii
+    let v = strutils.strip(line[eq + 1 ..^ 1]).toLowerAscii
+    if k.len == 0 or v.len == 0:
+      result.badLine = i
+      return
+    result.table[k] = v
+
+proc rebuildActive() =
+  g_active = g_abbrev
+  for k, v in g_custom:
+    g_active[k] = v
+
+proc loadCustomAbbreviations*(path: string): int =
+  ## 启动时加载；文件不存在/为空 = 清空自定义，只留内置。返回条数
+  g_custom = initTable[string, string]()
+  if fileExists(path):
+    let r = parseAbbrText(readFile(path))
+    if r.badLine == 0: g_custom = r.table
+  rebuildActive()
+  g_custom.len
+
+proc saveCustomAbbreviations*(path, text: string): tuple[count: int, badLine: int] =
+  ## 校验 → 写文件 → 立即生效；badLine>0 时拒绝保存（返回出错行号）
+  let r = parseAbbrText(text)
+  if r.badLine > 0: return (0, r.badLine)
+  writeFile(path, text)
+  g_custom = r.table
+  rebuildActive()
+  (g_custom.len, 0)
+
+proc customAbbrText*(path: string): string =
+  ## 给设置页编辑框回填当前文件内容
+  if fileExists(path): readFile(path) else: ""
+
+proc customAbbrEntries*(): seq[(string, string)] =
+  ## 设置页回填用：全部自定义项（含 "-" = 禁用内置缩写），按原词排序
+  result = @[]
+  for k, v in g_custom: result.add((k, v))
+  result.sort(proc (a, b: (string, string)): int = cmp(a[0], b[0]))
+
+proc customAbbrPairs*(): seq[(string, string)] =
+  ## 生效的自定义缩写（不含禁用项），按原词排序
+  result = @[]
+  for k, v in g_custom:
+    if v != "-": result.add((k, v))
+  result.sort(proc (a, b: (string, string)): int = cmp(a[0], b[0]))
+
+proc builtinAbbreviations*(): seq[(string, string)] =
+  ## 设置页「缩略词」的默认行：内置缩写表，按原词排序
+  result = @[]
+  for k, v in g_abbrev: result.add((k, v))
+  result.sort(proc (a, b: (string, string)): int = cmp(a[0], b[0]))
+
+proc builtinStopWords*(): seq[string] =
+  ## 设置页「忽略词」的默认行：内置泛词表，按字母序
+  result = @[]
+  for w in g_stop: result.add(w)
+  result.sort()
+
+# ---------------- 自定义忽略词（fastT\custom_ignore.txt，每行一个词，# 注释） ----------------
+
+# 命中即从命名结果里删掉。优先级最高：同一个词在缩略/忽略两边都填时按忽略处理
+var g_customIgnore = initHashSet[string]()
+# 保留表：内置泛词本来会被删掉，用户显式写 "+word" 表示要保留
+var g_customKeep = initHashSet[string]()
+
+proc parseIgnoreText(text: string): tuple[ignore, keep: HashSet[string]] =
+  ## 每行一个词；"+word" = 保留（不删）；# 注释
+  result.ignore = initHashSet[string]()
+  result.keep = initHashSet[string]()
+  for raw in strutils.splitLines(text):
+    let line = strutils.strip(raw)
+    if line.len == 0 or line.startsWith("#"): continue
+    if line.startsWith("+"):
+      let w = strutils.strip(line[1 .. ^1]).toLowerAscii
+      if w.len > 0: result.keep.incl(w)
+    else:
+      result.ignore.incl(line.toLowerAscii)
+
+proc loadCustomIgnore*(path: string): int =
+  ## 启动时加载；文件不存在/为空 = 无自定义忽略。返回忽略词条数
+  g_customIgnore = initHashSet[string]()
+  g_customKeep = initHashSet[string]()
+  if fileExists(path):
+    let r = parseIgnoreText(readFile(path))
+    g_customIgnore = r.ignore
+    g_customKeep = r.keep
+  g_customIgnore.len
+
+proc saveCustomIgnore*(path, text: string): int =
+  ## 写文件 → 立即生效；返回忽略词条数（空行/注释/+保留行不计）
+  let r = parseIgnoreText(text)
+  writeFile(path, text)
+  g_customIgnore = r.ignore
+  g_customKeep = r.keep
+  r.ignore.len
+
+proc customIgnoreText*(path: string): string =
+  ## 给设置页编辑框回填当前文件内容
+  if fileExists(path): readFile(path) else: ""
+
+proc customIgnoreWords*(): seq[string] =
+  ## 设置页回填用：自定义忽略词（按字母序）
+  result = @[]
+  for w in g_customIgnore: result.add(w)
+  result.sort()
+
+proc customKeepWords*(): seq[string] =
+  ## 设置页回填用：内置泛词里被显式保留的词（按字母序）
+  result = @[]
+  for w in g_customKeep: result.add(w)
+  result.sort()
 
 # ---------------- 拆词 ----------------
 
@@ -275,22 +406,35 @@ proc splitWords*(phrase: string): seq[string] =
 # ---------------- 缩减 ----------------
 
 proc lookupAbbrev(w: string): string =
-  ## 缩写映射，复数自动带 s：messages -> msgs
-  if g_abbrev.hasKey(w): return g_abbrev[w]
+  ## 缩写映射（自定义优先于内置），复数自动带 s：messages -> msgs
+  ## 自定义值 "-" = 明确不缩写，原词返回
+  if g_active.hasKey(w):
+    result = g_active[w]
+    if result == "-": result = w
+    return
   if w.len > 3 and w.endsWith("s"):
     let base = w[0 ..< ^1]
-    if g_abbrev.hasKey(base): return g_abbrev[base] & "s"
-    if base.endsWith("es") and g_abbrev.hasKey(base[0 ..< ^2]):
-      return g_abbrev[base[0 ..< ^2]] & "s"
+    if g_active.hasKey(base):
+      result = g_active[base]
+      if result == "-": return w
+      return result & "s"
+    if base.endsWith("es") and g_active.hasKey(base[0 ..< ^2]):
+      result = g_active[base[0 ..< ^2]]
+      if result == "-": return w
+      return result & "s"
   return w
 
 proc applyReduction*(words: seq[string]): seq[string] =
-  ## 删泛词 + 缩写映射 + 相邻去重；未收录中文字在此丢弃
+  ## 删泛词/忽略词 + 缩写映射 + 相邻去重；未收录中文字在此丢弃。
+  ## 优先级：自定义忽略 > 自定义缩写 > 内置泛词。
+  ## 自定义缩写的原词豁免泛词删除——用户显式给了缩写说明想保留它；
+  ## 保留表（+word）里的内置泛词同样豁免删除。
   result = @[]
   for w in words:
     if w.len == 0: continue
-    if w in g_stop: continue
     if hasNonAscii(w): continue
+    if w in g_customIgnore: continue
+    if w in g_stop and not g_custom.hasKey(w) and w notin g_customKeep: continue
     let a = lookupAbbrev(w)
     if result.len > 0 and result[^1] == a: continue
     result.add(a)
