@@ -31,7 +31,13 @@ const
   DefHistDown = (5, 40)
   DefCopy = (5, 67)
 
-  FmtNames = ["原样", "全小写", "全大写", "驼峰", "下划线", "中划线"]
+  # 命名风格下拉（两项）。存配置沿用旧 FY_FMT_* 代码（3=驼峰 4=snake），
+  # 老配置里的 0/1/2/5 读取时归到驼峰，不用迁移
+  StyleNames = ["snake_case", "驼峰法"]
+  StyleCodes = [FY_FMT_SNAKE, FY_FMT_CAMEL]
+  # 命名对象下拉，选项序 = naming_reducer.NameKind 枚举序，直接下标配对
+  KindNames = ["局部变量", "全局变量", "静态变量", "指针变量",
+               "结构体类型", "宏/常量", "函数"]
 
   # 字体缩放可选档位（百分比）
   UiScalePresets = ["75", "100", "110", "125", "150", "175", "200"]
@@ -54,7 +60,8 @@ type
     autoHide: bool
     summonNearMouse: bool   # 热键显示窗口时出现在鼠标旁
     cacheDir: string
-    wordFmt: int
+    wordFmt: int           # 命名风格（FY_FMT_SNAKE / FY_FMT_CAMEL 两档）
+    nameKind: int          # 命名对象（NameKind 枚举序，0=局部变量 … 6=函数）
     aiEnabled: bool         # AI 接口翻译
     aiUrl: string
     aiKey: string
@@ -89,7 +96,7 @@ var
   g_setFont: HFONT = HFONT(0) # 设置窗口自己的字体（随窗口大小变）
   g_setDesignScale = 1.0      # 设置页设计坐标当前已乘过的系数
   g_uiFont: HFONT = HFONT(0)  # 统一界面字体
-  g_defWinW = 453             # 默认窗口尺寸（逻辑像素）
+  g_defWinW = 550             # 默认窗口尺寸（逻辑像素，宽到能放下按钮行两个下拉）
   g_defWinH = 377
   g_lastToEn = false      # 最近一次翻译的目标是否为英文（是则结果区是要复制的英文）
   g_resultValid = false   # 结果区当前是否有有效内容
@@ -145,7 +152,11 @@ proc loadSettings() =
   g_set.cacheDir = cfgStr("通用设置", "缓存目录", g_appDir)
   if g_set.cacheDir.len == 0: g_set.cacheDir = g_appDir
   g_set.wordFmt = cfgInt("通用设置", "命名格式", FY_FMT_CAMEL)
-  if g_set.wordFmt < 0 or g_set.wordFmt > 5: g_set.wordFmt = FY_FMT_CAMEL
+  # 风格下拉只剩 snake/camel 两档，旧配置里的其它值归到驼峰
+  if g_set.wordFmt != FY_FMT_SNAKE and g_set.wordFmt != FY_FMT_CAMEL:
+    g_set.wordFmt = FY_FMT_CAMEL
+  g_set.nameKind = cfgInt("通用设置", "命名对象", 0)
+  if g_set.nameKind < 0 or g_set.nameKind > 6: g_set.nameKind = 0
   g_set.aiEnabled = cfgBool("AI翻译", "启用", false)
   g_set.aiUrl = cfgStr("AI翻译", "地址", "")
   g_set.aiKey = cfgStr("AI翻译", "密钥", "")
@@ -222,7 +233,8 @@ var
   btnResetSize: wButton
   cmbUiScale: wComboBox
   lblScaleHint: wStaticText
-  cmbCopyMode: wComboBox   # 主窗口按钮行上的复制模式下拉，选中即生效
+  cmbStyle: wComboBox      # 主窗口按钮行：命名风格下拉（snake_case/驼峰法）
+  cmbKind: wComboBox       # 命名对象下拉（局部变量…函数），选中即生效
   cmbAiPreset: wComboBox
   chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi, chkBaidu: wCheckBox
   hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl: wHotkeyCtrl
@@ -983,20 +995,22 @@ proc layoutMain() =
   let resH = S(96) + (extra - extra div 2)
   input.setSize((gap, gap), (w - gap * 2, inH))
   # 按钮行：行高随 DPI 缩放，和字号同步
+  # 宽度按实测文字宽定的（snake_case=94px、结构体类型=90px @YaHei 18px）：
+  # 下拉留 text+30，按钮留 text+18；翻译靠右吃剩余，窗口最小宽保证整行放得下
   let rowY = gap + inH + gap
-  btnZh2En.setSize((S(8), rowY), (S(92), rh))
-  btnEn2Zh.setSize((S(104), rowY), (S(92), rh))
-  btnSettings.setSize((S(200), rowY), (S(62), rh))
-  # 复制模式下拉与按钮同宽同高；翻译靠右吃剩余空间
-  cmbCopyMode.setSize((S(266), rowY), (S(92), rh))
-  btnTrans.setSize((S(362), rowY), (w - S(370), rh))
+  btnZh2En.setSize((S(8), rowY), (S(78), rh))
+  btnEn2Zh.setSize((S(90), rowY), (S(78), rh))
+  btnSettings.setSize((S(172), rowY), (S(54), rh))
+  cmbStyle.setSize((S(230), rowY), (S(122), rh))
+  cmbKind.setSize((S(356), rowY), (S(118), rh))
+  btnTrans.setSize((S(478), rowY), (w - S(486), rh))
   let resultTop = rowY + rh + gap
   resultBox.setSize((gap, resultTop), (w - gap * 2, resH))
 
-proc fitComboVisibleHeight() =
+proc fitComboVisibleHeight(cb: wComboBox) =
   # ComboBox 收起时的可视高度由 item 高度决定，setSize 设的是含下拉列表的总高。
   # 发 CB_SETITEMHEIGHT 把可视高度校准到行高（32 物理像素），量两次收敛
-  let h = cmbCopyMode.getHandle()
+  let h = cb.getHandle()
   let want = rowH()
   var itemH = want - 8
   var rc: RECT
@@ -1083,47 +1097,34 @@ proc histJump(delta: int) =
     fy_free(cast[pointer](s))
     doTranslate(FY_AUTO)
 
-# ---------------- 复制单词 ----------------
-proc copySource(): string =
-  # 复制目标：最近一次翻译是"中→英"且结果有效 → 复制结果区的英文（首行）；
-  # 否则复制输入框内容（英文单词查询时输入就是英文）
-  if g_lastToEn and g_resultValid:
+# ---------------- 命名复制（双击/热键直接出标识符） ----------------
+proc namingSourceText(): string =
+  # 命名素材：优先输入框原文（中文/英文短语都能拆），输入框空了才取结果区首行
+  result = input.getValue().strip()
+  if result.len == 0 and g_lastToEn and g_resultValid:
     let first = resultBox.getValue().splitLines()[0].strip()
     if first.len > 0 and first != "正在翻译……":
-      return first
-  return input.getValue().strip()
+      result = first
 
-proc copyWord(formatted: bool) =
-  let text = copySource()
+proc namingCopy() =
+  # 不用先翻译：按「风格 + 对象」两个下拉直接把短语缩成标识符并复制
+  # 名字同时回显到结果区（g_lastToEn 置位，再双击结果区也能拿到同一个名字）
+  let text = namingSourceText()
   if text.len == 0: return
-  if not formatted:
-    copyText(text)
-    flashTitle("（已复制）")
-  elif g_set.wordFmt in {FY_FMT_RAW, FY_FMT_LOWER}:
-    # 原样/全小写维持旧行为：fy_format_word 后去空白
-    let w = fy_format_word(text.cstring, cint(g_set.wordFmt))
-    if not w.isNil:
-      # 格式化后去掉所有空格（驼峰/下划线/中划线本身无空格，原样/大小写也按要求去空格）
-      let s = ($w).replace(" ", "").replace("\t", "").replace("\r", "").replace("\n", "")
-      copyText(s)
-      fy_free(cast[pointer](w))
-      flashTitle("（已复制：" & s & "）")
+  let style = if g_set.wordFmt == FY_FMT_SNAKE: nsSnake else: nsCamel
+  let kind = NameKind(g_set.nameKind)   # 枚举序即下拉选项序，loadSettings 已钳制
+  let r = reduceName(text, style, kind,
+                     maxWords = g_set.maxWords, maxChars = g_set.maxChars)
+  if r.ok:
+    resultBox.setValue(r.name)
+    g_resultValid = true
+    g_lastToEn = true
+    copyText(r.name)
+    fy_log_write("命名", "%s -> %s", text.cstring, r.name.cstring)
+    flashTitle("（已复制：" & r.name & "）")
   else:
-    # 命名缩减：词表 + 预算裁剪 + 保留字校验（纯本地）
-    # 失败给原因不静默截断；驼峰/下划线/大写/中划线四种格式走这里
-    let style = case g_set.wordFmt
-                of FY_FMT_SNAKE: nsSnake
-                of FY_FMT_UPPER: nsScreamingSnake
-                of FY_FMT_KEBAB: nsKebab
-                else: nsCamel
-    let r = reduceName(text, style,
-                       maxWords = g_set.maxWords, maxChars = g_set.maxChars)
-    if r.ok:
-      copyText(r.name)
-      flashTitle("（已复制：" & r.name & "）")
-    else:
-      fy_log_write("缩减", "%s → %s", text.cstring, r.reason.cstring)
-      flashTitle("（无法缩减：" & r.reason & "）")
+    fy_log_write("命名", "%s -> 失败(%s)", text.cstring, r.reason.cstring)
+    flashTitle("（无法缩减：" & r.reason & "）")
 
 # ---------------- 全局热键注册 ----------------
 proc registerHotkeys() =
@@ -1220,16 +1221,16 @@ proc refreshSettings(target: float) =
   applyFont(setFrame, g_setFont)
 
 proc computeDefWinSize(): tuple[w, h: int] =
-  ## 默认窗口尺寸：宽 453、高度刚好放下 输入框/按钮行/结果框（随字体缩放变化）
+  ## 默认窗口尺寸：宽 550（按钮行六控件）、高度刚好放下 输入框/按钮行/结果框（随字体缩放变化）
   let chrome = int(frame.getSize().height) - int(frame.getClientSize().height)
   let contentH = dpx(8) + dpx(96) + dpx(8) + rowH() + dpx(8) + dpx(96) + dpx(8)
-  result.w = max(280, int(453.0 * g_uiScale))
+  result.w = max(546, int(550.0 * g_uiScale))
   result.h = max(200, contentH + chrome)
 
 proc applyWinSize(w, h: int) =
   var wl = float(w)
   var hl = float(h)
-  if wl < 420.0: wl = 420.0
+  if wl < 546.0: wl = 546.0   # 按钮行放两个下拉后的最窄需求
   if hl < 260.0: hl = 260.0
   frame.size = (int(wl), int(hl))
 
@@ -1341,7 +1342,8 @@ proc saveSettings() =
     g_defWinW = def.w
     g_defWinH = def.h
     layoutMain()
-    fitComboVisibleHeight()
+    fitComboVisibleHeight(cmbStyle)
+    fitComboVisibleHeight(cmbKind)
     syncSizeFields()
     # 设置窗口：同样按比例缩放，并立刻重排里面的字和控件
     if not setFrame.isNil and setFrame.getHandle() != HWND(0):
@@ -1538,22 +1540,24 @@ proc main() =
 
   # 主窗口：配置存物理像素，换算成 wNim 逻辑值传入
   # 每次启动固定默认大小；运行期间用户调整的尺寸在隐藏/召唤间自动保留
+  # 默认宽 550：按钮行要放下 中英/英中/设置/风格下拉/对象下拉/翻译 六个控件
   frame = Frame(title=AppTitle,
-                size=(int(453.0 * g_uiScale), int(377.0 * g_uiScale)))
+                size=(int(550.0 * g_uiScale), int(377.0 * g_uiScale)))
   frame.icon = Icon("", 0)
-  frame.minSize = (280, 200)   # 固定最小尺寸，不随档位变（档位随时可改）
+  frame.minSize = (546, 200)   # 比按钮行最窄需求略宽，不随档位变（档位随时可改）
 
   panel = Panel(frame)
   input = TextCtrl(panel, style=wTeMultiLine or wTeRich)
   btnZh2En = Button(panel, label="中 > 英")
   btnEn2Zh = Button(panel, label="英 > 中")
   btnSettings = Button(panel, label="设置")
-  cmbCopyMode = ComboBox(panel, style=wCbReadOnly)
+  cmbStyle = ComboBox(panel, style=wCbReadOnly)
+  cmbKind = ComboBox(panel, style=wCbReadOnly)
   btnTrans = Button(panel, label="翻译")
   resultBox = TextCtrl(panel, style=wTeMultiLine or wTeRich or wTeReadOnly)
 
   # 窗口高度按内容自适应：边距8 + 输入96 + 间距8 + 按钮行 + 间距8 + 结果96 + 边距8
-  # 宽度仍默认 453；用实测的边框/标题栏差值把客户区顶到刚好放下内容
+  # 宽度默认 550；用实测的边框/标题栏差值把客户区顶到刚好放下内容
   block:
     # 默认尺寸：宽 453、高度刚好放下内容；设置页保存过就沿用保存值（像素）
     let def = computeDefWinSize()
@@ -1591,7 +1595,7 @@ proc main() =
     of HkToggle: toggleMain()
     of HkHistUp: histJump(-1)
     of HkHistDown: histJump(1)
-    of HkCopy: copyWord(true)
+    of HkCopy: namingCopy()
     else: discard
   frame.wEvent_Timer do (event: wEvent):
     # 88 = 标题反馈到期，恢复原标题
@@ -1611,30 +1615,34 @@ proc main() =
     doTranslate(FY_ZH2EN)
   btnEn2Zh.wEvent_Button do ():
     doTranslate(FY_EN2ZH)
-  cmbCopyMode.wEvent_ComboBox do ():
-    # 复制模式即时生效并写配置，不用进设置页保存
-    g_set.wordFmt = cmbCopyMode.getSelection()
+  cmbStyle.wEvent_ComboBox do ():
+    # 风格/对象两个下拉都即时生效并写配置，不用进设置页保存
+    g_set.wordFmt = StyleCodes[cmbStyle.getSelection()]
     fy_cfg_set(g_cfg, "通用设置", "命名格式", $g_set.wordFmt)
     discard fy_cfg_save(g_cfg)
-    fy_log_write("设置", "复制模式即时切换=%d", cint(g_set.wordFmt))
+    fy_log_write("设置", "命名风格即时切换=%d", cint(g_set.wordFmt))
+  cmbKind.wEvent_ComboBox do ():
+    g_set.nameKind = cmbKind.getSelection()
+    fy_cfg_set(g_cfg, "通用设置", "命名对象", $g_set.nameKind)
+    discard fy_cfg_save(g_cfg)
+    fy_log_write("设置", "命名对象即时切换=%d", cint(g_set.nameKind))
   btnTrans.wEvent_Button do ():
     doTranslate(FY_AUTO)
   btnSettings.wEvent_Button do ():
     openSettings()
   input.wEvent_TextEnter do ():
     doTranslate(FY_AUTO)
+  # 双击=按当前「风格+对象」直接生成命名并复制（Ctrl 不再区分，老 Ctrl+双击一样走这里）
   input.wEvent_LeftDoubleClick do (event: wEvent):
-    let ctrlDown = (GetKeyState(VK_CONTROL) and 0x8000) != 0
-    copyWord(ctrlDown)
-  # 结果区也支持：双击复制原文/英文，Ctrl+双击按命名格式复制
+    namingCopy()
   resultBox.wEvent_LeftDoubleClick do (event: wEvent):
-    let ctrlDown = (GetKeyState(VK_CONTROL) and 0x8000) != 0
-    copyWord(ctrlDown)
+    namingCopy()
 
   g_uiFont = makeUiFont()
   applyUiFont(frame)
   layoutMain()
-  fitComboVisibleHeight()
+  fitComboVisibleHeight(cmbStyle)
+  fitComboVisibleHeight(cmbKind)
   frame.setTrayIcon(Icon("", 0), AppTitle & "（双击显示/隐藏）")
 
   # 设置窗口：按「字体缩放」给默认尺寸建窗（先量客户区当缩放基准），再套用用户保存的大小
@@ -1828,8 +1836,10 @@ proc main() =
   hookWheel(lblIgnoreStatus, WheelTagIgnore)
   hookWheel(btnSaveIgnore, WheelTagIgnore)
 
-  cmbCopyMode.append(FmtNames)
-  cmbCopyMode.setSelection(g_set.wordFmt)
+  cmbStyle.append(StyleNames)
+  cmbStyle.setSelection(if g_set.wordFmt == FY_FMT_SNAKE: 0 else: 1)
+  cmbKind.append(KindNames)
+  cmbKind.setSelection(g_set.nameKind)
   for p in AiPresets:
     cmbAiPreset.append(if p[0].len == 0: "选择预设…" else: p[0])
   cmbAiPreset.setSelection(0)

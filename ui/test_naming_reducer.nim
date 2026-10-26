@@ -26,6 +26,29 @@ proc checkFail(phrase: string, style: NamingStyle, mw, mc: int, reasonPart: stri
     let got = if r.ok: r.name else: r.reason
     echo "FAIL  " & phrase & "  ->  got " & got & "  want 失败(" & reasonPart & ")"
 
+proc checkK(phrase: string, style: NamingStyle, kind: NameKind,
+            mw, mc: int, expect: string) =
+  let r = reduceName(phrase, style, kind, maxWords = mw, maxChars = mc)
+  if r.ok and r.name == expect:
+    inc gPass
+    echo "PASS  [" & $kind & "] " & phrase & "  ->  " & r.name
+  else:
+    inc gFail
+    let got = if r.ok: r.name else: "失败(" & r.reason & ")"
+    echo "FAIL  [" & $kind & "] " & phrase & "  ->  got " & got & "  want " & expect
+
+proc checkFailK(phrase: string, style: NamingStyle, kind: NameKind,
+                mw, mc: int, reasonPart: string) =
+  let r = reduceName(phrase, style, kind, maxWords = mw, maxChars = mc)
+  if (not r.ok) and r.reason.contains(reasonPart):
+    inc gPass
+    echo "PASS  [" & $kind & "] " & phrase & "  ->  失败(" & r.reason & ")"
+  else:
+    inc gFail
+    let got = if r.ok: r.name else: r.reason
+    echo "FAIL  [" & $kind & "] " & phrase & "  ->  got " & got &
+         "  want 失败(" & reasonPart & ")"
+
 # —— 中文场景（题目给的三个用例）——
 # 注：读取/状态 这类核心词按设计保留，不会为凑短静默丢词
 check("串口初始化程序", nsCamel, 4, 40, "serialPortInit")
@@ -48,6 +71,24 @@ check("HTTP 服务器状态", nsCamel, 4, 40, "httpServerState")
 # —— 其它风格 ——
 check("数据库连接池", nsCamel, 3, 40, "dbConnPool")
 check("配置文件读取路径", nsKebab, 4, 40, "config-file-read-path")
+
+# —— 命名对象：C 惯例前缀/大小写（全局 g、静态 s、指针 p、宏全大写、类型 _t）——
+checkK("led 初始化", nsSnake, nkFunc, 4, 40, "led_init")
+checkK("led 初始化", nsCamel, nkFunc, 4, 40, "ledInit")
+checkK("led 状态", nsSnake, nkLocal, 4, 40, "led_state")
+checkK("led 状态", nsCamel, nkLocal, 4, 40, "ledState")
+checkK("用户登录状态", nsSnake, nkGlobal, 4, 40, "g_user_login_state")
+checkK("用户登录状态", nsCamel, nkGlobal, 4, 40, "gUserLoginState")
+checkK("led 状态", nsSnake, nkStatic, 4, 40, "s_led_state")
+checkK("led 状态", nsCamel, nkStatic, 4, 40, "sLedState")
+checkK("数据缓冲区", nsSnake, nkPointer, 4, 40, "p_data_buf")
+checkK("数据缓冲区", nsCamel, nkPointer, 4, 40, "pDataBuf")
+checkK("最大长度", nsSnake, nkMacro, 4, 40, "MAX_LEN")
+checkK("最大长度", nsCamel, nkMacro, 4, 40, "MAX_LEN")  # 宏不受风格影响，恒全大写
+checkK("串口控制", nsSnake, nkType, 4, 40, "SerialPortControl_t")
+checkK("串口控制", nsCamel, nkType, 4, 40, "SerialPortControl")
+# 前缀计入预算：p_ + read 6 字符 > 5 → 报超出预算而不是硬塞
+checkFailK("配置文件读取路径", nsSnake, nkPointer, 4, 5, "超出预算")
 
 # —— 保留字冲突：加下划线后缀，不静默截断 ——
 check("class", nsSnake, 4, 40, "class_")
@@ -75,28 +116,28 @@ block:
   var v = 0
   # 无文件 → 纯内置：configuration→config
   let n0 = loadCustomAbbreviations(tmp)
-  if n0 == 0 and reduceName("configuration reader", nsCamel, 4, 40).name == "configReader":
+  if n0 == 0 and reduceName("configuration reader", nsCamel, maxWords = 4, maxChars = 40).name == "configReader":
     inc v
   else: dec v; echo "  [自定义] 初始内置异常: n0=" & $n0
 
   # 覆盖内置：configuration→cfg；service 本是泛词，自定义后豁免删除并缩写
   let s1 = saveCustomAbbreviations(tmp, "configuration = cfg\nservice = svc\n")
   if s1.badLine == 0 and s1.count == 2 and
-      reduceName("configuration reader", nsCamel, 4, 40).name == "cfgReader" and
-      reduceName("service status", nsCamel, 4, 40).name == "svcStatus":
+      reduceName("configuration reader", nsCamel, maxWords = 4, maxChars = 40).name == "cfgReader" and
+      reduceName("service status", nsCamel, maxWords = 4, maxChars = 40).name == "svcStatus":
     inc v
   else: dec v; echo "  [自定义] 覆盖内置异常: " & $s1.count & "," & $s1.badLine
 
   # 坏行（缺 =）拒绝保存，原表不受影响
   let s2 = saveCustomAbbreviations(tmp, "novalue\nservice = svc\n")
-  if s2.badLine == 1 and reduceName("configuration reader", nsCamel, 4, 40).name == "cfgReader":
+  if s2.badLine == 1 and reduceName("configuration reader", nsCamel, maxWords = 4, maxChars = 40).name == "cfgReader":
     inc v
   else: dec v; echo "  [自定义] 坏行拒绝异常: badLine=" & $s2.badLine
 
   # 清空文本 → 恢复纯内置
   let s3 = saveCustomAbbreviations(tmp, "# 全删\n\n")
   if s3.badLine == 0 and s3.count == 0 and
-      reduceName("configuration reader", nsCamel, 4, 40).name == "configReader":
+      reduceName("configuration reader", nsCamel, maxWords = 4, maxChars = 40).name == "configReader":
     inc v
   else: dec v; echo "  [自定义] 清空恢复异常: " & $s3.count
 
@@ -119,20 +160,20 @@ block:
 
   var v = 0
   # 无文件：status 是核心词，照旧保留
-  let base = reduceName("user login status cache", nsCamel, 4, 40).name
+  let base = reduceName("user login status cache", nsCamel, maxWords = 4, maxChars = 40).name
   if base == "userLoginStatusCache": inc v
   else: dec v; echo "  [忽略] 基线异常: " & base
 
   # 加入忽略：status 被直接删掉
   let n1 = saveCustomIgnore(tmpIgn, "# 测试\nstatus\n\n")
-  let r1 = reduceName("user login status cache", nsCamel, 4, 40).name
+  let r1 = reduceName("user login status cache", nsCamel, maxWords = 4, maxChars = 40).name
   if n1 == 1 and r1 == "userLoginCache": inc v
   else: dec v; echo "  [忽略] 生效异常: n=" & $n1 & " -> " & r1
 
   # 忽略优先于自定义缩写（service 两边都填 → 删掉）；取数按字母序
   discard saveCustomAbbreviations(tmpAbbr, "service = svc\n")
   discard saveCustomIgnore(tmpIgn, "zeta\nalpha\nservice\n")
-  let r2 = reduceName("service login", nsCamel, 4, 40)
+  let r2 = reduceName("service login", nsCamel, maxWords = 4, maxChars = 40)
   let words = customIgnoreWords()
   if r2.ok and r2.name == "login" and words == @["alpha", "service", "zeta"]:
     inc v
@@ -142,7 +183,7 @@ block:
 
   # 清空 → 恢复
   if saveCustomIgnore(tmpIgn, "") == 0 and
-      reduceName("user login status cache", nsCamel, 4, 40).name ==
+      reduceName("user login status cache", nsCamel, maxWords = 4, maxChars = 40).name ==
         "userLoginStatusCache":
     inc v
   else: dec v; echo "  [忽略] 清空恢复异常"
@@ -168,21 +209,21 @@ block:
 
   var v = 0
   # 基线：内置把 initialization 缩成 init，detail 作为内置泛词被删
-  let b0 = reduceName("initialization detail", nsCamel, 3, 40)
+  let b0 = reduceName("initialization detail", nsCamel, maxWords = 3, maxChars = 40)
   if b0.ok and b0.name == "init": inc v
   else: dec v; echo "  [内置] 基线异常: " & b0.name
 
   # 删掉内置缩写行（原词=-）：该词保留、不再缩写，复数同样不缩
   discard saveCustomAbbreviations(tmpAbbr, "initialization=-\n")
-  let d1 = reduceName("initialization", nsCamel, 3, 40)
-  let d2 = reduceName("initializations", nsCamel, 3, 40)
+  let d1 = reduceName("initialization", nsCamel, maxWords = 3, maxChars = 40)
+  let d2 = reduceName("initializations", nsCamel, maxWords = 3, maxChars = 40)
   if d1.ok and d1.name == "initialization" and d2.ok and d2.name == "initializations":
     inc v
   else: dec v; echo "  [禁用缩写] 异常: " & d1.name & " / " & d2.name
 
   # 删掉内置泛词行（+detail）：detail 不再被删
   discard saveCustomIgnore(tmpIgn, "+detail\n")
-  let k1 = reduceName("initialization detail", nsCamel, 3, 40)
+  let k1 = reduceName("initialization detail", nsCamel, maxWords = 3, maxChars = 40)
   if k1.ok and k1.name == "initializationDetail": inc v
   else: dec v; echo "  [保留泛词] 异常: " & k1.name
 
@@ -209,7 +250,7 @@ block:
   # 清空 → 恢复默认
   discard saveCustomAbbreviations(tmpAbbr, "")
   discard saveCustomIgnore(tmpIgn, "")
-  let z = reduceName("initialization detail", nsCamel, 3, 40)
+  let z = reduceName("initialization detail", nsCamel, maxWords = 3, maxChars = 40)
   if z.ok and z.name == "init" and customKeepWords().len == 0: inc v
   else: dec v; echo "  [清空恢复] 异常: " & z.name
 

@@ -15,20 +15,20 @@ type
     nsScreamingSnake ## SCREAMING_SNAKE
     nsKebab          ## kebab-case（文件名/URL 场景，非严格标识符）
 
+  ## 命名对象：决定前缀/大小写套路，序号即主窗口「命名对象」下拉的选项序
   NameKind* = enum
-    nkVariable, nkFunction, nkClass, nkConstant
+    nkLocal    ## 局部变量
+    nkGlobal   ## 全局变量（snake: g_ 前缀，驼峰: g+帕斯卡）
+    nkStatic   ## 静态变量（s_ / s+帕斯卡）
+    nkPointer  ## 指针变量（p_ / p+帕斯卡）
+    nkType     ## 结构体/类型（帕斯卡；snake 风格时带 _t 后缀）
+    nkMacro    ## 宏/常量（恒为 SCREAMING_SNAKE）
+    nkFunc     ## 函数
 
   ReduceResult* = object
     ok*: bool
     name*: string   ## 成功时的标识符
     reason*: string ## 失败原因
-
-proc defaultStyle*(kind: NameKind): NamingStyle =
-  ## 命名类型的推荐风格
-  case kind
-  of nkVariable, nkFunction: nsCamel
-  of nkClass: nsPascal
-  of nkConstant: nsScreamingSnake
 
 # ---------------- 规则表 ----------------
 
@@ -175,6 +175,7 @@ const zhTerms* = [
   ("源", "source"), ("目标", "target"), ("地址簿", "address book"),
   ("主题", "theme"), ("滚动", "scroll"), ("拖拽", "drag"),
   ("选择", "select"), ("管理", "manage"), ("处理", "process"),
+  ("控制", "control"),
   ("执行", "execute"), ("运行", "run"), ("调度", "schedule"),
   ("分配", "allocate"), ("释放", "release"), ("申请", "apply"),
 ]
@@ -507,21 +508,47 @@ proc validateIdent*(name: string, reserved: HashSet[string]): bool =
 
 # ---------------- 主入口 ----------------
 
-proc reduceName*(phrase: string, style: NamingStyle,
+proc reduceName*(phrase: string, style: NamingStyle, kind = nkLocal,
                  maxWords = 4, maxChars = 40): ReduceResult =
-  ## 短语 → 合法标识符。任何失败都带原因返回，绝不静默截断
+  ## 短语 → 合法标识符。kind 按对象套 C 命名惯例：
+  ## 全局/静态/指针加前缀（g_/s_/p_ 或 g+s帕斯卡），宏恒 SCREAMING，
+  ## 类型帕斯卡（snake 风格时补 _t）。任何失败都带原因返回，绝不静默截断
   let mw = max(maxWords, 1)
   let mc = max(maxChars, 2)
+  # 对象 → 实际风格 + 前后缀；例：系统滴答 snake+全局 = g_system_tick，驼峰 = gSystemTick
+  var eff = style
+  var prefix = ""
+  var suffix = ""
+  case kind
+  of nkLocal, nkFunc:
+    discard
+  of nkMacro:
+    eff = nsScreamingSnake
+  of nkType:
+    eff = nsPascal
+    if style == nsSnake: suffix = "_t"
+  of nkGlobal, nkStatic, nkPointer:
+    let p = case kind
+            of nkGlobal: "g"
+            of nkStatic: "s"
+            else: "p"
+    if style == nsSnake:
+      prefix = p & "_"
+    else:
+      eff = nsPascal
+      prefix = p
+  # 预算扣掉前后缀，别让前缀把名字挤超长；预算过小时 trim 到底后由长度检查报失败
+  let innerMax = mc - prefix.len - suffix.len
   let words = splitWords(phrase)
   if words.len == 0:
     return ReduceResult(ok: false, reason: "空输入")
   let reduced = applyReduction(words)
   if reduced.len == 0:
     return ReduceResult(ok: false, reason: "全部为泛词或未收录词")
-  let trimmed = trimToBudget(reduced, mw, mc, style)
+  let trimmed = trimToBudget(reduced, mw, innerMax, eff)
   if trimmed.len == 0:
     return ReduceResult(ok: false, reason: "无法在约束内缩减")
-  let name = formatIdent(trimmed, style)
+  let name = prefix & formatIdent(trimmed, eff) & suffix
   if name.len > mc:
     return ReduceResult(ok: false, reason: "超出预算（最短仍超 maxChars）")
   if validateIdent(name, reservedSet):
