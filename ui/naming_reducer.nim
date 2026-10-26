@@ -399,6 +399,140 @@ proc customKeepWords*(): seq[string] =
   for w in g_customKeep: result.add(w)
   result.sort()
 
+# ---------------- 自定义常用词（fastT\custom_preferred.txt，每行 中文=英文，# 注释） ----------------
+# 「常用词」设置页维护：改英文=覆盖内置映射（串口=serial port），中文=- 停用内置映射，
+# 也可以加全新词条（气泵=pump）。自定义英文词自动获得常用词待遇（不删不缩写）。
+# 键限定：内置「词库」映射的中文，或全新中文；内置普通映射（配置→configuration）不归这页管。
+
+var g_customZh = initTable[string, string]()  # 中文 → 英文（含对内置词库映射的覆盖）
+var g_zhOff = initHashSet[string]()           # 被停用的内置词库映射（中文）
+var g_preferredCustom = initHashSet[string]() # 自定义英文词（享受常用词待遇）
+
+proc isPreferredWord(w: string): bool =
+  ## 自定义词库的英文词：纯字母/数字，1..20 字符
+  if w.len == 0 or w.len > 20: return false
+  for c in w:
+    if not (c in {'a'..'z', 'A'..'Z', '0'..'9'}): return false
+  true
+
+proc parsePreferredText(text: string): tuple[table: Table[string, string],
+                                             badLine: int] =
+  ## 解析编辑框文本；badLine>0 = 该行有问题，整体拒绝（和缩略词文件同一策略）
+  result.table = initTable[string, string]()
+  var i = 0
+  for raw in strutils.splitLines(text):
+    inc i
+    let line = strutils.strip(raw)
+    if line.len == 0 or line.startsWith("#"): continue
+    let eq = line.find('=')
+    if eq <= 0:
+      result.badLine = i
+      return
+    let zh = strutils.strip(line[0 ..< eq])
+    var en = strutils.strip(line[eq + 1 ..^ 1])
+    if zh.len == 0 or en.len == 0:
+      result.badLine = i
+      return
+    # 键必须含中文且 ≤8 字（纯英文键在拆词时走不到中文词表，永远匹配不上）
+    var hasCjk = false
+    for r in toRunes(zh):
+      if r.int >= 0x2E80: hasCjk = true
+    if not hasCjk or toRunes(zh).len > 8:
+      result.badLine = i
+      return
+    # 内置词条只允许动「词库」映射；普通映射（配置→configuration）不在本页范围
+    if g_zh.hasKey(zh):
+      let first = strutils.split(g_zh[zh], ' ')[0]
+      if first notin g_preferred:
+        result.badLine = i
+        return
+    if en != "-":
+      var words: seq[string] = @[]
+      for w in strutils.split(en, ' '):
+        if w.len > 0: words.add(w)
+      if words.len == 0 or words.len > 4:
+        result.badLine = i
+        return
+      for w in words:
+        if not isPreferredWord(w):
+          result.badLine = i
+          return
+      en = words.join(" ")
+    result.table[zh] = en
+
+proc applyCustomPreferred(t: Table[string, string]) =
+  ## 把解析结果套进运行时表（加载/保存共用）
+  g_customZh = initTable[string, string]()
+  g_zhOff = initHashSet[string]()
+  g_preferredCustom = initHashSet[string]()
+  for zh, en in t:
+    if en == "-":
+      g_zhOff.incl(zh)
+    else:
+      g_customZh[zh] = en
+      for w in strutils.split(en, ' '):
+        if w.len > 0: g_preferredCustom.incl(w)
+
+proc loadCustomPreferred*(path: string): int =
+  ## 启动时加载；文件不存在/为空 = 无自定义。返回自定义条数（含停用）
+  g_customZh = initTable[string, string]()
+  g_zhOff = initHashSet[string]()
+  g_preferredCustom = initHashSet[string]()
+  if fileExists(path):
+    let r = parsePreferredText(readFile(path))
+    if r.badLine == 0: applyCustomPreferred(r.table)
+  g_customZh.len + g_zhOff.len
+
+proc saveCustomPreferred*(path, text: string): tuple[count, badLine: int] =
+  ## 校验 → 写文件 → 立即生效；badLine>0 时拒绝保存（返回出错行号）
+  let r = parsePreferredText(text)
+  if r.badLine > 0: return (0, r.badLine)
+  writeFile(path, text)
+  applyCustomPreferred(r.table)
+  (g_customZh.len + g_zhOff.len, 0)
+
+proc customPreferredText*(path: string): string =
+  ## 给设置页编辑框回填当前文件内容
+  if fileExists(path): readFile(path) else: ""
+
+proc customPreferredEntries*(): seq[(string, string)] =
+  ## 全部自定义条目（含 "-" = 停用），按中文排序
+  result = @[]
+  for k, v in g_customZh: result.add((k, v))
+  for k in g_zhOff: result.add((k, "-"))
+  result.sort(proc (a, b: (string, string)): int = cmp(a[0], b[0]))
+
+proc customPreferredPairs*(): seq[(string, string)] =
+  ## 生效的自定义映射（不含停用项），按中文排序
+  for e in customPreferredEntries():
+    if e[1] != "-": result.add(e)
+
+proc builtinPreferredPairs*(): seq[(string, string)] =
+  ## 内置词库映射（值的第一个词属于常用词库），按中文排序；「常用词」页的内置行
+  result = @[]
+  for zh, en in g_zh:
+    let first = strutils.split(en, ' ')[0]
+    if first in g_preferred: result.add((zh, en))
+  result.sort(proc (a, b: (string, string)): int = cmp(a[0], b[0]))
+
+proc builtinZhKind*(zh: string): int =
+  ## 0=不在内置词表 1=内置词库映射（本页可改可删）2=内置普通映射（本页不管）
+  if not g_zh.hasKey(zh): return 0
+  let first = strutils.split(g_zh[zh], ' ')[0]
+  if first in g_preferred: return 1
+  2
+
+proc preferredMerge*(): seq[(string, string)] =
+  ## 内置 + 自定义合并：自定义覆盖内置，"-" = 停用（不出行），按中文排序
+  var t = initTable[string, string]()
+  for (zh, en) in builtinPreferredPairs(): t[zh] = en
+  for (zh, en) in customPreferredEntries():
+    if en == "-": t.del(zh)
+    else: t[zh] = en
+  result = @[]
+  for k, v in t: result.add((k, v))
+  result.sort(proc (x, y: (string, string)): int = cmp(x[0], y[0]))
+
 # ---------------- 拆词 ----------------
 
 proc hasNonAscii(s: string): bool =
@@ -457,13 +591,19 @@ proc splitWords*(phrase: string): seq[string] =
         result.add(splitAsciiWords(asciiBuf))
         asciiBuf = ""
       var matched = false
-      for l in countdown(6, 1):
+      for l in countdown(8, 1):   # 内置最长 6 字，自定义词条可到 8 字
         if i + l <= runes.len:
           var term = ""
           for j in i ..< i + l:
             term.add(runes[j].toUTF8())
-          if g_zh.hasKey(term):
-            for w in strutils.split(g_zh[term], ' '):
+          # 自定义词库映射优先；被停用（中文=-）的内置映射当作没这条，继续试更短的
+          var en = ""
+          if g_customZh.hasKey(term):
+            en = g_customZh[term]
+          elif g_zh.hasKey(term) and term notin g_zhOff:
+            en = g_zh[term]
+          if en.len > 0:
+            for w in strutils.split(en, ' '):
               if w.len > 0: result.add(w)
             i += l
             matched = true
@@ -488,7 +628,8 @@ proc lookupAbbrev(w: string): string =
     return
   if w.len > 3 and w.endsWith("s"):
     let base = w[0 ..< ^1]
-    if base in g_preferred: return w   # 常用词的复数不缩写：buttons -> buttons
+    if base in g_preferred or base in g_preferredCustom:
+      return w   # 常用词（含自定义）的复数不缩写：buttons -> buttons
     if g_active.hasKey(base):
       result = g_active[base]
       if result == "-": return w
@@ -515,7 +656,7 @@ proc applyReduction*(words: seq[string]): seq[string] =
       if result.len > 0 and result[^1] == a: continue
       result.add(a)
       continue
-    if w in g_preferred:
+    if w in g_preferred or w in g_preferredCustom:
       if result.len > 0 and result[^1] == w: continue
       result.add(w)
       continue

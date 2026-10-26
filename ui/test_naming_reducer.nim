@@ -282,6 +282,71 @@ block:
     gFail += 5 - v
     echo "FAIL  内置行可删可改 " & $v & "/5"
 
+# —— 自定义常用词：覆盖 / 停用 / 新增 / 坏行拒绝 / 清空恢复 ——
+block:
+  let tmp = getTempDir() / "ky_pref_test.txt"
+  removeFile(tmp)
+
+  var v = 0
+  # 无文件 → 纯内置：串口→uart，uart 在常用词库里
+  let n0 = loadCustomPreferred(tmp)
+  if n0 == 0 and
+      reduceName("串口初始化", nsSnake, maxWords = 4, maxChars = 40).name ==
+        "uart_init" and
+      builtinPreferredPairs().len > 80:
+    inc v
+  else: dec v; echo "  [常用词] 内置基线异常: n0=" & $n0
+
+  # 覆盖内置：串口→serial port（自定义词也享受常用词待遇，serial/port 不缩写不删）
+  let s1 = saveCustomPreferred(tmp, "串口=serial port\n")
+  if s1.badLine == 0 and s1.count == 1 and
+      reduceName("串口初始化", nsSnake, maxWords = 4, maxChars = 40).name ==
+        "serial_port_init":
+    inc v
+  else: dec v; echo "  [常用词] 覆盖异常: " & $s1.count & "," & $s1.badLine
+
+  # 全新词条 + 停用内置：气泵=pump、蜂鸣器=-（停用后回退命中更短的 蜂鸣→beep）
+  discard saveCustomPreferred(tmp, "气泵=pump\n蜂鸣器=-\n")
+  let r3a = reduceName("气泵启动", nsSnake, maxWords = 4, maxChars = 40).name
+  let r3b = reduceName("蜂鸣器响", nsSnake, maxWords = 4, maxChars = 40).name
+  if r3a == "pump_start" and r3b == "beep":
+    inc v
+  else: dec v; echo "  [常用词] 新增/停用异常: " & r3a & " / " & r3b
+
+  # 坏行（缺 = / 纯英文键）拒绝保存，原表不受影响
+  let s4 = saveCustomPreferred(tmp, "badline\n")
+  let s5 = saveCustomPreferred(tmp, "usb=usb\n")
+  if s4.badLine == 1 and s5.badLine == 1 and
+      reduceName("气泵启动", nsSnake, maxWords = 4, maxChars = 40).name ==
+        "pump_start":
+    inc v
+  else: dec v; echo "  [常用词] 坏行拒绝异常: " & $s4.badLine & "," & $s5.badLine
+
+  # 合并视图：自定义条目出现，被停用的内置条目不出现
+  var hasQibeng = false
+  var hasFengmingqi = false
+  for (zh, en) in preferredMerge():
+    if zh == "气泵" and en == "pump": hasQibeng = true
+    if zh == "蜂鸣器": hasFengmingqi = true
+  if hasQibeng and not hasFengmingqi: inc v
+  else: dec v; echo "  [常用词] 合并视图异常"
+
+  # 清空 → 恢复纯内置
+  let s6 = saveCustomPreferred(tmp, "# 全删\n\n")
+  if s6.badLine == 0 and s6.count == 0 and
+      reduceName("串口初始化", nsSnake, maxWords = 4, maxChars = 40).name ==
+        "uart_init":
+    inc v
+  else: dec v; echo "  [常用词] 清空恢复异常: " & $s6.count
+
+  removeFile(tmp)
+  if v == 6:
+    inc gPass
+    echo "PASS  自定义常用词 6/6（覆盖/新增停用/坏行拒绝/合并视图/清空恢复）"
+  else:
+    gFail += 6 - v
+    echo "FAIL  自定义常用词 " & $v & "/6"
+
 echo "----------------------------------------"
 echo "总计: " & $gPass & " 通过, " & $gFail & " 失败"
 if gFail > 0:

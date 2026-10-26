@@ -240,16 +240,18 @@ var
   hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl: wHotkeyCtrl
   g_checkingUpdate = false
 
-# ---------------- 自定义缩略 / 忽略（设置页最后两页） ----------------
-# 两页都显示「内置 + 自定义」的合并列表，内置行也能改、能删：
+# ---------------- 自定义缩略 / 忽略 / 常用词（设置页最后三页） ----------------
+# 三页都显示「内置 + 自定义」的合并列表，内置行也能改、能删：
 #   缩略页删行 = 该词不再缩写（文件里记 `原词=-`）
 #   忽略页删行 = 该内置泛词保留（文件里记 `+原词`）
+#   常用词页改英文 = 覆盖内置映射（串口=serial port），删行 = 停用该映射（文件里记 `中文=-`），
+#                   也可加全新词条（气泵=pump）；自定义英文词自动享受常用词待遇
 # 每行控件懒创建、只隐藏不销毁（运行期销毁 wNim 控件不安全），行槽上限 AbbrMaxRows。
 const
   AbbrTop = 116         # 行区起始 y（逻辑像素；上方两行提示各占 50）
   AbbrRowH = 32         # 行距
   AbbrViewRows = 10     # 每页可见行数
-  AbbrMaxRows = 240     # 行槽上限（内置约 130 条，其余留给自定义）
+  AbbrMaxRows = 240     # 行槽上限（缩略约 60 + 忽略约 65 + 常用词约 100，其余留给自定义）
 
 type
   AbbrRowCtl = object
@@ -261,20 +263,30 @@ type
     word: wTextCtrl
     del: wButton
 
+  PrefRowCtl = object
+    zh, en: wTextCtrl
+    arrow: wStaticText
+    del: wButton
+
 var
   nbSet: wNoteBook
-  pageAbbr, pageIgnore: wPanel
+  pageAbbr, pageIgnore, pagePreferred: wPanel
   abbrRows: seq[AbbrRowCtl]
   ignoreRows: seq[IgnoreRowCtl]
+  prefRows: seq[PrefRowCtl]
   abbrCount = 0           # 当前显示行数（含末尾空行）
   ignoreCount = 0
+  prefCount = 0
   abbrScroll = 0          # 顶部行索引
   ignoreScroll = 0
-  sbAbbr, sbIgnore: wScrollBar
+  prefScroll = 0
+  sbAbbr, sbIgnore, sbPref: wScrollBar
   btnAddAbbr, btnAddIgnore, btnSaveAbbr, btnSaveIgnore: wButton
-  lblAbbrStatus, lblIgnoreStatus: wStaticText
+  btnAddPref, btnSavePref: wButton
+  lblAbbrStatus, lblIgnoreStatus, lblPrefStatus: wStaticText
   g_abbrOverflow = false  # 文件条数超过行槽上限：禁止保存，避免静默截断
   g_ignOverflow = false
+  g_prefOverflow = false
 
 proc rowH(): int {.inline.} =
   # 按钮行高：逻辑 32px 按 DPI 放大，跟字号一起变
@@ -384,6 +396,7 @@ const
   # 字面量整体乘缩放系数），直接写 hookWheel(pageAbbr, 1) 在非 100% 下会变成 2。
   WheelTagAbbr = 1
   WheelTagIgnore = 2
+  WheelTagPreferred = 3
 
 type WheelProc = proc (hWnd: HWND, uMsg: UINT, wParam: WPARAM, lParam: LPARAM,
                        uIdSubclass: UINT_PTR, dwRefData: DWORD_PTR): LRESULT {.stdcall.}
@@ -397,6 +410,8 @@ proc DefSubclassProc(hWnd: HWND, uMsg: UINT, wParam: WPARAM,
 
 proc scrollAbbrPage(notches: int)
 proc scrollIgnorePage(notches: int)
+proc scrollPrefPage(notches: int)
+proc renderPref()
 
 proc wheelSubclass(hWnd: HWND, uMsg: UINT, wParam: WPARAM, lParam: LPARAM,
                    uIdSubclass: UINT_PTR, dwRefData: DWORD_PTR): LRESULT {.stdcall.} =
@@ -407,6 +422,7 @@ proc wheelSubclass(hWnd: HWND, uMsg: UINT, wParam: WPARAM, lParam: LPARAM,
     if n != 0:
       if dwRefData == DWORD_PTR(WheelTagAbbr): scrollAbbrPage(n)
       elif dwRefData == DWORD_PTR(WheelTagIgnore): scrollIgnorePage(n)
+      elif dwRefData == DWORD_PTR(WheelTagPreferred): scrollPrefPage(n)
       return 0
   result = DefSubclassProc(hWnd, uMsg, wParam, lParam)
 
@@ -682,6 +698,16 @@ proc scrollIgnorePage(notches: int) =
   ignoreScroll = s
   renderIgnore()
 
+proc scrollPrefPage(notches: int) =
+  if prefCount <= AbbrViewRows: return
+  var s = prefScroll - notches * 3
+  if s < 0: s = 0
+  let maxS = prefCount - AbbrViewRows
+  if s > maxS: s = maxS
+  if s == prefScroll: return
+  prefScroll = s
+  renderPref()
+
 proc ignoreMerge(): seq[string] =
   ## 内置泛词 + 自定义忽略，去掉被显式保留（+word）的，按字母序
   let keep = toHashSet(customKeepWords())
@@ -781,6 +807,216 @@ proc saveIgnoreRows(): bool =
   lblIgnoreStatus.label = msg
   fy_log_write("设置", "自定义忽略词保存 %d 条 保留 %d 条",
                cint(n), cint(kept))
+  true
+
+# —— 常用词页（中文 → 英文词库；机制与缩略词页相同）——
+# renderPref 的前向声明在滚轮小节（scrollPrefPage 先用到）
+proc deletePrefRow(i: int)
+
+proc bindPrefDelete(btn: wButton, idx: int) =
+  btn.wEvent_Button do ():
+    deletePrefRow(idx)
+
+proc ensurePrefRows(n: int) =
+  while prefRows.len < n and prefRows.len < AbbrMaxRows:
+    var r: PrefRowCtl
+    r.zh = TextCtrl(pagePreferred, pos=(0, 0), size=(10, 10))
+    r.arrow = StaticText(pagePreferred, label="→", pos=(0, 0), size=(10, 10))
+    r.en = TextCtrl(pagePreferred, pos=(0, 0), size=(10, 10))
+    r.del = Button(pagePreferred, label="删除", pos=(0, 0), size=(10, 10))
+    bindPrefDelete(r.del, prefRows.len)
+    hookWheel(r.zh, WheelTagPreferred)
+    hookWheel(r.arrow, WheelTagPreferred)
+    hookWheel(r.en, WheelTagPreferred)
+    hookWheel(r.del, WheelTagPreferred)
+    r.zh.hide()
+    r.arrow.hide()
+    r.en.hide()
+    r.del.hide()
+    prefRows.add(r)
+
+proc collectPrefSlots(): seq[(string, string)] =
+  result = @[]
+  for i in 0 ..< prefCount:
+    result.add((prefRows[i].zh.getValue().strip(),
+                prefRows[i].en.getValue().strip()))
+
+proc renderPref() =
+  ensurePrefRows(prefCount)
+  if pagePreferred.isNil: return
+  var pw = int(float(pagePreferred.getSize().width) / g_uiScale)
+  if pw < 200: pw = 520            # 页面还没布局时兜底
+  let maxS = max(0, prefCount - AbbrViewRows)
+  if prefScroll > maxS: prefScroll = maxS
+  if prefScroll < 0: prefScroll = 0
+  let left = 24
+  let right = pw - 24 - 18 - 4     # 右侧让出滚动条
+  let delW = 56
+  let arrowW = 20
+  let gap = 8
+  let delX = right - delW
+  let half = (delX - left - arrowW - 3 * gap) div 2
+  for i in 0 ..< prefRows.len:
+    let slot = i - prefScroll
+    if i < prefCount and slot >= 0 and slot < AbbrViewRows:
+      let y = AbbrTop + slot * AbbrRowH
+      prefRows[i].zh.setSize(dpx(left), dpx(y), dpx(half), dpx(24))
+      prefRows[i].arrow.setSize(dpx(left + half + gap), dpx(y + 3), dpx(arrowW), dpx(18))
+      prefRows[i].en.setSize(dpx(left + half + gap + arrowW + gap), dpx(y),
+                             dpx(half), dpx(24))
+      prefRows[i].del.setSize(dpx(delX), dpx(y), dpx(delW), dpx(24))
+      prefRows[i].zh.show()
+      prefRows[i].arrow.show()
+      prefRows[i].en.show()
+      prefRows[i].del.show()
+    else:
+      prefRows[i].zh.hide()
+      prefRows[i].arrow.hide()
+      prefRows[i].en.hide()
+      prefRows[i].del.hide()
+  sbPref.setSize(dpx(pw - 24 - 18), dpx(AbbrTop), dpx(18),
+                 dpx(AbbrViewRows * AbbrRowH - 8))
+  sbPref.setScrollbar(prefScroll, AbbrViewRows, max(prefCount - 1, 1))
+  if prefCount > AbbrViewRows: sbPref.enable() else: sbPref.disable()
+
+proc prefSummary(total: int): string =
+  let builtin = builtinPreferredPairs().len
+  let custom = customPreferredPairs().len
+  let disabled = customPreferredEntries().len - custom
+  result = "共 " & $total & " 条：内置 " & $builtin & "，自定义 " & $custom
+  if disabled > 0: result.add("，停用 " & $disabled)
+
+proc loadPrefRows(preserveScroll = false) =
+  ## 打开设置窗口 / 保存后按生效表回填（内置 + 自定义，未保存的编辑丢弃）
+  let pairs = preferredMerge()
+  g_prefOverflow = pairs.len > AbbrMaxRows
+  prefCount = max(1, min(pairs.len, AbbrMaxRows))
+  if not preserveScroll: prefScroll = 0
+  ensurePrefRows(prefCount)
+  for i in 0 ..< prefRows.len:
+    if i < pairs.len and i < prefCount:
+      prefRows[i].zh.setValue(pairs[i][0])
+      prefRows[i].en.setValue(pairs[i][1])
+    else:
+      prefRows[i].zh.setValue("")
+      prefRows[i].en.setValue("")
+  renderPref()
+  if g_prefOverflow:
+    lblPrefStatus.label = "共 " & $pairs.len & " 条，超过界面上限 " & $AbbrMaxRows
+  else:
+    lblPrefStatus.label = prefSummary(pairs.len)
+
+proc deletePrefRow(i: int) =
+  if i < 0 or i >= prefCount: return
+  var slots = collectPrefSlots()
+  if i >= slots.len: return
+  slots.delete(i)
+  prefCount = max(1, slots.len)
+  ensurePrefRows(prefCount)
+  for k in 0 ..< prefRows.len:
+    if k < slots.len:
+      prefRows[k].zh.setValue(slots[k][0])
+      prefRows[k].en.setValue(slots[k][1])
+    else:
+      prefRows[k].zh.setValue("")
+      prefRows[k].en.setValue("")
+  renderPref()
+
+proc addPrefRow() =
+  if prefCount >= AbbrMaxRows:
+    lblPrefStatus.label = "最多 " & $AbbrMaxRows & " 条，先删掉不用的行"
+    return
+  prefCount += 1
+  ensurePrefRows(prefCount)
+  prefScroll = max(0, prefCount - AbbrViewRows)
+  renderPref()
+  prefRows[prefCount - 1].zh.setFocus()
+
+proc zhRuneLen(s: string): int =
+  # UTF-8 字数（不含续字节）；main.nim 不引 unicode，这里按字节判
+  for c in s:
+    if (ord(c) and 0xC0) != 0x80: inc result
+
+proc zhHasCjk(s: string): bool =
+  # 是否含非 ASCII 字符（按字节判，有即视作中文词）
+  for c in s:
+    if ord(c) >= 0x80: return true
+  false
+
+proc savePrefRows(): bool =
+  if g_prefOverflow:
+    warnBox("合并后的词条超过界面上限 " & $AbbrMaxRows &
+            " 条，界面保存会丢数据。\n请先把 custom_preferred.txt 删到 " &
+            $AbbrMaxRows & " 条以内，再重开设置窗口。")
+    return false
+  var rows: seq[(string, string)] = @[]
+  var seen = initHashSet[string]()
+  var err = ""
+  for i in 0 ..< prefCount:
+    let zh = prefRows[i].zh.getValue().strip()
+    let en = prefRows[i].en.getValue().strip()
+    if zh.len == 0 and en.len == 0: continue
+    if zh.len == 0 or en.len == 0:
+      err = "第 " & $(i + 1) & " 行只填了一个框，中文和英文都要填。"
+    elif zh.find('=') >= 0:
+      err = "第 " & $(i + 1) & " 行的中文里不能有 =。"
+    elif zhRuneLen(zh) > 8:
+      err = "第 " & $(i + 1) & " 行的中文太长（最多 8 个字）。"
+    elif not zhHasCjk(zh):
+      err = "第 " & $(i + 1) & " 行的中文要填中文词（纯英文匹配不到词表）。"
+    elif builtinZhKind(zh) == 2:
+      err = "「" & zh & "」是内置普通词条，不归常用词页管（本页只管词库用词）。"
+    elif en != "-":
+      # 英文可以是多词（空格分隔），每个词纯字母/数字
+      var words = 0
+      for tok in en.split(' '):
+        if tok.len == 0: continue
+        inc words
+        if not isPlainWord(tok):
+          err = "第 " & $(i + 1) & " 行的英文只能是字母/数字（可多词，空格分隔）。"
+          break
+        if tok.len > 20:
+          err = "第 " & $(i + 1) & " 行的英文单词太长（" & tok & "）。"
+          break
+      if err.len == 0 and words == 0:
+        err = "第 " & $(i + 1) & " 行的英文要填内容。"
+      elif err.len == 0 and words > 4:
+        err = "第 " & $(i + 1) & " 行的英文最多 4 个词。"
+    elif en == "-" and builtinZhKind(zh) != 1:
+      err = "「" & zh & "」不是内置词库词条，用不着停用（直接删行即可）。"
+    if seen.contains(zh) and err.len == 0:
+      err = "「" & zh & "」重复了（第 " & $(i + 1) & " 行），同一中文只留一条。"
+    if err.len > 0: break
+    seen.incl(zh)
+    rows.add((zh, en))
+  if err.len > 0:
+    warnBox(err)
+    lblPrefStatus.label = "未保存：" & err
+    return false
+
+  # 只写与内置不同的条目；被删掉的内置行写成 中文=-（= 该映射停用）
+  let builtin = builtinPreferredPairs()
+  var bmap = initTable[string, string]()
+  for (zh, en) in builtin: bmap[zh] = en
+  var lines = @["# 快译NG 自定义常用词：每行 中文=英文（设置页保存时自动重写）",
+                "# 英文可多词（空格分隔）；中文=- 表示停用内置映射；只记录与内置不同的条目"]
+  for (zh, en) in rows:
+    if bmap.hasKey(zh) and bmap[zh] == en: continue
+    lines.add(zh & "=" & en)
+  for (zh, en) in builtin:
+    if not seen.contains(zh): lines.add(zh & "=-")
+  let r = saveCustomPreferred(g_appDir / "custom_preferred.txt",
+                              lines.join("\n") & "\n")
+  if r.badLine > 0:
+    warnBox("保存失败：第 " & $r.badLine & " 行格式不对。")
+    return false
+  loadPrefRows(preserveScroll = true)
+  let dis = customPreferredEntries().len - customPreferredPairs().len
+  var msg = "已保存 " & $rows.len & " 条，立即生效"
+  if dis > 0: msg.add("（停用 " & $dis & "）")
+  lblPrefStatus.label = msg
+  fy_log_write("设置", "自定义常用词保存 %d 条 停用 %d 条",
+               cint(rows.len), cint(dis))
   true
 
 # ---------------- 剪贴板 ----------------
@@ -1216,6 +1452,7 @@ proc refreshSettings(target: float) =
   g_uiScale = target
   loadAbbrRows()
   loadIgnoreRows()
+  loadPrefRows()
   g_uiScale = saved
   recordSettingsDesign(target)
   applyFont(setFrame, g_setFont)
@@ -1256,6 +1493,7 @@ proc openSettings() =
   hkCopyCtrl.setHotkey(origToWin(g_set.hkCopy[0]), g_set.hkCopy[1])
   loadAbbrRows()
   loadIgnoreRows()
+  loadPrefRows()
   applyUiFont(setFrame)     # 行控件是懒创建的，这里补一次统一字体
   if abs(g_setZoom - g_uiScale) >= 0.01: refreshSettings(g_uiScale)
   else: recordSettingsDesign(g_uiScale)
@@ -1535,8 +1773,9 @@ proc main() =
   # 用户自定义缩略词 / 忽略词（设置页最后两页维护，纯文本文件，重启也生效）
   let nAbbr = loadCustomAbbreviations(g_appDir / "custom_abbr.txt")
   let nIgnore = loadCustomIgnore(g_appDir / "custom_ignore.txt")
-  fy_log_write("启动", "自定义缩写 %d 条 忽略词 %d 条",
-               cint(nAbbr), cint(nIgnore))
+  let nPref = loadCustomPreferred(g_appDir / "custom_preferred.txt")
+  fy_log_write("启动", "自定义缩写 %d 条 忽略词 %d 条 常用词 %d 条",
+               cint(nAbbr), cint(nIgnore), cint(nPref))
 
   # 主窗口：配置存物理像素，换算成 wNim 逻辑值传入
   # 每次启动固定默认大小；运行期间用户调整的尺寸在隐藏/召唤间自动保留
@@ -1664,8 +1903,9 @@ proc main() =
   page3 = nbSet.addPage(text="翻译接口")
   pageAbbr = nbSet.addPage(text="缩略词")
   pageIgnore = nbSet.addPage(text="忽略词")
+  pagePreferred = nbSet.addPage(text="常用词")
   g_pageHwnds = @[]
-  for pp in [page1, page2, page3, pageAbbr, pageIgnore]:
+  for pp in [page1, page2, page3, pageAbbr, pageIgnore, pagePreferred]:
     g_pageHwnds.add(cast[HWND](pp.getHandle()))
   # 页签加宽加高（TCM_SETPADDING），点起来松快
   const TCM_SETPADDING = 0x1300 + 43
@@ -1836,6 +2076,30 @@ proc main() =
   hookWheel(lblIgnoreStatus, WheelTagIgnore)
   hookWheel(btnSaveIgnore, WheelTagIgnore)
 
+  # 常用词页：与缩略词页同款布局（中文 → 英文词库）
+  let hintPref1 = StaticText(pagePreferred,
+    label="每行一条：中文 → 英文词库，例 串口 → uart（内置已列出）",
+    pos=(dpx(PadL), dpx(10)), size=(dpx(ContW), dpx(50)))
+  let hintPref2 = StaticText(pagePreferred,
+    label="改英文＝覆盖内置映射（串口 → serial port），删行＝停用该映射；也可加全新词条，保存后立即生效。",
+    pos=(dpx(PadL), dpx(60)), size=(dpx(ContW), dpx(50)))
+  sbPref = ScrollBar(pagePreferred, pos=(dpx(496), dpx(AbbrTop)),
+                     size=(dpx(18), dpx(AbbrViewRows * AbbrRowH - 8)),
+                     style=wSbVertical)
+  btnAddPref = Button(pagePreferred, label="添加一行",
+                      pos=(dpx(PadL), by), size=(dpx(92), dpx(32)))
+  lblPrefStatus = StaticText(pagePreferred, label="",
+                             pos=(dpx(PadL + 104), by + 6), size=(dpx(300), dpx(22)))
+  btnSavePref = Button(pagePreferred, label="保存",
+                       pos=(dpx(544 - PadL - 92), by), size=(dpx(92), dpx(32)))
+  hookWheel(pagePreferred, WheelTagPreferred)
+  hookWheel(hintPref1, WheelTagPreferred)
+  hookWheel(hintPref2, WheelTagPreferred)
+  hookWheel(sbPref, WheelTagPreferred)
+  hookWheel(btnAddPref, WheelTagPreferred)
+  hookWheel(lblPrefStatus, WheelTagPreferred)
+  hookWheel(btnSavePref, WheelTagPreferred)
+
   cmbStyle.append(StyleNames)
   cmbStyle.setSelection(if g_set.wordFmt == FY_FMT_SNAKE: 0 else: 1)
   cmbKind.append(KindNames)
@@ -1869,6 +2133,13 @@ proc main() =
   sbIgnore.wEvent_ScrollBar do ():
     ignoreScroll = sbIgnore.getScrollPos()
     renderIgnore()
+  btnAddPref.wEvent_Button do ():
+    addPrefRow()
+  btnSavePref.wEvent_Button do ():
+    discard savePrefRows()
+  sbPref.wEvent_ScrollBar do ():
+    prefScroll = sbPref.getScrollPos()
+    renderPref()
   cmbAiPreset.wEvent_ComboBox do ():
     # 预设填充地址与模型（第 0 项"选择预设…"不动）
     let i = cmbAiPreset.getSelection()
@@ -1961,6 +2232,7 @@ proc main() =
           nbSet.setSelection(wantTab)
           renderAbbr()
           renderIgnore()
+          renderPref()
       frame.startTimer(1.5, 68)
 
   # 测试钩子：-testtranslate 启动后自动翻译一段固定文本，结果写入 test.log 后退出
