@@ -3,6 +3,7 @@
 ## 纯本地词表规则，不联网；依赖仅 std 库。
 ##
 ## 流水线：拆词 → 删泛词 → 缩写映射 → 预算裁剪 → 拼格式 → 校验
+## 常用词库（preferredNouns/Verbs/Attrs，用户指定）命中即原样保留：不删泛词、不做缩写
 ## 失败一律带原因返回（ReduceResult.reason），不静默截断字符串。
 
 import std/[strutils, tables, sets, unicode, os, algorithm]
@@ -71,6 +72,8 @@ const abbreviations* = [
   ("language", "lang"), ("library", "lib"), ("package", "pkg"),
   ("process", "proc"), ("statistics", "stats"), ("value", "val"),
   ("variable", "var"),
+  # 常用词库的完整词形（temp/humi/freq 已是首选，英文输入也对齐）
+  ("temperature", "temp"), ("humidity", "humi"), ("frequency", "freq"),
 ]
 
 # 保留字（C/C++/C#/Java/JS/Python/Go/Rust/Nim 常用保留字去重合集）
@@ -106,10 +109,41 @@ const reservedWords* = [
   "concept", "distinct", "array", "seq", "set", "string",
 ]
 
+# ---------------- 常用词库（2026-10-27 用户指定，嵌入式 C 场景） ----------------
+# 三组词是命名的首选 vocabulary：中文映射直接指向这些词（见 zhTerms 末段），
+# 命中的词原样保留——不删泛词、不做缩写（否则 button 会被缩成 btn，违背"优先使用"）。
+# 动作动词组另用于预算裁剪时优先保留（wordPriority）。
+
+const preferredNouns* = [
+  "led", "key", "button", "buzzer", "beep", "relay", "motor", "servo",
+  "stepper", "encoder", "segment", "lcd", "oled", "display", "keypad",
+  "sensor", "temp", "humi", "light", "ir", "ultrasonic", "rfid",
+  "uart", "usart", "i2c", "spi", "gpio", "timer", "pwm", "adc", "dac",
+  "irq", "exti", "nvic", "dma", "rtc", "wdt", "eeprom", "flash",
+  "bluetooth", "ble", "wifi", "usb", "can", "modbus",
+  "fan", "pump", "valve", "solenoid", "switch",
+]
+
+const preferredVerbs* = [
+  "init", "deinit", "config", "set", "get", "read", "write",
+  "send", "transmit", "receive", "recv", "open", "close",
+  "start", "stop", "reset", "clear", "update", "scan",
+  "display", "show", "toggle", "enable", "disable",
+  "measure", "check", "is", "handle", "process", "callback",
+  "feed", "beep", "blink", "forward", "backward", "brake", "calibrate",
+]
+
+const preferredAttrs* = [
+  "state", "status", "value", "level", "mode", "speed", "angle", "duty",
+  "period", "frequency", "freq", "channel", "pin", "port", "addr",
+  "length", "len", "count", "flag", "timeout", "threshold",
+  "high", "low", "on", "off", "rising", "falling",
+]
+
 # 中文技术词表：串口初始化程序 这类无空格描述靠它分词+翻译
 # 正向最长匹配，一词可对应多个英文单词（空格分隔）
 const zhTerms* = [
-  ("串口", "serial port"), ("初始化", "initialize"), ("程序", "program"),
+  ("串口", "uart"), ("初始化", "initialize"), ("程序", "program"),
   ("配置", "configuration"), ("文件", "file"), ("读取", "read"),
   ("写入", "write"), ("路径", "path"), ("目录", "directory"),
   ("文件夹", "folder"), ("用户", "user"), ("登录", "login"),
@@ -120,7 +154,7 @@ const zhTerms* = [
   ("客户端", "client"), ("服务", "service"), ("接口", "interface"),
   ("协议", "protocol"), ("版本", "version"), ("更新", "update"),
   ("删除", "delete"), ("移除", "remove"), ("添加", "add"),
-  ("创建", "create"), ("获取", "get"), ("设置", "setting"),
+  ("创建", "create"), ("获取", "get"), ("设置", "set"),
   ("保存", "save"), ("打开", "open"), ("关闭", "close"),
   ("启动", "start"), ("停止", "stop"), ("暂停", "pause"),
   ("重启", "restart"), ("退出", "exit"), ("时间", "time"),
@@ -134,7 +168,7 @@ const zhTerms* = [
   ("函数", "function"), ("方法", "method"), ("类", "class"),
   ("对象", "object"), ("数组", "array"), ("集合", "collection"),
   ("队列", "queue"), ("栈", "stack"), ("节点", "node"), ("键", "key"),
-  ("索引", "index"), ("长度", "length"), ("位置", "position"),
+  ("索引", "index"), ("长度", "len"), ("位置", "position"),
   ("方向", "direction"), ("通道", "channel"), ("线程", "thread"),
   ("进程", "process"), ("内存", "memory"), ("磁盘", "disk"),
   ("驱动", "driver"), ("设备", "device"), ("硬件", "hardware"),
@@ -144,7 +178,7 @@ const zhTerms* = [
   ("模板", "template"), ("示例", "example"), ("测试", "test"),
   ("调试", "debug"), ("监控", "monitor"), ("统计", "statistics"),
   ("图表", "chart"), ("报告", "report"), ("屏幕", "screen"),
-  ("键盘", "keyboard"), ("剪贴板", "clipboard"), ("桌面", "desktop"),
+  ("键盘", "keypad"), ("剪贴板", "clipboard"), ("桌面", "desktop"),
   ("帮助", "help"), ("编码", "encode"), ("解码", "decode"),
   ("加密", "encrypt"), ("解密", "decrypt"), ("压缩", "compress"),
   ("解压", "decompress"), ("解析", "parse"), ("生成", "generate"),
@@ -170,19 +204,58 @@ const zhTerms* = [
   ("账号", "account"), ("邮箱", "email"), ("地址", "address"),
   ("端口", "port"), ("主机", "host"), ("会话", "session"),
   ("令牌", "token"), ("密钥", "secret"), ("安全", "security"),
-  ("隐藏", "hide"), ("显示", "show"), ("语言", "language"),
+  ("隐藏", "hide"), ("显示", "display"), ("语言", "language"),
   ("翻译", "translate"), ("输入", "input"), ("输出", "output"),
   ("源", "source"), ("目标", "target"), ("地址簿", "address book"),
   ("主题", "theme"), ("滚动", "scroll"), ("拖拽", "drag"),
-  ("选择", "select"), ("管理", "manage"), ("处理", "process"),
+  ("选择", "select"), ("管理", "manage"), ("处理", "handle"),
   ("控制", "control"),
   ("执行", "execute"), ("运行", "run"), ("调度", "schedule"),
   ("分配", "allocate"), ("释放", "release"), ("申请", "apply"),
+  # —— 常用词库中文映射（2026-10-27 用户指定，见 preferredNouns/Verbs/Attrs）——
+  # 模块名词：中文直接映射到词库用词（串口不再给 serial port，给 uart）
+  ("指示灯", "led"), ("灯", "led"), ("蜂鸣器", "buzzer"), ("蜂鸣", "beep"),
+  ("继电器", "relay"), ("电机", "motor"), ("马达", "motor"), ("舵机", "servo"),
+  ("步进电机", "stepper motor"), ("步进", "stepper"), ("编码器", "encoder"),
+  ("数码管", "segment"), ("液晶屏", "lcd"), ("液晶", "lcd"), ("矩阵键盘", "keypad"),
+  ("传感器", "sensor"), ("温度", "temp"), ("湿度", "humi"), ("光照", "light"),
+  ("灯光", "light"), ("光", "light"), ("红外", "ir"), ("超声波", "ultrasonic"),
+  ("射频识别", "rfid"), ("定时器", "timer"), ("脉宽调制", "pwm"), ("脉宽", "pwm"),
+  ("模数转换", "adc"), ("模数", "adc"), ("数模转换", "dac"), ("数模", "dac"),
+  ("外部中断", "exti"), ("中断", "irq"), ("直接内存访问", "dma"),
+  ("直接存储访问", "dma"), ("实时时钟", "rtc"), ("看门狗", "wdt"), ("闪存", "flash"),
+  ("蓝牙", "bluetooth"), ("低功耗蓝牙", "ble"), ("无线网络", "wifi"),
+  ("通用串行总线", "usb"), ("风扇", "fan"), ("水泵", "pump"), ("泵", "pump"),
+  ("阀", "valve"), ("电磁阀", "solenoid"), ("开关", "switch"),
+  # 动作动词
+  ("反初始化", "deinit"), ("去初始化", "deinit"), ("发射", "transmit"),
+  ("复位", "reset"), ("清除", "clear"), ("扫描", "scan"), ("展示", "show"),
+  ("翻转", "toggle"), ("切换", "toggle"), ("使能", "enable"), ("启用", "enable"),
+  ("禁用", "disable"), ("失能", "disable"), ("测量", "measure"), ("是否", "is"),
+  ("回调", "callback"), ("喂狗", "feed dog"), ("喂", "feed"), ("闪烁", "blink"),
+  ("正转", "forward"), ("前进", "forward"), ("反转", "backward"),
+  ("后退", "backward"), ("刹车", "brake"), ("制动", "brake"),
+  ("校准", "calibrate"), ("开始", "start"),
+  # 属性参数
+  ("电平", "level"), ("级别", "level"), ("模式", "mode"), ("速度", "speed"),
+  ("角度", "angle"), ("占空比", "duty"), ("周期", "period"), ("频率", "freq"),
+  ("引脚", "pin"), ("计数", "count"), ("数量", "count"), ("标志", "flag"),
+  ("阈值", "threshold"), ("高", "high"), ("低", "low"), ("开", "on"), ("关", "off"),
+  ("上升沿", "rising"), ("上升", "rising"), ("下降沿", "falling"),
+  ("下降", "falling"),
+  # 单字映射的防误伤保护（复合词更长，正向最长匹配下优先于单字命中）
+  ("高级", "advanced"), ("最低", "minimum"), ("提高", "increase"),
+  ("降低", "decrease"), ("开机", "start"), ("关机", "shutdown"),
+  ("光标", "cursor"),
 ]
 
 let g_stop = toHashSet(stopWords)
 let g_abbrev = toTable(abbreviations)
 let g_zh = toTable(zhTerms)
+# 常用词库合集：命中即原样保留（不删泛词、不缩写）；动词子集另用于裁剪优先级
+let g_preferred* = toHashSet(preferredNouns) + toHashSet(preferredVerbs) +
+                   toHashSet(preferredAttrs)
+let g_prefVerbs* = toHashSet(preferredVerbs)
 
 # 用户自定义缩写（设置页编辑，存 fastT\custom_abbr.txt），同名覆盖内置
 var g_custom = initTable[string, string]()
@@ -408,13 +481,14 @@ proc splitWords*(phrase: string): seq[string] =
 
 proc lookupAbbrev(w: string): string =
   ## 缩写映射（自定义优先于内置），复数自动带 s：messages -> msgs
-  ## 自定义值 "-" = 明确不缩写，原词返回
+  ## 自定义值 "-" = 明确不缩写，原词返回；常用词库的词不参与缩写（调用方保证）
   if g_active.hasKey(w):
     result = g_active[w]
     if result == "-": result = w
     return
   if w.len > 3 and w.endsWith("s"):
     let base = w[0 ..< ^1]
+    if base in g_preferred: return w   # 常用词的复数不缩写：buttons -> buttons
     if g_active.hasKey(base):
       result = g_active[base]
       if result == "-": return w
@@ -427,22 +501,32 @@ proc lookupAbbrev(w: string): string =
 
 proc applyReduction*(words: seq[string]): seq[string] =
   ## 删泛词/忽略词 + 缩写映射 + 相邻去重；未收录中文字在此丢弃。
-  ## 优先级：自定义忽略 > 自定义缩写 > 内置泛词。
-  ## 自定义缩写的原词豁免泛词删除——用户显式给了缩写说明想保留它；
-  ## 保留表（+word）里的内置泛词同样豁免删除。
+  ## 优先级：自定义忽略 > 自定义缩写 > 常用词库（原样保留）> 内置泛词/内置缩写。
+  ## 常用词库的词不删不缩——用户指定的命名首选词（button 不缩成 btn）；
+  ## 想缩写某个库内词，在缩略页给该词显式加一行自定义缩写即可。
   result = @[]
   for w in words:
     if w.len == 0: continue
     if hasNonAscii(w): continue
     if w in g_customIgnore: continue
-    if w in g_stop and not g_custom.hasKey(w) and w notin g_customKeep: continue
+    if g_custom.hasKey(w):
+      # 用户显式定义的缩写优先于常用词库
+      let a = lookupAbbrev(w)
+      if result.len > 0 and result[^1] == a: continue
+      result.add(a)
+      continue
+    if w in g_preferred:
+      if result.len > 0 and result[^1] == w: continue
+      result.add(w)
+      continue
+    if w in g_stop and w notin g_customKeep: continue
     let a = lookupAbbrev(w)
     if result.len > 0 and result[^1] == a: continue
     result.add(a)
 
 proc wordPriority(w: string): int =
-  ## 裁剪优先级：动词 2 > 普通词 1；超预算时优先保动词
-  if w in g_verbs: return 2
+  ## 裁剪优先级：动词 2 > 普通词 1；超预算时优先保动词（含用户常用动词表）
+  if w in g_verbs or w in g_prefVerbs: return 2
   if w.len > 3 and (w.endsWith("ize") or w.endsWith("ise") or
       w.endsWith("ate") or w.endsWith("fy")): return 2
   1

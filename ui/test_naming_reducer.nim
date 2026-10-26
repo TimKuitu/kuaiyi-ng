@@ -51,7 +51,7 @@ proc checkFailK(phrase: string, style: NamingStyle, kind: NameKind,
 
 # —— 中文场景（题目给的三个用例）——
 # 注：读取/状态 这类核心词按设计保留，不会为凑短静默丢词
-check("串口初始化程序", nsCamel, 4, 40, "serialPortInit")
+check("串口初始化程序", nsCamel, 4, 40, "uartInit")
 check("用户登录状态缓存管理器", nsCamel, 4, 40, "userLoginStateCache")
 check("配置文件读取路径", nsCamel, 4, 40, "configFileReadPath")
 
@@ -59,7 +59,7 @@ check("配置文件读取路径", nsCamel, 4, 40, "configFileReadPath")
 check("The quick brown fox jumps over the lazy dog", nsSnake, 4, 40,
       "quick_brown_fox_jumps")
 check("Serial Port Initialization Program", nsCamel, 4, 40, "serialPortInit")
-check("get the maximum value of the buffer", nsCamel, 4, 40, "getMaxValBuf")
+check("get the maximum value of the buffer", nsCamel, 4, 40, "getMaxValueBuf")
 check(" temporary configuration file reader ", nsCamel, 4, 40,
       "tmpConfigFileReader")
 
@@ -85,10 +85,28 @@ checkK("数据缓冲区", nsSnake, nkPointer, 4, 40, "p_data_buf")
 checkK("数据缓冲区", nsCamel, nkPointer, 4, 40, "pDataBuf")
 checkK("最大长度", nsSnake, nkMacro, 4, 40, "MAX_LEN")
 checkK("最大长度", nsCamel, nkMacro, 4, 40, "MAX_LEN")  # 宏不受风格影响，恒全大写
-checkK("串口控制", nsSnake, nkType, 4, 40, "SerialPortControl_t")
-checkK("串口控制", nsCamel, nkType, 4, 40, "SerialPortControl")
+checkK("串口控制", nsSnake, nkType, 4, 40, "UartControl_t")
+checkK("串口控制", nsCamel, nkType, 4, 40, "UartControl")
 # 前缀计入预算：p_ + read 6 字符 > 5 → 报超出预算而不是硬塞
 checkFailK("配置文件读取路径", nsSnake, nkPointer, 4, 5, "超出预算")
+
+# —— 常用词库：中文优先映射到指定词，且库内词不删泛词、不缩写 ——
+check("串口发送数据", nsSnake, 4, 40, "uart_send_data")
+check("温度传感器", nsCamel, 4, 40, "tempSensor")
+check("led 灯闪烁", nsSnake, 4, 40, "led_blink")
+check("按键扫描", nsCamel, 4, 40, "keyScan")
+check("看门狗喂狗", nsSnake, 4, 40, "wdt_feed_dog")
+check("按钮", nsCamel, 4, 40, "button")            # 常用词不缩写成 btn
+check("buttons", nsCamel, 4, 40, "buttons")        # 常用词的复数同样不缩写
+check("数值是否超时", nsSnake, 4, 40, "value_is_timeout")  # is 不被当泛词删
+check("电机正转", nsSnake, 4, 40, "motor_forward")
+check("舵机角度", nsCamel, 4, 40, "servoAngle")
+check("占空比", nsSnake, 4, 40, "duty")
+check("高电平", nsSnake, 4, 40, "high_level")
+check("外部中断", nsSnake, 4, 40, "exti")
+check("定时器中断", nsCamel, 4, 40, "timerIrq")
+check("频率周期", nsSnake, 4, 40, "freq_period")   # 频率直接给 freq
+check("高级设置", nsCamel, 4, 40, "advancedSet")   # 复合词优先于单字"高"
 
 # —— 保留字冲突：加下划线后缀，不静默截断 ——
 check("class", nsSnake, 4, 40, "class_")
@@ -96,7 +114,8 @@ check("class", nsSnake, 4, 40, "class_")
 # —— 失败标记 ——
 checkFail("the of and", nsCamel, 4, 40, "全部为泛词或未收录词")
 checkFail("", nsCamel, 4, 40, "空输入")
-checkFail("internationalization configuration", nsCamel, 4, 10, "超出预算")
+# config 已是常用词库动词（裁剪优先保留），长名词先被丢，预算收到 5 才彻底装不下
+checkFail("internationalization configuration", nsCamel, 4, 5, "超出预算")
 
 # —— validateIdent 直测 ——
 block:
