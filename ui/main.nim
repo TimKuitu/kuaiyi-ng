@@ -14,7 +14,7 @@ proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
 
 const
   AppTitle = "快译NG"
-  AppVersion = "2.0.0"
+  AppVersion = "2.0.1"
   # wNim 自定义事件占用 WM_APP+0x10..0xE8，自定义消息必须避开（曾因冲突随机崩溃）
   WmAppTranslated = WM_APP + 0x0200
   WmAppUpdate = WM_APP + 0x0201
@@ -1629,8 +1629,8 @@ proc saveSettings() =
 
   fy_log_write("设置", "已保存 AI=%d 百度=%d",
                cint(ord(g_set.aiEnabled)), cint(ord(g_set.baiduEnabled)))
-  setFrame.hide()
-  discard MessageBoxW(cast[HWND](frame.getHandle()), "设置已保存。", AppTitle,
+  # 保存后设置窗口保持打开（只有点右上角 × 才关），提示框挂在设置窗口上
+  discard MessageBoxW(cast[HWND](setFrame.getHandle()), "设置已保存。", AppTitle,
                       MB_OK or MB_ICONINFORMATION)
 
 proc saveExitState() =
