@@ -6,7 +6,7 @@ Unicode true
 ManifestDPIAware true
 
 !define APPNAME "快译NG"
-!define VERSION "2.1.1"
+!define VERSION "2.1.2"
 !define PUBLISHER "快译NG"
 
 Name "${APPNAME} ${VERSION}"

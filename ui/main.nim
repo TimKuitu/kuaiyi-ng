@@ -14,7 +14,7 @@ proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
 
 const
   AppTitle = "快译NG"
-  AppVersion = "2.1.1"
+  AppVersion = "2.1.2"
   # wNim 自定义事件占用 WM_APP+0x10..0xE8，自定义消息必须避开（曾因冲突随机崩溃）
   WmAppTranslated = WM_APP + 0x0200
   WmAppUpdate = WM_APP + 0x0201
@@ -60,6 +60,7 @@ type
     autoHide: bool
     summonNearMouse: bool   # 热键显示窗口时出现在鼠标旁
     summonClear: bool       # 热键召唤窗口时清空上次的输入和结果
+    inputDblClear: bool     # 双击输入区＝清空输入区（关=双击生成命名并复制）
     cacheDir: string
     wordFmt: int           # 命名风格（FY_FMT_SNAKE / FY_FMT_CAMEL 两档）
     nameKind: int          # 命名对象（NameKind 枚举序，0=局部变量 … 6=函数）
@@ -151,6 +152,7 @@ proc loadSettings() =
   g_set.autoHide = cfgBool("通用设置", "开机隐藏", false)
   g_set.summonNearMouse = cfgBool("通用设置", "鼠标召唤", false)
   g_set.summonClear = cfgBool("通用设置", "召唤清空输入", false)
+  g_set.inputDblClear = cfgBool("通用设置", "双击清空输入", false)
   g_set.cacheDir = cfgStr("通用设置", "缓存目录", g_appDir)
   if g_set.cacheDir.len == 0: g_set.cacheDir = g_appDir
   g_set.wordFmt = cfgInt("通用设置", "命名格式", FY_FMT_CAMEL)
@@ -239,7 +241,7 @@ var
   cmbKind: wComboBox       # 命名对象下拉（局部变量…函数），选中即生效
   cmbAiPreset: wComboBox
   chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi, chkBaidu: wCheckBox
-  chkSummonClear: wCheckBox
+  chkSummonClear, chkDblClear: wCheckBox
   hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl: wHotkeyCtrl
   g_checkingUpdate = false
 
@@ -1434,7 +1436,7 @@ proc recordSettingsDesign(f: float) =
   g_setZoom = f
 
 proc defSettingsSize(): tuple[w, h: int] =
-  (max(440, int(544.0 * g_uiScale) + 22), max(340, int(567.0 * g_uiScale) + 56))
+  (max(440, int(544.0 * g_uiScale) + 22), max(340, int(600.0 * g_uiScale) + 56))
 
 proc nearSize(actual: tuple[w, h: int], expect: tuple[w, h: int], tol = 4): bool =
   abs(actual.w - expect.w) <= tol and abs(actual.h - expect.h) <= tol
@@ -1487,6 +1489,7 @@ proc openSettings() =
   chkAutoHide.setValue(g_set.autoHide)
   chkSummon.setValue(g_set.summonNearMouse)
   chkSummonClear.setValue(g_set.summonClear)
+  chkDblClear.setValue(g_set.inputDblClear)
   chkAi.setValue(g_set.aiEnabled)
   edtAiUrl.setValue(g_set.aiUrl)
   edtAiKey.setValue(g_set.aiKey)
@@ -1523,6 +1526,7 @@ proc saveSettings() =
   g_set.autoHide = chkAutoHide.getValue()
   g_set.summonNearMouse = chkSummon.getValue()
   g_set.summonClear = chkSummonClear.getValue()
+  g_set.inputDblClear = chkDblClear.getValue()
   g_set.cacheDir = edtCache.getValue().strip()
   if g_set.cacheDir.len == 0: g_set.cacheDir = g_appDir
   g_set.aiEnabled = chkAi.getValue()
@@ -1550,6 +1554,7 @@ proc saveSettings() =
   fy_cfg_set(g_cfg, "通用设置", "开机隐藏", if g_set.autoHide: "1" else: "0")
   fy_cfg_set(g_cfg, "通用设置", "鼠标召唤", if g_set.summonNearMouse: "1" else: "0")
   fy_cfg_set(g_cfg, "通用设置", "召唤清空输入", if g_set.summonClear: "1" else: "0")
+  fy_cfg_set(g_cfg, "通用设置", "双击清空输入", if g_set.inputDblClear: "1" else: "0")
   fy_cfg_set(g_cfg, "通用设置", "缓存目录", g_set.cacheDir)
   fy_cfg_set(g_cfg, "AI翻译", "启用", if g_set.aiEnabled: "1" else: "0")
   fy_cfg_set(g_cfg, "AI翻译", "地址", g_set.aiUrl)
@@ -1883,8 +1888,11 @@ proc main() =
     openSettings()
   input.wEvent_TextEnter do ():
     doTranslate(FY_AUTO)
-  # 双击=按当前「风格+对象」直接生成命名并复制（Ctrl 不再区分，老 Ctrl+双击一样走这里）
+  # 开关开启：双击输入区＝清空输入区；默认仍按当前「风格+对象」直接生成命名并复制
   input.wEvent_LeftDoubleClick do (event: wEvent):
+    if g_set.inputDblClear:
+      input.setValue("")
+      return
     namingCopy()
   resultBox.wEvent_LeftDoubleClick do (event: wEvent):
     namingCopy()
@@ -1898,7 +1906,7 @@ proc main() =
 
   # 设置窗口：按「字体缩放」给默认尺寸建窗（先量客户区当缩放基准），再套用用户保存的大小
   let dw = max(440, int(544.0 * g_uiScale) + 22)
-  let dh = max(340, int(567.0 * g_uiScale) + 56)
+  let dh = max(340, int(600.0 * g_uiScale) + 56)
   # 固定尺寸：不给 wResizeBorder（拖边不能改大小）、不给 wMaximizeBox（无最大化）
   setFrame = Frame(title=AppTitle & " - 设置", size=(dw, dh),
                    style=wCaption or wSystemMenu or wMinimizeBox)
@@ -1908,7 +1916,7 @@ proc main() =
   setPanel = Panel(setFrame)
   const PadL = 24
   const ContW = 496            # 544 - 2*24
-  const PageH = 529            # 页面内容高度（设计像素）
+  const PageH = 562            # 页面内容高度（设计像素）
   nbSet = NoteBook(setPanel, pos=(dpx(8), dpx(8)), size=(dpx(544), dpx(PageH + 38)))
   page1 = nbSet.addPage(text="通用设置")
   page2 = nbSet.addPage(text="快捷按键")
@@ -1943,6 +1951,9 @@ proc main() =
   cy += dpx(33)
   chkCloseExit = CheckBox(page1, label="点击右上角关闭为退出程序（不勾选=隐藏到托盘）",
                           pos=(dpx(PadL), cy))
+  cy += dpx(33)
+  chkDblClear = CheckBox(page1, label="双击输入区＝清空输入区（不勾选＝双击复制命名）",
+                         pos=(dpx(PadL), cy))
   cy += dpx(33)
 
   setDivider()
