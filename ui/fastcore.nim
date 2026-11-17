@@ -13,6 +13,7 @@
 {.compile: "../core/cfg.c".}
 {.compile: "../core/hist.c".}
 {.compile: "../core/fmt.c".}
+{.compile: "../core/ocr.c".}
 
 proc fy_free*(p: pointer) {.importc.}
 proc fy_strdup*(s: cstring): cstring {.importc.}
@@ -45,6 +46,21 @@ proc fy_hist_count*(h: pointer): cint {.importc.}
 proc fy_hist_get*(h: pointer, index: cint): cstring {.importc.}
 proc fy_hist_push*(h: pointer, text: cstring) {.importc.}
 proc fy_hist_close*(h: pointer) {.importc.}
+
+type
+  FySnipResult* {.bycopy.} = object
+    ok*: cint
+    width*: cint
+    height*: cint
+    bgra_out*: pointer
+    zh_text*: cstring
+    en_text*: cstring
+    err*: cstring
+
+proc fy_snip_translate*(bgraIn: pointer, width, height: cint,
+                        aiUrl, aiKey, aiModel,
+                        baiduAppid, baiduSecret, baiduUrl: cstring): ptr FySnipResult {.importc.}
+proc fy_snip_result_free*(r: ptr FySnipResult) {.importc.}
 
 # 常量（与 fastcore.h 一致）
 const

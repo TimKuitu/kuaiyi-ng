@@ -7,6 +7,7 @@ import winim/lean
 import fastcore
 import naming_reducer
 import dict_list
+import snip_ui
 
 # winim/lean 未包含 shellapi，这里单独引入打开目录所需的函数
 proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
@@ -25,12 +26,14 @@ const
   HkHistUp = 2
   HkHistDown = 3
   HkCopy = 4
+  HkSnip = 5
 
   # 热键默认值（功能键 1=Ctrl 2=Shift 4=Alt 按位相加，键码=Windows 虚拟键码）
   DefToggle = (5, 70)
   DefHistUp = (5, 38)
   DefHistDown = (5, 40)
   DefCopy = (5, 67)
+  DefSnip = (5, 68)     # Ctrl+Alt+D
 
   # 命名风格下拉（两项）。存配置沿用旧 FY_FMT_* 代码（3=驼峰 4=snake），
   # 老配置里的 0/1/2/5 读取时归到驼峰，不用迁移
@@ -77,6 +80,7 @@ type
     hkHistUp: (int, int)
     hkHistDown: (int, int)
     hkCopy: (int, int)
+    hkSnip: (int, int)
     maxWords: int           # 命名缩减预算（config-only，无界面控件）
     maxChars: int
     winW: int               # 主窗口外框尺寸（像素；0 = 默认自适应高度）
@@ -178,6 +182,7 @@ proc loadSettings() =
   g_set.hkHistUp = hk("上历史1", "上历史2", DefHistUp)
   g_set.hkHistDown = hk("下历史1", "下历史2", DefHistDown)
   g_set.hkCopy = hk("复制1", "复制2", DefCopy)
+  g_set.hkSnip = hk("截屏翻译1", "截屏翻译2", DefSnip)
 
   # 命名缩减预算（[复制单词] 段，手动编辑 config 可调）
   g_set.maxWords = cfgInt("复制单词", "最大词数", 4)
@@ -247,7 +252,7 @@ var
   cmbAiPreset: wComboBox
   chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi, chkBaidu: wCheckBox
   chkSummonClear, chkDblClear: wCheckBox
-  hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl: wHotkeyCtrl
+  hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl, hkSnipCtrl: wHotkeyCtrl
   g_checkingUpdate = false
 
 # ---------------- 自定义缩略 / 忽略 / 常用词（设置页最后三页） ----------------
@@ -1029,8 +1034,10 @@ proc registerHotkeys() =
   discard UnregisterHotKey(hwnd, HkHistUp)
   discard UnregisterHotKey(hwnd, HkHistDown)
   discard UnregisterHotKey(hwnd, HkCopy)
+  discard UnregisterHotKey(hwnd, HkSnip)
   let hks = [(HkToggle, g_set.hkToggle), (HkHistUp, g_set.hkHistUp),
-             (HkHistDown, g_set.hkHistDown), (HkCopy, g_set.hkCopy)]
+             (HkHistDown, g_set.hkHistDown), (HkCopy, g_set.hkCopy),
+             (HkSnip, g_set.hkSnip)]
   var log = ""
   var fails = 0
   for pair in hks:
@@ -1171,6 +1178,7 @@ proc openSettings() =
   hkUpCtrl.setHotkey(origToWin(g_set.hkHistUp[0]), g_set.hkHistUp[1])
   hkDownCtrl.setHotkey(origToWin(g_set.hkHistDown[0]), g_set.hkHistDown[1])
   hkCopyCtrl.setHotkey(origToWin(g_set.hkCopy[0]), g_set.hkCopy[1])
+  hkSnipCtrl.setHotkey(origToWin(g_set.hkSnip[0]), g_set.hkSnip[1])
   loadAbbrRows()
   loadIgnoreRows()
   loadPrefRows()
@@ -1210,10 +1218,12 @@ proc saveSettings() =
   let hku = hkUpCtrl.getHotkey()
   let hkd = hkDownCtrl.getHotkey()
   let hkc = hkCopyCtrl.getHotkey()
+  let hks = hkSnipCtrl.getHotkey()
   g_set.hkToggle = (winToOrig(hkt.modifiers), hkt.keyCode)
   g_set.hkHistUp = (winToOrig(hku.modifiers), hku.keyCode)
   g_set.hkHistDown = (winToOrig(hkd.modifiers), hkd.keyCode)
   g_set.hkCopy = (winToOrig(hkc.modifiers), hkc.keyCode)
+  g_set.hkSnip = (winToOrig(hks.modifiers), hks.keyCode)
 
   fy_cfg_set(g_cfg, "通用设置", "窗口置顶", if g_set.topmost: "1" else: "0")
   fy_cfg_set(g_cfg, "通用设置", "关闭退出", if g_set.closeExit: "1" else: "0")
@@ -1298,6 +1308,8 @@ proc saveSettings() =
   fy_cfg_set(g_cfg, "快捷按键", "下历史2", $g_set.hkHistDown[1])
   fy_cfg_set(g_cfg, "快捷按键", "复制1", $g_set.hkCopy[0])
   fy_cfg_set(g_cfg, "快捷按键", "复制2", $g_set.hkCopy[1])
+  fy_cfg_set(g_cfg, "快捷按键", "截屏翻译1", $g_set.hkSnip[0])
+  fy_cfg_set(g_cfg, "快捷按键", "截屏翻译2", $g_set.hkSnip[1])
   discard fy_cfg_save(g_cfg)
 
   setAutoStart(g_set.autoStart, g_set.autoHide)
@@ -1339,8 +1351,22 @@ proc quitApp() =
   # 直接结束进程，确保彻底退出
   ExitProcess(0)
 
+proc triggerSnip() =
+  let useAi = g_set.aiEnabled and g_set.aiKey.len > 0 and g_set.aiUrl.len > 0
+  let useBaidu = g_set.baiduEnabled and g_set.baiduAppId.len > 0 and g_set.baiduKey.len > 0
+  let cfg = SnipCfg(
+    aiUrl: if useAi: g_set.aiUrl else: "",
+    aiKey: if useAi: g_set.aiKey else: "",
+    aiModel: if useAi: g_set.aiModel else: "",
+    baiduAppId: if useBaidu: g_set.baiduAppId else: "",
+    baiduKey: if useBaidu: g_set.baiduKey else: "",
+    baiduUrl: if useBaidu: g_set.baiduUrl else: ""
+  )
+  startSnipCapture(g_hwndMain, cfg, proc (s: string) = copyText(s))
+
 proc showTrayMenu() =
   let menu = Menu()
+  menu.append(3, "截屏翻译（英→中）")
   menu.append(1, "软件设置")
   menu.appendSeparator()
   menu.append(2, "退出程序")
@@ -1348,6 +1374,7 @@ proc showTrayMenu() =
   # 会被 wNim 当作客户区坐标再偏移一次，菜单会被顶到错误位置）
   let id = frame.popupMenu(menu, flag=wPopMenuReturnId)
   case id
+  of 3: triggerSnip()
   of 1: openSettings()
   of 2: quitApp()
   else: discard
@@ -1519,6 +1546,7 @@ proc main() =
     of HkHistUp: histJump(-1)
     of HkHistDown: histJump(1)
     of HkCopy: namingCopy()
+    of HkSnip: triggerSnip()
     else: discard
   frame.wEvent_Timer do (event: wEvent):
     # 88 = 标题反馈到期，恢复原标题
@@ -1533,6 +1561,8 @@ proc main() =
     onTranslated(int(event.getwParam()), cast[cstring](event.getlParam()))
   frame.connect(UINT(WmAppUpdate)) do (event: wEvent):
     onUpdateMessage(int event.getwParam(), event.getlParam())
+  frame.connect(UINT(WmAppSnipDone)) do (event: wEvent):
+    onSnipDone(int(event.getwParam()), cast[ptr FySnipResult](event.getlParam()))
 
   btnZh2En.wEvent_Button do ():
     doTranslate(FY_ZH2EN)
@@ -1684,10 +1714,12 @@ proc main() =
   hkDownCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(110)), size=(dpx(220), dpx(32)))
   discard StaticText(page2, label="复制单词", pos=(dpx(PadL), dpx(162)), size=(dpx(160), dpx(24)))
   hkCopyCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(156)), size=(dpx(220), dpx(32)))
+  discard StaticText(page2, label="截屏翻译（英→中）", pos=(dpx(PadL), dpx(208)), size=(dpx(160), dpx(24)))
+  hkSnipCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(202)), size=(dpx(220), dpx(32)))
   discard StaticText(page2,
     label="点击输入框后直接按下组合键（Ctrl/Shift/Alt 任意组合 + 普通键）",
-    pos=(dpx(PadL), dpx(208)), size=(dpx(ContW), dpx(24)))
-  btnResetHot = Button(page2, label="恢复默认设置", pos=(dpx(200), dpx(250)),
+    pos=(dpx(PadL), dpx(254)), size=(dpx(ContW), dpx(24)))
+  btnResetHot = Button(page2, label="恢复默认设置", pos=(dpx(200), dpx(296)),
                        size=(dpx(120), dpx(32)))
   btnSaveSet2 = Button(page2, label="保存设置", pos=(dpx(544 - PadL - 92), by),
                        size=(dpx(92), dpx(32)))
@@ -1811,6 +1843,7 @@ proc main() =
     hkUpCtrl.setHotkey(origToWin(DefHistUp[0]), DefHistUp[1])
     hkDownCtrl.setHotkey(origToWin(DefHistDown[0]), DefHistDown[1])
     hkCopyCtrl.setHotkey(origToWin(DefCopy[0]), DefCopy[1])
+    hkSnipCtrl.setHotkey(origToWin(DefSnip[0]), DefSnip[1])
 
   # 应用启动状态
   let hwnd = cast[HWND](frame.getHandle())

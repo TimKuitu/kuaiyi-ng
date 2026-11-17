@@ -79,6 +79,23 @@ char *fy_hist_get(void *h, int index);  /* index: 0=最旧 … count-1=最新 */
 void  fy_hist_push(void *h, const char *utf8_text);
 void  fy_hist_close(void *h);
 
+/* 截屏 OCR + 英文→中文原图替换翻译 */
+typedef struct {
+    int   ok;           /* 1=成功, 0=未识别到文本或失败 */
+    int   width;
+    int   height;
+    void *bgra_out;     /* 32-bit BGRA top-down 渲染图 */
+    char *zh_text;      /* 全部译文（UTF-8） */
+    char *en_text;      /* 全部原文（UTF-8） */
+    char *err;          /* 错误信息（UTF-8） */
+} FySnipResult;
+
+FySnipResult *fy_snip_translate(const void *bgra_in, int width, int height,
+                                const char *ai_url, const char *ai_key,
+                                const char *ai_model, const char *baidu_appid,
+                                const char *baidu_secret, const char *baidu_url);
+void fy_snip_result_free(FySnipResult *r);
+
 #ifdef __cplusplus
 }
 #endif
