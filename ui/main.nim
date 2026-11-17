@@ -1885,11 +1885,20 @@ proc main() =
   if "-testtranslate" in commandLineParams():
     g_testTranslate = true
     frame.startTimer(1.2, 65)
+    frame.startTimer(15.0, 69)  # 兜底超时退出，防止网络卡死导致自测进程常驻后台
     frame.wEvent_Timer do (event: wEvent):
       if event.timerId == 65:
         frame.stopTimer(65)
         input.setValue("The quick brown fox jumps over the lazy dog.")
         doTranslate(FY_AUTO)
+      elif event.timerId == 69:
+        frame.stopTimer(69)
+        if not g_exiting:
+          let f = open(g_appDir / "test.log", fmAppend)
+          f.writeLine("TEST-RESULT: TIMEOUT")
+          f.close()
+          fy_log_write("翻译", "自测超时退出")
+          quitApp()
 
   try:
     app.mainLoop()
