@@ -1103,6 +1103,7 @@ proc relayoutSettings(target: float) =
   let old = g_setFont
   g_setFont = makeFontAt(UiFontPx * target)
   applyFont(setFrame, g_setFont)
+  if nbSet != nil: nbSet.setSize(nbSet.getSize())
   if old != HFONT(0): discard DeleteObject(old)
 
 proc refreshSettings(target: float) =
@@ -1116,6 +1117,7 @@ proc refreshSettings(target: float) =
   g_uiScale = saved
   recordSettingsDesign(target)
   applyFont(setFrame, g_setFont)
+  if nbSet != nil: nbSet.setSize(nbSet.getSize())
 
 proc computeDefWinSize(): tuple[w, h: int] =
   ## 默认窗口尺寸：宽 550（按钮行六控件）、高度刚好放下 输入框/按钮行/结果框（随字体缩放变化）
@@ -1584,6 +1586,11 @@ proc main() =
   const ContW = 496            # 544 - 2*24
   const PageH = 562            # 页面内容高度（设计像素）
   nbSet = NoteBook(setPanel, pos=(dpx(8), dpx(8)), size=(dpx(544), dpx(PageH + 38)))
+  # 先设字体再调整页签内边距并添加页面，避免 Tab 按小字体算高度导致文字被子页遮住
+  discard SendMessageW(cast[HWND](nbSet.getHandle()), WM_SETFONT, WPARAM(g_uiFont), LPARAM(1))
+  const TCM_SETPADDING = 0x1300 + 43
+  discard SendMessage(cast[HWND](nbSet.getHandle()), TCM_SETPADDING, 0,
+                      LPARAM(8 or (5 shl 16)))
   page1 = nbSet.addPage(text="通用设置")
   page2 = nbSet.addPage(text="快捷按键")
   page3 = nbSet.addPage(text="翻译接口")
@@ -1593,10 +1600,6 @@ proc main() =
   g_pageHwnds = @[]
   for pp in [page1, page2, page3, pageAbbr, pageIgnore, pagePreferred]:
     g_pageHwnds.add(cast[HWND](pp.getHandle()))
-  # 页签加宽加高（TCM_SETPADDING），点起来松快
-  const TCM_SETPADDING = 0x1300 + 43
-  discard SendMessage(cast[HWND](nbSet.getHandle()), TCM_SETPADDING, 0,
-                      LPARAM(18 or (8 shl 16)))
 
   # ---------- 通用设置页：分三组，左右留白 24，组间 22，行距 33 ----------
   var cy = dpx(16)
@@ -1613,24 +1616,29 @@ proc main() =
     cy += dpx(17)
 
   setTitle("基础设置")
-  chkTop = CheckBox(page1, label="软件窗口永远在最上面", pos=(dpx(PadL), cy))
+  chkTop = CheckBox(page1, label="软件窗口永远在最上面",
+                    pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
   cy += dpx(33)
   chkCloseExit = CheckBox(page1, label="点击右上角关闭为退出程序（不勾选=隐藏到托盘）",
-                          pos=(dpx(PadL), cy))
+                          pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
   cy += dpx(33)
   chkDblClear = CheckBox(page1, label="双击输入区＝清空输入区（不勾选＝双击复制命名）",
-                         pos=(dpx(PadL), cy))
+                         pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
   cy += dpx(33)
 
   setDivider()
   setTitle("启动设置")
-  chkAutoStart = CheckBox(page1, label="开机自动启动快译NG", pos=(dpx(PadL), cy))
+  chkAutoStart = CheckBox(page1, label="开机自动启动快译NG",
+                          pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
   cy += dpx(33)
-  chkAutoHide = CheckBox(page1, label="     开机启动后隐藏界面", pos=(dpx(PadL), cy))
+  chkAutoHide = CheckBox(page1, label="     开机启动后隐藏界面",
+                         pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
   cy += dpx(33)
-  chkSummon = CheckBox(page1, label="热键召唤窗口时出现在鼠标旁边", pos=(dpx(PadL), cy))
+  chkSummon = CheckBox(page1, label="热键召唤窗口时出现在鼠标旁边",
+                       pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
   cy += dpx(33)
-  chkSummonClear = CheckBox(page1, label="热键召唤窗口时清空输入区和结果区", pos=(dpx(PadL), cy))
+  chkSummonClear = CheckBox(page1, label="热键召唤窗口时清空输入区和结果区",
+                            pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
   cy += dpx(33)
 
   setDivider()
@@ -1668,13 +1676,13 @@ proc main() =
                        size=(dpx(92), dpx(32)))
 
   # ---------- 快捷按键页 ----------
-  discard StaticText(page2, label="显示/隐藏快译", pos=(dpx(PadL), dpx(24)))
+  discard StaticText(page2, label="显示/隐藏快译", pos=(dpx(PadL), dpx(24)), size=(dpx(160), dpx(24)))
   hkToggleCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(18)), size=(dpx(220), dpx(32)))
-  discard StaticText(page2, label="上一个历史记录", pos=(dpx(PadL), dpx(70)))
+  discard StaticText(page2, label="上一个历史记录", pos=(dpx(PadL), dpx(70)), size=(dpx(160), dpx(24)))
   hkUpCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(64)), size=(dpx(220), dpx(32)))
-  discard StaticText(page2, label="下一个历史记录", pos=(dpx(PadL), dpx(116)))
+  discard StaticText(page2, label="下一个历史记录", pos=(dpx(PadL), dpx(116)), size=(dpx(160), dpx(24)))
   hkDownCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(110)), size=(dpx(220), dpx(32)))
-  discard StaticText(page2, label="复制单词", pos=(dpx(PadL), dpx(162)))
+  discard StaticText(page2, label="复制单词", pos=(dpx(PadL), dpx(162)), size=(dpx(160), dpx(24)))
   hkCopyCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(156)), size=(dpx(220), dpx(32)))
   discard StaticText(page2,
     label="点击输入框后直接按下组合键（Ctrl/Shift/Alt 任意组合 + 普通键）",
@@ -1685,7 +1693,8 @@ proc main() =
                        size=(dpx(92), dpx(32)))
 
   # ---------- 翻译接口页（AI → 百度 → 必应 依次回退） ----------
-  chkAi = CheckBox(page3, label="AI 接口（OpenAI 格式）", pos=(dpx(PadL), dpx(14)))
+  chkAi = CheckBox(page3, label="AI 接口（OpenAI 格式）",
+                   pos=(dpx(PadL), dpx(14)), size=(dpx(180), dpx(24)))
   cmbAiPreset = ComboBox(page3, style=wCbReadOnly, pos=(dpx(210), dpx(10)),
                          size=(dpx(160), dpx(30)))
   discard StaticText(page3, label="地址（可带 /v1）", pos=(dpx(390), dpx(16)),
@@ -1698,7 +1707,7 @@ proc main() =
   edtAiModel = TextCtrl(page3, pos=(dpx(68), dpx(86)), size=(dpx(200), dpx(30)))
 
   chkBaidu = CheckBox(page3, label="百度翻译开放平台（免费标准版，fanyi-api.baidu.com 注册）",
-                      pos=(dpx(PadL), dpx(134)))
+                      pos=(dpx(PadL), dpx(134)), size=(dpx(ContW), dpx(24)))
   discard StaticText(page3, label="AppID", pos=(dpx(PadL), dpx(170)), size=(dpx(50), dpx(22)))
   edtBaiduAppId = TextCtrl(page3, pos=(dpx(78), dpx(166)), size=(dpx(156), dpx(30)))
   discard StaticText(page3, label="密钥", pos=(dpx(244), dpx(170)), size=(dpx(36), dpx(22)))
