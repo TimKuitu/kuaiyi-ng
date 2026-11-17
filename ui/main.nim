@@ -16,7 +16,7 @@ proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
 
 const
   AppTitle = "快译NG"
-  AppVersion = "2.3.0"
+  AppVersion = "2.3.1"
   # wNim 自定义事件占用 WM_APP+0x10..0xE8，自定义消息必须避开（曾因冲突随机崩溃）
   WmAppTranslated = WM_APP + 0x0200
   WmAppUpdate = WM_APP + 0x0201
@@ -1360,7 +1360,8 @@ proc triggerSnip() =
     aiModel: if useAi: g_set.aiModel else: "",
     baiduAppId: if useBaidu: g_set.baiduAppId else: "",
     baiduKey: if useBaidu: g_set.baiduKey else: "",
-    baiduUrl: if useBaidu: g_set.baiduUrl else: ""
+    baiduUrl: if useBaidu: g_set.baiduUrl else: "",
+    cacheDir: g_set.cacheDir
   )
   startSnipCapture(g_hwndMain, cfg, proc (s: string) = copyText(s))
 

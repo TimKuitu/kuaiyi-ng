@@ -41,10 +41,17 @@ char *fy_translate(const char *utf8_text, int mode);
 
 /* 多引擎回退链：AI（如启用）→ 百度（如启用）→ 必应。
  * 任一参数可为 NULL/空表示该引擎未启用。结果可能带 "（...已用必应翻译）" 前缀。 */
+#define FY_CHAIN_NO_DICT       1  /* 跳过单词词典查询，仅做文本翻译 */
+#define FY_CHAIN_PREFER_BAIDU  2  /* 优先百度→必应→AI（适合低延迟截屏 OCR） */
+
 char *fy_translate_chain(const char *utf8_text, int mode,
                          const char *ai_url, const char *ai_key, const char *ai_model,
                          const char *baidu_appid, const char *baidu_secret,
                          const char *baidu_url);
+char *fy_translate_chain_ex(const char *utf8_text, int mode,
+                            const char *ai_url, const char *ai_key, const char *ai_model,
+                            const char *baidu_appid, const char *baidu_secret,
+                            const char *baidu_url, int flags);
 
 /* OpenAI 格式 AI 翻译（未配置时 UI 层自行回退到 fy_translate） */
 char *fy_translate_ai(const char *utf8_text, int mode, const char *base_url,
@@ -93,7 +100,8 @@ typedef struct {
 FySnipResult *fy_snip_translate(const void *bgra_in, int width, int height,
                                 const char *ai_url, const char *ai_key,
                                 const char *ai_model, const char *baidu_appid,
-                                const char *baidu_secret, const char *baidu_url);
+                                const char *baidu_secret, const char *baidu_url,
+                                const char *cache_dir);
 void fy_snip_result_free(FySnipResult *r);
 
 #ifdef __cplusplus

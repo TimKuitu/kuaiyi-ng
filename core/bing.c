@@ -324,7 +324,7 @@ static int is_plain_word(const char *s)
     return 1;
 }
 
-char *fy_translate(const char *utf8_text, int mode)
+static char *fy_translate_ex(const char *utf8_text, int mode, int no_dict)
 {
     if (!utf8_text || !utf8_text[0]) { set_err("请输入要翻译的内容"); return NULL; }
 
@@ -346,8 +346,8 @@ char *fy_translate(const char *utf8_text, int mode)
     }
 
     char *out = NULL;
-    /* 单个英文单词：优先词典（音标+释义），失败回退句子翻译 */
-    if (is_plain_word(b) && strcmp(to, "zh-Hans") == 0) {
+    /* 单个英文单词：优先词典（音标+释义），失败回退句子翻译（OCR 跳过词典） */
+    if (!no_dict && is_plain_word(b) && strcmp(to, "zh-Hans") == 0) {
         dict_lookup(b, &out);
         if (out) {
             char *tr = ttranslate(b, from, to);
@@ -371,18 +371,26 @@ char *fy_translate(const char *utf8_text, int mode)
     return out;
 }
 
+char *fy_translate(const char *utf8_text, int mode)
+{
+    return fy_translate_ex(utf8_text, mode, 0);
+}
+
 /* ---------- 多引擎回退链（C 实现，避免 UI 线程外触碰 Nim GC） ---------- */
-char *fy_translate_chain(const char *utf8_text, int mode,
-                         const char *ai_url, const char *ai_key, const char *ai_model,
-                         const char *baidu_appid, const char *baidu_secret,
-                         const char *baidu_url)
+char *fy_translate_chain_ex(const char *utf8_text, int mode,
+                            const char *ai_url, const char *ai_key, const char *ai_model,
+                            const char *baidu_appid, const char *baidu_secret,
+                            const char *baidu_url, int flags)
 {
     if (!utf8_text || !utf8_text[0]) { set_err("请输入要翻译的内容"); return NULL; }
 
-    fy_log_write("链路", "开始 文本%u字节 mode=%d AI=%d 百度=%d",
-                 (unsigned)strlen(utf8_text), mode,
-                 (ai_url && ai_url[0] && ai_key && ai_key[0]) ? 1 : 0,
-                 (baidu_appid && baidu_appid[0] && baidu_secret && baidu_secret[0]) ? 1 : 0);
+    int has_ai = (ai_url && ai_url[0] && ai_key && ai_key[0]) ? 1 : 0;
+    int has_bd = (baidu_appid && baidu_appid[0] && baidu_secret && baidu_secret[0]) ? 1 : 0;
+    int prefer_bd = (flags & FY_CHAIN_PREFER_BAIDU) != 0;
+    int no_dict   = (flags & FY_CHAIN_NO_DICT) != 0;
+
+    fy_log_write("链路", "开始 文本%u字节 mode=%d AI=%d 百度=%d flags=%d",
+                 (unsigned)strlen(utf8_text), mode, has_ai, has_bd, flags);
 
     char notes[512];
     size_t nlen = 0;
@@ -391,57 +399,64 @@ char *fy_translate_chain(const char *utf8_text, int mode,
     char *res = NULL;
     g_engine[0] = 0;
 
-    /* 1. AI（OpenAI 格式） */
-    if (!res && ai_url && ai_url[0] && ai_key && ai_key[0]) {
-        fy_log_write("链路", "AI 请求中");
-        res = fy_translate_ai(utf8_text, mode, ai_url, ai_key, ai_model);
-        if (!res) {
-            const char *e = fy_last_error();
-            nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "AI：%s；", e);
-        } else {
-            snprintf(g_engine, sizeof(g_engine), "AI");
-            fy_log_write("链路", "AI 成功 %u字节", (unsigned)strlen(res));
-        }
-    }
+    /* 顺序：默认 AI→百度→必应；PREFER_BAIDU 时 百度→必应→AI */
+    int order_pref[3] = { 1, 2, 0 }; /* 0=AI, 1=百度, 2=必应 */
+    int order_def[3]  = { 0, 1, 2 };
+    const int *order  = prefer_bd ? order_pref : order_def;
 
-    /* 2. 百度翻译开放平台 */
-    if (!res && baidu_appid && baidu_appid[0] && baidu_secret && baidu_secret[0]) {
-        fy_log_write("链路", "百度 请求中");
-        res = fy_translate_baidu(utf8_text, mode, baidu_appid, baidu_secret, baidu_url);
-        if (!res) {
-            const char *e = fy_last_error();
-            nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "百度：%s；", e);
-        } else {
-            snprintf(g_engine, sizeof(g_engine), "百度");
-            fy_log_write("链路", "百度 成功 %u字节", (unsigned)strlen(res));
+    for (int step = 0; step < 3 && !res; step++) {
+        int kind = order[step];
+        if (kind == 0 && has_ai) {
+            fy_log_write("链路", "AI 请求中");
+            res = fy_translate_ai(utf8_text, mode, ai_url, ai_key, ai_model);
+            if (!res) {
+                nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "AI：%s；", fy_last_error());
+            } else {
+                snprintf(g_engine, sizeof(g_engine), "AI");
+                fy_log_write("链路", "AI 成功 %u字节", (unsigned)strlen(res));
+            }
+        } else if (kind == 1 && has_bd) {
+            fy_log_write("链路", "百度 请求中");
+            res = fy_translate_baidu(utf8_text, mode, baidu_appid, baidu_secret, baidu_url);
+            if (!res) {
+                nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "百度：%s；", fy_last_error());
+            } else {
+                snprintf(g_engine, sizeof(g_engine), "百度");
+                fy_log_write("链路", "百度 成功 %u字节", (unsigned)strlen(res));
+            }
+        } else if (kind == 2) {
+            fy_log_write("链路", "必应%s 请求中", prefer_bd ? "" : "兜底");
+            res = fy_translate_ex(utf8_text, mode, no_dict);
+            if (!res) {
+                nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "必应：%s；", fy_last_error());
+            } else {
+                snprintf(g_engine, sizeof(g_engine), "必应");
+                /* 非 prefer_bd 且前置引擎失败时附带回退提示 */
+                if (!prefer_bd && nlen > 0) {
+                    size_t L = strlen(notes);
+                    if (L >= 3 && strncmp(notes + L - 3, "；", 3) == 0) notes[L - 3] = 0;
+                    size_t rlen = strlen(res);
+                    size_t cap = nlen + rlen + 48;
+                    char *out = (char *)malloc(cap);
+                    if (!out) { free(res); set_err("内存不足"); return NULL; }
+                    int off = snprintf(out, cap, "（%s。已用必应翻译）\n", notes);
+                    if (off < 0 || (size_t)off >= cap) off = 0;
+                    memcpy(out + off, res, rlen + 1);
+                    free(res);
+                    return out;
+                }
+            }
         }
     }
-
-    /* 3. 必应免费（兜底） */
-    if (!res) {
-        fy_log_write("链路", "必应兜底 请求中");
-        res = fy_translate(utf8_text, mode);
-        if (!res) {
-            const char *e = fy_last_error();
-            nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "必应：%s；", e);
-            fy_log_write("链路", "全部失败");
-            return NULL;   /* 全部失败 */
-        }
-        snprintf(g_engine, sizeof(g_engine), "必应");
-        if (nlen > 0) {
-            /* notes 尾部固定带"；"，去掉再接"。"，避免出现"；。" */
-            size_t L = strlen(notes);
-            if (L >= 3 && strncmp(notes + L - 3, "；", 3) == 0) notes[L - 3] = 0;
-            size_t rlen = strlen(res);
-            size_t cap = nlen + rlen + 48;
-            char *out = (char *)malloc(cap);
-            if (!out) { free(res); set_err("内存不足"); return NULL; }
-            int off = snprintf(out, cap, "（%s。已用必应翻译）\n", notes);
-            if (off < 0 || (size_t)off >= cap) off = 0;
-            memcpy(out + off, res, rlen + 1);
-            free(res);
-            return out;
-        }
-    }
+    if (!res) fy_log_write("链路", "全部失败");
     return res;
+}
+
+char *fy_translate_chain(const char *utf8_text, int mode,
+                         const char *ai_url, const char *ai_key, const char *ai_model,
+                         const char *baidu_appid, const char *baidu_secret,
+                         const char *baidu_url)
+{
+    return fy_translate_chain_ex(utf8_text, mode, ai_url, ai_key, ai_model,
+                                 baidu_appid, baidu_secret, baidu_url, 0);
 }

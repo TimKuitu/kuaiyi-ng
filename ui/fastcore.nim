@@ -59,7 +59,8 @@ type
 
 proc fy_snip_translate*(bgraIn: pointer, width, height: cint,
                         aiUrl, aiKey, aiModel,
-                        baiduAppid, baiduSecret, baiduUrl: cstring): ptr FySnipResult {.importc.}
+                        baiduAppid, baiduSecret, baiduUrl,
+                        cacheDir: cstring): ptr FySnipResult {.importc.}
 proc fy_snip_result_free*(r: ptr FySnipResult) {.importc.}
 
 # 常量（与 fastcore.h 一致）

@@ -209,60 +209,143 @@ static void *upscale_bgra_2x(const void *src, int w, int h, int *out_w, int *out
     return out;
 }
 
+/* 全局缓存的 WinRT OCR 上下文（MTA 进程级复用，避免每次截屏冷启动） */
+static CRITICAL_SECTION g_ocr_cs;
+static LONG g_ocr_cs_init = 0;
+static struct {
+    int ready;
+    HMODULE combase;
+    PFN_RoInitialize pRoInit;
+    PFN_RoUninitialize pRoUninit;
+    PFN_RoGetActivationFactory pRoFactory;
+    PFN_WindowsCreateStringReference pWinStrRef;
+    PFN_WindowsGetStringRawBuffer pWinStrBuf;
+    PFN_WindowsDeleteString pWinStrDel;
+    void *ocrEngine;
+    void *bufFactory;
+    void *sbStatics;
+} g_ocr = {0};
+
+static void ensure_ocr_cs(void) {
+    if (InterlockedCompareExchange(&g_ocr_cs_init, 1, 0) == 0) {
+        InitializeCriticalSection(&g_ocr_cs);
+        InterlockedExchange(&g_ocr_cs_init, 2);
+    } else {
+        while (InterlockedCompareExchange(&g_ocr_cs_init, 2, 2) != 2) Sleep(0);
+    }
+}
+
+static void reset_ocr_ctx_locked(void) {
+    SAFE_REL(g_ocr.sbStatics);
+    SAFE_REL(g_ocr.bufFactory);
+    SAFE_REL(g_ocr.ocrEngine);
+    g_ocr.ready = 0;
+}
+
+static int init_ocr_ctx_locked(char **out_err) {
+    if (g_ocr.ready) return 0;
+
+    if (!g_ocr.combase) {
+        g_ocr.combase = LoadLibraryA("combase.dll");
+        if (!g_ocr.combase) {
+            *out_err = fy_strdup("当前系统不支持 Windows OCR（缺少 combase.dll）");
+            return -1;
+        }
+        g_ocr.pRoInit    = (PFN_RoInitialize)GetProcAddress(g_ocr.combase, "RoInitialize");
+        g_ocr.pRoUninit  = (PFN_RoUninitialize)GetProcAddress(g_ocr.combase, "RoUninitialize");
+        g_ocr.pRoFactory = (PFN_RoGetActivationFactory)GetProcAddress(g_ocr.combase, "RoGetActivationFactory");
+        g_ocr.pWinStrRef = (PFN_WindowsCreateStringReference)GetProcAddress(g_ocr.combase, "WindowsCreateStringReference");
+        g_ocr.pWinStrBuf = (PFN_WindowsGetStringRawBuffer)GetProcAddress(g_ocr.combase, "WindowsGetStringRawBuffer");
+        g_ocr.pWinStrDel = (PFN_WindowsDeleteString)GetProcAddress(g_ocr.combase, "WindowsDeleteString");
+        if (!g_ocr.pRoInit || !g_ocr.pRoFactory || !g_ocr.pWinStrRef || !g_ocr.pWinStrBuf || !g_ocr.pWinStrDel) {
+            *out_err = fy_strdup("当前系统版本过低，不支持 Windows OCR（需 Win10/11）");
+            return -1;
+        }
+        /* 保留一份 MTA 引用不 Uninit，确保缓存的 WinRT 对象不因计数归零被拆掉 */
+        g_ocr.pRoInit(1);
+    }
+
+    void *ocrStatics = NULL, *langFactory = NULL, *lang = NULL;
+    FY_HSTRING_HEADER hh;
+    FY_HSTRING hs = NULL;
+
+    g_ocr.pWinStrRef(L"Windows.Media.Ocr.OcrEngine", 27, &hh, &hs);
+    if (FAILED(g_ocr.pRoFactory(hs, &FY_IID_IOcrEngineStatics, &ocrStatics)) || !ocrStatics) {
+        *out_err = fy_strdup("无法初始化 Windows OCR 引擎");
+        goto fail;
+    }
+
+    g_ocr.pWinStrRef(L"Windows.Globalization.Language", 28, &hh, &hs);
+    if (SUCCEEDED(g_ocr.pRoFactory(hs, &FY_IID_ILanguageFactory, &langFactory)) && langFactory) {
+        g_ocr.pWinStrRef(L"en-US", 5, &hh, &hs);
+        if (SUCCEEDED((*(FY_ILanguageFactoryVtbl **)langFactory)->CreateLanguage(langFactory, hs, &lang)) && lang) {
+            (*(FY_IOcrEngineStaticsVtbl **)ocrStatics)->TryCreateFromLanguage(ocrStatics, lang, &g_ocr.ocrEngine);
+        }
+    }
+    if (!g_ocr.ocrEngine) {
+        (*(FY_IOcrEngineStaticsVtbl **)ocrStatics)->TryCreateFromUserProfileLanguages(ocrStatics, &g_ocr.ocrEngine);
+    }
+    if (!g_ocr.ocrEngine) {
+        *out_err = fy_strdup("系统未安装英文 OCR 语言包，请在 Windows 设置中安装英语识别");
+        goto fail;
+    }
+
+    g_ocr.pWinStrRef(L"Windows.Storage.Streams.Buffer", 30, &hh, &hs);
+    if (FAILED(g_ocr.pRoFactory(hs, &FY_IID_IBufferFactory, &g_ocr.bufFactory)) || !g_ocr.bufFactory) {
+        *out_err = fy_strdup("无法创建 OCR 图像缓冲");
+        goto fail;
+    }
+
+    g_ocr.pWinStrRef(L"Windows.Graphics.Imaging.SoftwareBitmap", 39, &hh, &hs);
+    if (FAILED(g_ocr.pRoFactory(hs, &FY_IID_ISoftwareBitmapStatics, &g_ocr.sbStatics)) || !g_ocr.sbStatics) {
+        *out_err = fy_strdup("无法初始化 SoftwareBitmap");
+        goto fail;
+    }
+
+    SAFE_REL(lang);
+    SAFE_REL(langFactory);
+    SAFE_REL(ocrStatics);
+    g_ocr.ready = 1;
+    return 0;
+
+fail:
+    SAFE_REL(lang);
+    SAFE_REL(langFactory);
+    SAFE_REL(ocrStatics);
+    reset_ocr_ctx_locked();
+    return -1;
+}
+
 /* 调用 Windows.Media.Ocr 识别英文行及外接矩形 */
 static int run_winrt_ocr(const void *bgra, int w, int h,
                          OcrLineBox **out_lines, int *out_count, char **out_err) {
     *out_lines = NULL;
     *out_count = 0;
 
-    HMODULE combase = LoadLibraryA("combase.dll");
-    if (!combase) {
-        *out_err = fy_strdup("当前系统不支持 Windows OCR（缺少 combase.dll）");
-        return -1;
+    ensure_ocr_cs();
+    EnterCriticalSection(&g_ocr_cs);
+    int init_rc = init_ocr_ctx_locked(out_err);
+    void *ocrEngine = g_ocr.ocrEngine;
+    void *bufFactory = g_ocr.bufFactory;
+    void *sbStatics = g_ocr.sbStatics;
+    PFN_RoInitialize pRoInit = g_ocr.pRoInit;
+    PFN_RoUninitialize pRoUninit = g_ocr.pRoUninit;
+    PFN_WindowsGetStringRawBuffer pWinStrBuf = g_ocr.pWinStrBuf;
+    PFN_WindowsDeleteString pWinStrDel = g_ocr.pWinStrDel;
+    if (init_rc == 0) {
+        if (ocrEngine) (*(FY_IInspectableVtbl **)ocrEngine)->AddRef(ocrEngine);
+        if (bufFactory) (*(FY_IInspectableVtbl **)bufFactory)->AddRef(bufFactory);
+        if (sbStatics) (*(FY_IInspectableVtbl **)sbStatics)->AddRef(sbStatics);
     }
-    PFN_RoInitialize pRoInit = (PFN_RoInitialize)GetProcAddress(combase, "RoInitialize");
-    PFN_RoUninitialize pRoUninit = (PFN_RoUninitialize)GetProcAddress(combase, "RoUninitialize");
-    PFN_RoGetActivationFactory pRoFactory = (PFN_RoGetActivationFactory)GetProcAddress(combase, "RoGetActivationFactory");
-    PFN_WindowsCreateStringReference pWinStrRef = (PFN_WindowsCreateStringReference)GetProcAddress(combase, "WindowsCreateStringReference");
-    PFN_WindowsGetStringRawBuffer pWinStrBuf = (PFN_WindowsGetStringRawBuffer)GetProcAddress(combase, "WindowsGetStringRawBuffer");
-    PFN_WindowsDeleteString pWinStrDel = (PFN_WindowsDeleteString)GetProcAddress(combase, "WindowsDeleteString");
-    if (!pRoInit || !pRoFactory || !pWinStrRef || !pWinStrBuf || !pWinStrDel) {
-        *out_err = fy_strdup("当前系统版本过低，不支持 Windows OCR（需 Win10/11）");
-        return -1;
-    }
+    LeaveCriticalSection(&g_ocr_cs);
+    if (init_rc != 0) return -1;
 
     HRESULT hr_init = pRoInit(1); /* RO_INIT_MULTITHREADED */
     int need_uninit = (hr_init == S_OK || hr_init == S_FALSE);
 
-    void *langFactory = NULL, *lang = NULL, *ocrStatics = NULL, *ocrEngine = NULL;
-    void *bufFactory = NULL, *buf = NULL, *byteAccess = NULL, *sbStatics = NULL;
+    void *buf = NULL, *byteAccess = NULL;
     void *sb = NULL, *asyncOp = NULL, *asyncInfo = NULL, *ocrRes = NULL, *lines = NULL;
     void *scaled_buf = NULL;
-
-    FY_HSTRING_HEADER hh;
-    FY_HSTRING hs = NULL;
-
-    /* 1. 创建 OcrEngine（优先 en-US，缺失时回退到用户语言） */
-    pWinStrRef(L"Windows.Media.Ocr.OcrEngine", 27, &hh, &hs);
-    if (FAILED(pRoFactory(hs, &FY_IID_IOcrEngineStatics, &ocrStatics)) || !ocrStatics) {
-        *out_err = fy_strdup("无法初始化 Windows OCR 引擎");
-        goto cleanup;
-    }
-
-    pWinStrRef(L"Windows.Globalization.Language", 28, &hh, &hs);
-    if (SUCCEEDED(pRoFactory(hs, &FY_IID_ILanguageFactory, &langFactory)) && langFactory) {
-        pWinStrRef(L"en-US", 5, &hh, &hs);
-        if (SUCCEEDED((*(FY_ILanguageFactoryVtbl **)langFactory)->CreateLanguage(langFactory, hs, &lang)) && lang) {
-            (*(FY_IOcrEngineStaticsVtbl **)ocrStatics)->TryCreateFromLanguage(ocrStatics, lang, &ocrEngine);
-        }
-    }
-    if (!ocrEngine) {
-        (*(FY_IOcrEngineStaticsVtbl **)ocrStatics)->TryCreateFromUserProfileLanguages(ocrStatics, &ocrEngine);
-    }
-    if (!ocrEngine) {
-        *out_err = fy_strdup("系统未安装英文 OCR 语言包，请在 Windows 设置中安装英语识别");
-        goto cleanup;
-    }
 
     /* 2. 小图 2x 放大喂给 OCR，提升小字识别率 */
     int ocr_w = w, ocr_h = h;
@@ -277,11 +360,6 @@ static int run_winrt_ocr(const void *bgra, int w, int h,
     }
 
     /* 3. 构造 SoftwareBitmap (Bgra8 = 87) */
-    pWinStrRef(L"Windows.Storage.Streams.Buffer", 30, &hh, &hs);
-    if (FAILED(pRoFactory(hs, &FY_IID_IBufferFactory, &bufFactory)) || !bufFactory) {
-        *out_err = fy_strdup("无法创建 OCR 图像缓冲");
-        goto cleanup;
-    }
     UINT32 byte_sz = (UINT32)ocr_w * (UINT32)ocr_h * 4u;
     if (FAILED((*(FY_IBufferFactoryVtbl **)bufFactory)->Create(bufFactory, byte_sz, &buf)) || !buf) {
         *out_err = fy_strdup("分配 OCR 缓冲失败");
@@ -296,17 +374,12 @@ static int run_winrt_ocr(const void *bgra, int w, int h,
     (*(FY_IBufferByteAccessVtbl **)byteAccess)->Buffer(byteAccess, &dst);
     memcpy(dst, ocr_src, byte_sz);
 
-    pWinStrRef(L"Windows.Graphics.Imaging.SoftwareBitmap", 39, &hh, &hs);
-    if (FAILED(pRoFactory(hs, &FY_IID_ISoftwareBitmapStatics, &sbStatics)) || !sbStatics) {
-        *out_err = fy_strdup("无法初始化 SoftwareBitmap");
-        goto cleanup;
-    }
     if (FAILED((*(FY_ISoftwareBitmapStaticsVtbl **)sbStatics)->CreateCopyFromBuffer(sbStatics, buf, 87, ocr_w, ocr_h, &sb)) || !sb) {
         *out_err = fy_strdup("构造 OCR 图像失败");
         goto cleanup;
     }
 
-    /* 4. 异步识别并轮询完成 */
+    /* 4. 异步识别（前 20 次 1ms 轮询减少等待尾延迟） */
     if (FAILED((*(FY_IOcrEngineVtbl **)ocrEngine)->RecognizeAsync(ocrEngine, sb, &asyncOp)) || !asyncOp) {
         *out_err = fy_strdup("OCR 识别启动失败");
         goto cleanup;
@@ -319,7 +392,7 @@ static int run_winrt_ocr(const void *bgra, int w, int h,
     for (int tries = 0; tries < 2000; tries++) {
         (*(FY_IAsyncInfoVtbl **)asyncInfo)->get_Status(asyncInfo, &status);
         if (status != 0) break;
-        Sleep(5);
+        Sleep(tries < 20 ? 1 : 5);
     }
     if (status != 1) {
         *out_err = fy_strdup("OCR 识别超时或失败");
@@ -402,9 +475,6 @@ cleanup_ok:
     SAFE_REL(buf);
     SAFE_REL(bufFactory);
     SAFE_REL(ocrEngine);
-    SAFE_REL(ocrStatics);
-    SAFE_REL(lang);
-    SAFE_REL(langFactory);
     free(scaled_buf);
     if (need_uninit && pRoUninit) pRoUninit();
     return 0;
@@ -420,9 +490,6 @@ cleanup:
     SAFE_REL(buf);
     SAFE_REL(bufFactory);
     SAFE_REL(ocrEngine);
-    SAFE_REL(ocrStatics);
-    SAFE_REL(lang);
-    SAFE_REL(langFactory);
     free(scaled_buf);
     if (need_uninit && pRoUninit) pRoUninit();
     return -1;
@@ -524,26 +591,416 @@ static char *clean_zh_for_overlay(const char *raw, int single_line) {
     return out;
 }
 
-/* 批量翻译所有块；若返回行数与块数一致则一次映射，否则逐块翻译 */
+/* ---------------- 本地短语翻译记忆库（O(1) 哈希 + LRU + 可校对） ---------------- */
+#define OCR_HASH_BUCKETS 16384
+#define OCR_CACHE_MAX    8000
+
+typedef struct OcrCacheEntry {
+    char *key;
+    char *raw_en;
+    char *zh;
+    int   locked; /* 1 = '*' 人工校对，永久保留不淘汰 */
+    struct OcrCacheEntry *hnext;
+    struct OcrCacheEntry *prev;
+    struct OcrCacheEntry *next;
+} OcrCacheEntry;
+
+static CRITICAL_SECTION g_cache_cs;
+static LONG g_cache_cs_init = 0;
+static struct {
+    int inited;
+    char dir[1024];
+    wchar_t wpath[1024];
+    FILETIME mtime;
+    int has_mtime;
+    int auto_count;
+    OcrCacheEntry *buckets[OCR_HASH_BUCKETS];
+    OcrCacheEntry *head;
+    OcrCacheEntry *tail;
+} g_cache = {0};
+
+static void ensure_cache_cs(void) {
+    if (InterlockedCompareExchange(&g_cache_cs_init, 1, 0) == 0) {
+        InitializeCriticalSection(&g_cache_cs);
+        InterlockedExchange(&g_cache_cs_init, 2);
+    } else {
+        while (InterlockedCompareExchange(&g_cache_cs_init, 2, 2) != 2) Sleep(0);
+    }
+}
+
+static unsigned int fnv1a_hash(const char *s) {
+    unsigned int h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        h ^= *p;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static void normalize_cache_key(const char *src, char *dst, size_t cap) {
+    if (!src || cap == 0) { if (cap) dst[0] = 0; return; }
+    size_t n = 0;
+    int prev_sp = 1;
+    for (const unsigned char *p = (const unsigned char *)src; *p && n + 1 < cap; p++) {
+        if (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+            if (!prev_sp) { dst[n++] = ' '; prev_sp = 1; }
+        } else {
+            unsigned char c = *p;
+            if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+            dst[n++] = (char)c;
+            prev_sp = 0;
+        }
+    }
+    while (n > 0 && dst[n - 1] == ' ') n--;
+    dst[n] = '\0';
+}
+
+static void lru_unlink(OcrCacheEntry *e) {
+    if (e->prev) e->prev->next = e->next; else g_cache.head = e->next;
+    if (e->next) e->next->prev = e->prev; else g_cache.tail = e->prev;
+    e->prev = e->next = NULL;
+}
+
+static void lru_push_front(OcrCacheEntry *e) {
+    e->prev = NULL;
+    e->next = g_cache.head;
+    if (g_cache.head) g_cache.head->prev = e;
+    g_cache.head = e;
+    if (!g_cache.tail) g_cache.tail = e;
+}
+
+static void cache_clear_locked(void) {
+    OcrCacheEntry *cur = g_cache.head;
+    while (cur) {
+        OcrCacheEntry *nx = cur->next;
+        free(cur->key);
+        free(cur->raw_en);
+        free(cur->zh);
+        free(cur);
+        cur = nx;
+    }
+    memset(g_cache.buckets, 0, sizeof(g_cache.buckets));
+    g_cache.head = g_cache.tail = NULL;
+    g_cache.auto_count = 0;
+}
+
+static OcrCacheEntry *cache_find_locked(const char *key) {
+    unsigned int idx = fnv1a_hash(key) & (OCR_HASH_BUCKETS - 1);
+    for (OcrCacheEntry *e = g_cache.buckets[idx]; e; e = e->hnext) {
+        if (strcmp(e->key, key) == 0) return e;
+    }
+    return NULL;
+}
+
+static void cache_insert_mem_locked(const char *raw_en, const char *zh, int locked) {
+    char key[128];
+    normalize_cache_key(raw_en, key, sizeof(key));
+    if (!key[0]) return;
+
+    OcrCacheEntry *ex = cache_find_locked(key);
+    if (ex) {
+        if (ex->locked && !locked) return;
+        free(ex->zh);
+        ex->zh = fy_strdup(zh);
+        if (locked && !ex->locked) {
+            ex->locked = 1;
+            if (g_cache.auto_count > 0) g_cache.auto_count--;
+        }
+        lru_unlink(ex);
+        lru_push_front(ex);
+        return;
+    }
+
+    OcrCacheEntry *e = (OcrCacheEntry *)calloc(1, sizeof(OcrCacheEntry));
+    if (!e) return;
+    e->key = fy_strdup(key);
+    e->raw_en = fy_strdup(raw_en);
+    e->zh = fy_strdup(zh);
+    e->locked = locked;
+    unsigned int idx = fnv1a_hash(key) & (OCR_HASH_BUCKETS - 1);
+    e->hnext = g_cache.buckets[idx];
+    g_cache.buckets[idx] = e;
+    lru_push_front(e);
+    if (!locked) g_cache.auto_count++;
+}
+
+static void cache_update_mtime_locked(void) {
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (g_cache.wpath[0] && GetFileAttributesExW(g_cache.wpath, GetFileExInfoStandard, &fad)) {
+        g_cache.mtime = fad.ftLastWriteTime;
+        g_cache.has_mtime = 1;
+    } else {
+        g_cache.has_mtime = 0;
+    }
+}
+
+static void cache_rewrite_file_locked(void) {
+    if (!g_cache.wpath[0]) return;
+    FILE *f = _wfopen(g_cache.wpath, L"wb");
+    if (!f) return;
+    fputs("# 快译NG 截屏翻译本地记忆库（UTF-8，Tab 分隔：原文<Tab>译文；开头加 *<Tab> 表示人工校对永久保留）\r\n", f);
+    for (OcrCacheEntry *e = g_cache.head; e; e = e->next) {
+        if (e->locked) {
+            fprintf(f, "*\t%s\t%s\r\n", e->raw_en, e->zh);
+        } else {
+            fprintf(f, "%s\t%s\r\n", e->raw_en, e->zh);
+        }
+    }
+    fclose(f);
+    cache_update_mtime_locked();
+}
+
+static void cache_ensure_dir_w(const char *utf8_dir) {
+    wchar_t wdir[1024];
+    int n = MultiByteToWideChar(CP_UTF8, 0, utf8_dir, -1, wdir, 1024);
+    if (n <= 0) return;
+    for (wchar_t *p = wdir + 1; *p; p++) {
+        if (*p == L'\\' || *p == L'/') {
+            wchar_t c = *p;
+            *p = 0;
+            CreateDirectoryW(wdir, NULL);
+            *p = c;
+        }
+    }
+    CreateDirectoryW(wdir, NULL);
+}
+
+static void cache_load_locked(const char *cache_dir) {
+    if (!cache_dir || !cache_dir[0]) return;
+
+    int dir_changed = (!g_cache.inited || strcmp(g_cache.dir, cache_dir) != 0);
+    if (dir_changed) {
+        cache_clear_locked();
+        snprintf(g_cache.dir, sizeof(g_cache.dir), "%s", cache_dir);
+        char full[1024];
+        size_t dl = strlen(cache_dir);
+        if (dl > 0 && (cache_dir[dl - 1] == '\\' || cache_dir[dl - 1] == '/')) {
+            snprintf(full, sizeof(full), "%socr_cache.txt", cache_dir);
+        } else {
+            snprintf(full, sizeof(full), "%s\\ocr_cache.txt", cache_dir);
+        }
+        MultiByteToWideChar(CP_UTF8, 0, full, -1, g_cache.wpath, 1024);
+        g_cache.inited = 1;
+        g_cache.has_mtime = 0;
+    }
+
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExW(g_cache.wpath, GetFileExInfoStandard, &fad)) return;
+    if (!dir_changed && g_cache.has_mtime &&
+        fad.ftLastWriteTime.dwLowDateTime == g_cache.mtime.dwLowDateTime &&
+        fad.ftLastWriteTime.dwHighDateTime == g_cache.mtime.dwHighDateTime) {
+        return; /* 文件未变化 */
+    }
+
+    cache_clear_locked();
+    FILE *f = _wfopen(g_cache.wpath, L"rb");
+    if (!f) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = 0;
+        if (len == 0 || line[0] == '#') continue;
+        /* 跳过 UTF-8 BOM */
+        char *p = line;
+        if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) p += 3;
+        if (*p == '\0' || *p == '#') continue;
+
+        int locked = 0;
+        if (p[0] == '*' && p[1] == '\t') {
+            locked = 1;
+            p += 2;
+        }
+        char *tab = strchr(p, '\t');
+        if (!tab || tab == p) continue;
+        *tab = '\0';
+        char *zh = tab + 1;
+        if (!zh[0]) continue;
+        cache_insert_mem_locked(p, zh, locked);
+    }
+    fclose(f);
+    g_cache.mtime = fad.ftLastWriteTime;
+    g_cache.has_mtime = 1;
+}
+
+static char *ocr_cache_lookup(const char *en) {
+    if (!g_cache.inited || !en || !en[0]) return NULL;
+    char key[128];
+    normalize_cache_key(en, key, sizeof(key));
+    if (!key[0] || strlen(key) > 48) return NULL;
+
+    ensure_cache_cs();
+    EnterCriticalSection(&g_cache_cs);
+    OcrCacheEntry *e = cache_find_locked(key);
+    char *ret = NULL;
+    if (e && e->zh && e->zh[0]) {
+        lru_unlink(e);
+        lru_push_front(e);
+        ret = fy_strdup(e->zh);
+    }
+    LeaveCriticalSection(&g_cache_cs);
+    return ret;
+}
+
+static int can_cache_pair(const char *en, const char *zh) {
+    if (!en || !zh) return 0;
+    size_t el = strlen(en), zl = strlen(zh);
+    if (el == 0 || el > 48 || zl == 0 || zl > 120) return 0;
+    if (strcmp(en, zh) == 0) return 0;
+    int has_alpha = 0;
+    for (size_t i = 0; i < el; i++) {
+        unsigned char c = (unsigned char)en[i];
+        if (c == '\r' || c == '\n' || c == '\t') return 0;
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) has_alpha = 1;
+    }
+    if (!has_alpha) return 0;
+    for (size_t i = 0; i < zl; i++) {
+        unsigned char c = (unsigned char)zh[i];
+        if (c == '\r' || c == '\n' || c == '\t') return 0;
+    }
+    return 1;
+}
+
+static void ocr_cache_put(const char *en, const char *zh) {
+    if (!g_cache.inited || !can_cache_pair(en, zh)) return;
+    char key[128];
+    normalize_cache_key(en, key, sizeof(key));
+    if (!key[0]) return;
+
+    ensure_cache_cs();
+    EnterCriticalSection(&g_cache_cs);
+    OcrCacheEntry *ex = cache_find_locked(key);
+    if (ex) {
+        if (!ex->locked && strcmp(ex->zh, zh) != 0) {
+            free(ex->zh);
+            ex->zh = fy_strdup(zh);
+            lru_unlink(ex);
+            lru_push_front(ex);
+            cache_rewrite_file_locked();
+        }
+        LeaveCriticalSection(&g_cache_cs);
+        return;
+    }
+
+    cache_insert_mem_locked(en, zh, 0);
+    if (g_cache.auto_count > OCR_CACHE_MAX) {
+        /* 从尾部淘汰最久未用的非锁定条目 */
+        for (OcrCacheEntry *v = g_cache.tail; v; v = v->prev) {
+            if (!v->locked) {
+                unsigned int idx = fnv1a_hash(v->key) & (OCR_HASH_BUCKETS - 1);
+                OcrCacheEntry **pp = &g_cache.buckets[idx];
+                while (*pp && *pp != v) pp = &((*pp)->hnext);
+                if (*pp == v) *pp = v->hnext;
+                lru_unlink(v);
+                free(v->key);
+                free(v->raw_en);
+                free(v->zh);
+                free(v);
+                g_cache.auto_count--;
+                break;
+            }
+        }
+        cache_rewrite_file_locked();
+    } else if (g_cache.wpath[0]) {
+        cache_ensure_dir_w(g_cache.dir);
+        int is_new = (GetFileAttributesW(g_cache.wpath) == INVALID_FILE_ATTRIBUTES);
+        FILE *f = _wfopen(g_cache.wpath, L"ab");
+        if (f) {
+            if (is_new) {
+                fputs("# 快译NG 截屏翻译本地记忆库（UTF-8，Tab 分隔：原文<Tab>译文；开头加 *<Tab> 表示人工校对永久保留）\r\n", f);
+            }
+            fprintf(f, "%s\t%s\r\n", en, zh);
+            fclose(f);
+            cache_update_mtime_locked();
+        }
+    }
+    LeaveCriticalSection(&g_cache_cs);
+}
+
+/* ---------------- 并发翻译兜底工作线程 ---------------- */
+typedef struct {
+    TextBlock *blks;
+    const int *miss_idx;
+    int        miss_n;
+    volatile LONG next_pos;
+    const char *ai_url;
+    const char *ai_key;
+    const char *ai_model;
+    const char *baidu_appid;
+    const char *baidu_secret;
+    const char *baidu_url;
+} OcrBatchJob;
+
+static DWORD WINAPI ocr_worker_proc(LPVOID param) {
+    OcrBatchJob *job = (OcrBatchJob *)param;
+    const int flags = FY_CHAIN_NO_DICT | FY_CHAIN_PREFER_BAIDU;
+    for (;;) {
+        LONG pos = InterlockedIncrement(&job->next_pos) - 1;
+        if (pos >= job->miss_n) break;
+        int bi = job->miss_idx[pos];
+        char *r = fy_translate_chain_ex(job->blks[bi].en, FY_EN2ZH,
+                                        job->ai_url, job->ai_key, job->ai_model,
+                                        job->baidu_appid, job->baidu_secret, job->baidu_url,
+                                        flags);
+        if (r) {
+            job->blks[bi].zh = clean_zh_for_overlay(r, job->blks[bi].n_lines <= 1);
+            fy_free(r);
+        } else {
+            job->blks[bi].zh = fy_strdup(job->blks[bi].en);
+        }
+    }
+    return 0;
+}
+
+/* 翻译所有块：先查本地记忆库，未命中块优先批量请求（百度→必应→AI，跳过词典），未对齐则并发兜底 */
 static void translate_blocks(TextBlock *blks, int nb,
                              const char *ai_url, const char *ai_key, const char *ai_model,
-                             const char *baidu_appid, const char *baidu_secret, const char *baidu_url) {
+                             const char *baidu_appid, const char *baidu_secret, const char *baidu_url,
+                             const char *cache_dir) {
     if (nb <= 0) return;
 
-    if (nb > 1) {
+    if (cache_dir && cache_dir[0]) {
+        ensure_cache_cs();
+        EnterCriticalSection(&g_cache_cs);
+        cache_load_locked(cache_dir);
+        LeaveCriticalSection(&g_cache_cs);
+    }
+
+    int *miss = (int *)malloc((size_t)nb * sizeof(int));
+    if (!miss) return;
+    int m = 0;
+    for (int i = 0; i < nb; i++) {
+        char *cached = ocr_cache_lookup(blks[i].en);
+        if (cached) {
+            blks[i].zh = cached;
+        } else {
+            miss[m++] = i;
+        }
+    }
+    if (m == 0) {
+        fy_log_write("OCR", "全部 %d 块命中本地记忆库，零网络请求", nb);
+        free(miss);
+        return;
+    }
+    if (m < nb) {
+        fy_log_write("OCR", "记忆库命中 %d/%d 块，待联网 %d 块", nb - m, nb, m);
+    }
+
+    const int flags = FY_CHAIN_NO_DICT | FY_CHAIN_PREFER_BAIDU;
+
+    if (m > 1) {
         size_t total_len = 0;
-        for (int i = 0; i < nb; i++) total_len += strlen(blks[i].en) + 1;
+        for (int k = 0; k < m; k++) total_len += strlen(blks[miss[k]].en) + 1;
         char *joined = (char *)malloc(total_len + 1);
         if (joined) {
             char *p = joined;
-            for (int i = 0; i < nb; i++) {
-                size_t l = strlen(blks[i].en);
-                memcpy(p, blks[i].en, l);
+            for (int k = 0; k < m; k++) {
+                size_t l = strlen(blks[miss[k]].en);
+                memcpy(p, blks[miss[k]].en, l);
                 p += l;
-                *p++ = (i + 1 < nb) ? '\n' : '\0';
+                *p++ = (k + 1 < m) ? '\n' : '\0';
             }
-            char *res = fy_translate_chain(joined, FY_EN2ZH, ai_url, ai_key, ai_model,
-                                           baidu_appid, baidu_secret, baidu_url);
+            char *res = fy_translate_chain_ex(joined, FY_EN2ZH, ai_url, ai_key, ai_model,
+                                              baidu_appid, baidu_secret, baidu_url, flags);
             free(joined);
             if (res) {
                 char *body = res;
@@ -553,19 +1010,26 @@ static void translate_blocks(TextBlock *blks, int nb,
                         body = nl + 1;
                     }
                 }
-                int lines = 1;
+                /* 去掉尾部多余空行后统计行数 */
+                size_t blen = strlen(body);
+                while (blen > 0 && (body[blen - 1] == '\n' || body[blen - 1] == '\r')) {
+                    body[--blen] = '\0';
+                }
+                int lines = body[0] ? 1 : 0;
                 for (char *q = body; *q; q++) if (*q == '\n') lines++;
-                if (lines == nb) {
+                if (lines == m) {
                     char *cur = body;
-                    for (int i = 0; i < nb; i++) {
+                    for (int k = 0; k < m; k++) {
                         char *nl = strchr(cur, '\n');
                         if (nl) *nl = '\0';
                         size_t l = strlen(cur);
-                        if (l > 0 && cur[l - 1] == '\r') cur[l - 1] = '\0';
-                        blks[i].zh = fy_strdup(cur);
+                        while (l > 0 && cur[l - 1] == '\r') cur[--l] = '\0';
+                        blks[miss[k]].zh = fy_strdup(cur);
+                        ocr_cache_put(blks[miss[k]].en, blks[miss[k]].zh);
                         cur = nl ? (nl + 1) : (cur + l);
                     }
                     fy_free(res);
+                    free(miss);
                     return;
                 }
                 fy_free(res);
@@ -573,17 +1037,42 @@ static void translate_blocks(TextBlock *blks, int nb,
         }
     }
 
-    /* 单块或行数未对齐：逐块翻译并清理词典附加行 */
-    for (int i = 0; i < nb; i++) {
-        char *r = fy_translate_chain(blks[i].en, FY_EN2ZH, ai_url, ai_key, ai_model,
-                                     baidu_appid, baidu_secret, baidu_url);
-        if (r) {
-            blks[i].zh = clean_zh_for_overlay(r, blks[i].n_lines <= 1);
-            fy_free(r);
+    /* 单块或批量行数未对齐：最多 4 线程并发逐块请求 */
+    OcrBatchJob job;
+    job.blks = blks;
+    job.miss_idx = miss;
+    job.miss_n = m;
+    job.next_pos = 0;
+    job.ai_url = ai_url;
+    job.ai_key = ai_key;
+    job.ai_model = ai_model;
+    job.baidu_appid = baidu_appid;
+    job.baidu_secret = baidu_secret;
+    job.baidu_url = baidu_url;
+
+    int nthreads = m > 4 ? 4 : m;
+    if (nthreads <= 1) {
+        ocr_worker_proc(&job);
+    } else {
+        HANDLE ths[4];
+        int created = 0;
+        for (int t = 0; t < nthreads; t++) {
+            HANDLE h = CreateThread(NULL, 0, ocr_worker_proc, &job, 0, NULL);
+            if (h) ths[created++] = h;
+        }
+        if (created == 0) {
+            ocr_worker_proc(&job);
         } else {
-            blks[i].zh = fy_strdup(blks[i].en);
+            WaitForMultipleObjects((DWORD)created, ths, TRUE, INFINITE);
+            for (int t = 0; t < created; t++) CloseHandle(ths[t]);
         }
     }
+
+    for (int k = 0; k < m; k++) {
+        int bi = miss[k];
+        if (blks[bi].zh) ocr_cache_put(blks[bi].en, blks[bi].zh);
+    }
+    free(miss);
 }
 
 /* 采样矩形外围 1-2px 主背景色（4-bit 量化众数桶求均值，抗抗锯齿毛边） */
@@ -789,7 +1278,8 @@ static char *join_block_texts(const TextBlock *blks, int nb, int is_zh) {
 FySnipResult *fy_snip_translate(const void *bgra_in, int width, int height,
                                 const char *ai_url, const char *ai_key,
                                 const char *ai_model, const char *baidu_appid,
-                                const char *baidu_secret, const char *baidu_url) {
+                                const char *baidu_secret, const char *baidu_url,
+                                const char *cache_dir) {
     FySnipResult *res = (FySnipResult *)calloc(1, sizeof(FySnipResult));
     if (!res) return NULL;
     res->width = width;
@@ -824,7 +1314,7 @@ FySnipResult *fy_snip_translate(const void *bgra_in, int width, int height,
     for (int i = 0; i < n_lines; i++) free(lines[i].text);
     free(lines);
 
-    translate_blocks(blks, nb, ai_url, ai_key, ai_model, baidu_appid, baidu_secret, baidu_url);
+    translate_blocks(blks, nb, ai_url, ai_key, ai_model, baidu_appid, baidu_secret, baidu_url, cache_dir);
     render_blocks(bgra_in, res->bgra_out, width, height, blks, nb);
 
     res->ok = 1;

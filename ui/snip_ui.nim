@@ -20,6 +20,7 @@ type
     baiduAppId*: string
     baiduKey*: string
     baiduUrl*: string
+    cacheDir*: string
 
   SnipJob = object
     seq: int
@@ -28,6 +29,7 @@ type
     w, h: cint
     aiUrl, aiKey, aiModel: cstring
     baiduAppId, baiduKey, baiduUrl: cstring
+    cacheDir: cstring
 
   ToolBtn = object
     rect: RECT
@@ -158,7 +160,8 @@ proc snipWorker(param: LPVOID): DWORD {.stdcall.} =
   let hwndMain = job.hwndMain
   let res = fy_snip_translate(job.bgra, job.w, job.h,
                               job.aiUrl, job.aiKey, job.aiModel,
-                              job.baiduAppId, job.baiduKey, job.baiduUrl)
+                              job.baiduAppId, job.baiduKey, job.baiduUrl,
+                              job.cacheDir)
   c_free(job.bgra)
   fy_free(job.aiUrl)
   fy_free(job.aiKey)
@@ -166,6 +169,7 @@ proc snipWorker(param: LPVOID): DWORD {.stdcall.} =
   fy_free(job.baiduAppId)
   fy_free(job.baiduKey)
   fy_free(job.baiduUrl)
+  fy_free(job.cacheDir)
   dealloc(job)
   PostMessageW(hwndMain, UINT(WmAppSnipDone), WPARAM(seq), cast[LPARAM](res))
   return 0
@@ -427,6 +431,7 @@ proc openResultWindow(screenX, screenY, w, h: cint, cropBits: pointer) =
   job.baiduAppId = fy_strdup(g_lastCfg.baiduAppId.cstring)
   job.baiduKey = fy_strdup(g_lastCfg.baiduKey.cstring)
   job.baiduUrl = fy_strdup(g_lastCfg.baiduUrl.cstring)
+  job.cacheDir = fy_strdup(g_lastCfg.cacheDir.cstring)
   discard CreateThread(nil, 0, snipWorker, cast[LPVOID](job), 0, nil)
 
 proc onSnipDone*(seq: int, res: ptr FySnipResult) =
