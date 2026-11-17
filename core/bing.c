@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 
+/* 错误消息需由后台线程写入、UI 主线程读取，不能用 __thread */
 static char g_err[256];
 
 const char *fy_last_error(void) { return g_err; }
@@ -102,49 +103,79 @@ static int refresh_session(void)
 static char *
 ttranslate(const char *text, const char *from, const char *to)
 {
-    if (refresh_session() != 0) return NULL;
+    size_t enc_cap = strlen(text) * 3 + 16;
+    char *enc = (char *)malloc(enc_cap);
+    if (!enc) { set_err("内存不足"); return NULL; }
+    if (fy_urlencode(text, enc, (int)enc_cap) < 0) {
+        free(enc);
+        set_err("文本过长");
+        return NULL;
+    }
 
-    static char enc[8192];
-    char efrom[32], eto[32], etok[192], ekey[32];
-    if (fy_urlencode(text, enc, (int)sizeof(enc)) < 0) { set_err("文本过长"); return NULL; }
-    fy_urlencode(from, efrom, sizeof(efrom));
-    fy_urlencode(to, eto, sizeof(eto));
-    fy_urlencode(s_token, etok, sizeof(etok));
-    fy_urlencode(s_key, ekey, sizeof(ekey));
+    char *resp = NULL;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (refresh_session() != 0) { free(enc); return NULL; }
 
-    char url[512], form[9216];
-    snprintf(url, sizeof(url),
-             "https://cn.bing.com/ttranslatev3?isVertical=1&&IG=%s&IID=%s&SFX=%d",
-             s_ig, s_iid, (int)(GetTickCount() & 0xFFFF));
-    snprintf(form, sizeof(form),
-             "fromLang=%s&to=%s&tone=Casual&text=%s&token=%s&key=%s",
-             efrom, eto, enc, etok, ekey);
+        char efrom[32], eto[32], etok[192], ekey[32];
+        fy_urlencode(from, efrom, sizeof(efrom));
+        fy_urlencode(to, eto, sizeof(eto));
+        fy_urlencode(s_token, etok, sizeof(etok));
+        fy_urlencode(s_key, ekey, sizeof(ekey));
 
-    char *resp = fy_http_post(url, "https://cn.bing.com/translator", form);
-    if (!resp) { set_err("翻译请求发送失败（网络错误）"); return NULL; }
+        char url[512];
+        snprintf(url, sizeof(url),
+                 "https://cn.bing.com/ttranslatev3?isVertical=1&&IG=%s&IID=%s&SFX=%d",
+                 s_ig, s_iid, (int)(GetTickCount() & 0xFFFF));
 
-    char trans[4096] = "", pin[4096] = "";
-    if (!fy_json_str(resp, "[0].translations[0].text", trans, (int)sizeof(trans))) {
+        size_t form_cap = strlen(enc) + 512;
+        char *form = (char *)malloc(form_cap);
+        if (!form) { free(enc); set_err("内存不足"); return NULL; }
+        snprintf(form, form_cap,
+                 "fromLang=%s&to=%s&tone=Casual&text=%s&token=%s&key=%s",
+                 efrom, eto, enc, etok, ekey);
+
+        resp = fy_http_post(url, "https://cn.bing.com/translator", form);
+        free(form);
+        if (!resp) { free(enc); set_err("翻译请求发送失败（网络错误）"); return NULL; }
+
+        char trans[4096] = "", pin[4096] = "";
+        if (fy_json_str(resp, "[0].translations[0].text", trans, (int)sizeof(trans))) {
+            fy_json_str(resp, "[0].translations[0].transliteration.text", pin, (int)sizeof(pin));
+            free(resp);
+            free(enc);
+
+            size_t cap = strlen(trans) + strlen(pin) + 64;
+            char *out = (char *)malloc(cap);
+            if (!out) { set_err("内存不足"); return NULL; }
+            if (pin[0] && strcmp(to, "zh-Hans") == 0)
+                snprintf(out, cap, "%s\n拼音：%s", trans, pin);
+            else
+                snprintf(out, cap, "%s", trans);
+            return out;
+        }
+
         char msg[128] = "";
         int have = fy_json_str(resp, "errorMessage", msg, (int)sizeof(msg));
         int captcha = strstr(resp, "ShowCaptcha") != NULL;
         free(resp);
-        if (captcha)              set_err("必应要求人机验证，请稍后重试");
-        else if (have && msg[0])  set_err(msg);
-        else                      set_err("翻译结果解析失败");
+        if (captcha) {
+            free(enc);
+            set_err("必应要求人机验证，请稍后重试");
+            return NULL;
+        }
+        if (attempt == 0) {
+            /* 会话可能提前失效：清缓存并重刷 IG/token 后自动重试一次 */
+            fy_log_write("必应", "会话疑失效，刷新 token 重试");
+            s_tick = 0; s_ig[0] = 0; s_token[0] = 0;
+            continue;
+        }
+        free(enc);
+        if (have && msg[0]) set_err(msg);
+        else                 set_err("翻译结果解析失败");
         return NULL;
     }
-    fy_json_str(resp, "[0].translations[0].transliteration.text", pin, (int)sizeof(pin));
-    free(resp);
-
-    size_t cap = strlen(trans) + strlen(pin) + 64;
-    char *out = (char *)malloc(cap);
-    if (!out) { set_err("内存不足"); return NULL; }
-    if (pin[0] && strcmp(to, "zh-Hans") == 0)
-        snprintf(out, cap, "%s\n拼音：%s", trans, pin);
-    else
-        snprintf(out, cap, "%s", trans);
-    return out;
+    free(enc);
+    return NULL;
 }
 
 /* ---------- 单词词典（meta description 一次拿全） ---------- */

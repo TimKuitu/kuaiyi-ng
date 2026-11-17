@@ -968,11 +968,14 @@ proc histJump(delta: int) =
 # ---------------- 命名复制（双击/热键直接出标识符） ----------------
 proc namingSourceText(): string =
   # 命名素材：优先输入框原文（中文/英文短语都能拆），输入框空了才取结果区首行
+  # （自动跳过 AI/百度失败回退到必应时添加的“（…已用必应翻译）”提示前缀行）
   result = input.getValue().strip()
   if result.len == 0 and g_lastToEn and g_resultValid:
-    let first = resultBox.getValue().splitLines()[0].strip()
-    if first.len > 0 and first != "正在翻译……":
-      result = first
+    for line in resultBox.getValue().splitLines():
+      let s = line.strip()
+      if s.len == 0 or s == "正在翻译……": continue
+      if s.startsWith("（") and s.contains("已用必应翻译）"): continue
+      return s
 
 proc namingCopy() =
   # 不用先翻译：按「风格 + 对象」两个下拉直接把短语缩成标识符并复制

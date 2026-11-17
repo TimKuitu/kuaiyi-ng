@@ -158,13 +158,21 @@ char *fy_http_post_json(const char *url, const char *bearer, const char *json)
     uc.dwStructSize = sizeof(uc);
     uc.lpszHostName = host;      uc.dwHostNameLength = sizeof(host);
     uc.lpszUrlPath = path;       uc.dwUrlPathLength = sizeof(path);
-    if (!InternetCrackUrlA(url, 0, 0, &uc)) return NULL;
+    if (!InternetCrackUrlA(url, 0, 0, &uc)) {
+        fy_log_write("HTTP", "POST_JSON 地址解析失败 err=%lu %s",
+                     (unsigned long)GetLastError(), url);
+        return NULL;
+    }
 
     int secure = (uc.nScheme == INTERNET_SCHEME_HTTPS);
     HINTERNET hConn = InternetConnectA(g_session, host,
                                        uc.nPort ? uc.nPort : (secure ? 443 : 80),
                                        NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
-    if (!hConn) return NULL;
+    if (!hConn) {
+        fy_log_write("HTTP", "POST_JSON 连接 %s 失败 err=%lu",
+                     host, (unsigned long)GetLastError());
+        return NULL;
+    }
 
     char hdr[1024];
     snprintf(hdr, sizeof(hdr),
@@ -178,13 +186,30 @@ char *fy_http_post_json(const char *url, const char *bearer, const char *json)
 
     HINTERNET hReq = HttpOpenRequestA(hConn, "POST", path, "HTTP/1.1", NULL, NULL,
                                       flags, 0);
-    if (!hReq) { InternetCloseHandle(hConn); return NULL; }
+    if (!hReq) {
+        fy_log_write("HTTP", "POST_JSON 打开请求失败 err=%lu",
+                     (unsigned long)GetLastError());
+        InternetCloseHandle(hConn);
+        return NULL;
+    }
 
     char *body = NULL;
-    if (HttpSendRequestA(hReq, hdr, (DWORD)-1L, (LPVOID)json, (DWORD)strlen(json)))
+    DWORD send_err = 0;
+    int sent = 0;
+    if (HttpSendRequestA(hReq, hdr, (DWORD)-1L, (LPVOID)json, (DWORD)strlen(json))) {
+        sent = 1;
         body = read_all(hReq);
+    } else {
+        send_err = GetLastError();
+    }
     InternetCloseHandle(hReq);
     InternetCloseHandle(hConn);
+    if (body)
+        fy_log_write("HTTP", "POST_JSON 返回 %u字节", (unsigned)strlen(body));
+    else if (sent)
+        fy_log_write("HTTP", "POST_JSON 响应读取失败");
+    else
+        fy_log_write("HTTP", "POST_JSON 发送失败 err=%lu", (unsigned long)send_err);
     return body;
 }
 
@@ -202,7 +227,18 @@ long long fy_http_download(const char *url, const char *utf8_path,
                                        INTERNET_FLAG_RELOAD |
                                        INTERNET_FLAG_NO_CACHE_WRITE |
                                        INTERNET_FLAG_KEEP_CONNECTION, 0);
-    if (!hFile) { fclose(f); free(path); return -1; }
+    if (!hFile) {
+        fy_log_write("HTTP", "下载打开失败 err=%lu %s", (unsigned long)GetLastError(), url);
+        fclose(f); remove(path); free(path); return -1;
+    }
+
+    DWORD status = 0, cbStatus = sizeof(status);
+    if (HttpQueryInfoA(hFile, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                       &status, &cbStatus, NULL) && status >= 400) {
+        fy_log_write("HTTP", "下载状态异常 HTTP %lu %s", (unsigned long)status, url);
+        InternetCloseHandle(hFile); fclose(f); remove(path); free(path);
+        return -1;
+    }
 
     long long total = -1;
     DWORD cbSize = sizeof(total);
