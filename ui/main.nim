@@ -233,6 +233,10 @@ var
   btnZh2En, btnEn2Zh, btnTrans, btnSettings: wButton
   btnOpenCache, btnSaveSet1, btnSaveSet2, btnSaveSet3, btnResetHot: wButton
   btnCheckUpdate: wButton
+  btnToggleAiKey, btnToggleBaiduKey: wButton
+  g_aiKeyShown = false
+  g_baiduKeyShown = false
+  g_transSeq = 0
   lblUpdateStatus: wStaticText
   edtWinW, edtWinH: wTextCtrl
   btnResetSize: wButton
@@ -657,6 +661,7 @@ proc flashTitle(msg: string) =
 
 # ---------------- 翻译（后台线程） ----------------
 type TranslateJob = object
+  seq: int
   text: cstring
   mode: cint
   useAi: bool
@@ -673,6 +678,7 @@ proc translateWorker(param: LPVOID): DWORD {.stdcall.} =
   # 只调用 C 核心（回退链在 C 内完成），不触碰 Nim GC。
   # 窗口句柄用 g_hwndMain（纯值拷贝），不在裸线程里调 frame 的方法
   let job = cast[ptr TranslateJob](param)
+  let seq = job.seq
   let res = fy_translate_chain(job.text, job.mode,
                                job.aiUrl, job.aiKey, job.aiModel,
                                job.baiduAppId, job.baiduKey, job.baiduUrl)
@@ -684,28 +690,41 @@ proc translateWorker(param: LPVOID): DWORD {.stdcall.} =
   fy_free(job.baiduKey)
   fy_free(job.baiduUrl)
   dealloc(job)
-  PostMessageW(g_hwndMain, UINT(WmAppTranslated), 0, cast[LPARAM](res))
+  PostMessageW(g_hwndMain, UINT(WmAppTranslated), WPARAM(seq), cast[LPARAM](res))
   return 0
+
+proc cancelTranslate() =
+  ## 软取消当前等待：递增序号使后台旧回调结果到达时自动丢弃，立即恢复按钮
+  if not g_translating: return
+  inc g_transSeq
+  g_translating = false
+  btnZh2En.enable(); btnEn2Zh.enable()
+  btnTrans.label = "翻译"
+  resultBox.setValue("已取消本次翻译")
+  fy_log_write("翻译", "用户取消等待 seq=%d", cint(g_transSeq))
 
 proc doTranslate(mode: int) =
   if g_translating or frame.isNil: return
   let text = input.getValue().strip()
   if text.len == 0: return
+  inc g_transSeq
   g_translating = true
   g_resultValid = false
   # 记录本次翻译目标：中→英时结果区是英文（复制目标）
   g_lastToEn = (mode == FY_ZH2EN) or (mode == FY_AUTO and nimHasCjk(text))
   resultBox.setValue("正在翻译……")
-  btnZh2En.disable(); btnEn2Zh.disable(); btnTrans.disable()
+  btnZh2En.disable(); btnEn2Zh.disable()
+  btnTrans.label = "取消"
   # 中文输入不用 AI，直接走 百度 → 必应 二级链（useAi 置假时 C 核心自动跳过 AI 段）
   let useAi = (not nimHasCjk(text)) and g_set.aiEnabled and
               g_set.aiKey.len > 0 and g_set.aiUrl.len > 0
   let useBaidu = g_set.baiduEnabled and g_set.baiduAppId.len > 0 and
                  g_set.baiduKey.len > 0
-  fy_log_write("翻译", "开始 mode=%d 文本%u字节 预览=%.48s AI=%d 百度=%d",
-               cint(mode), cuint(text.len), text.cstring,
+  fy_log_write("翻译", "开始 seq=%d mode=%d 文本%u字节 预览=%.48s AI=%d 百度=%d",
+               cint(g_transSeq), cint(mode), cuint(text.len), text.cstring,
                cint(ord(useAi)), cint(ord(useBaidu)))
   let job = cast[ptr TranslateJob](alloc0(sizeof(TranslateJob)))
+  job.seq = g_transSeq
   job.text = fy_strdup(text.cstring)
   job.mode = cint(mode)
   job.useAi = useAi
@@ -814,9 +833,13 @@ proc onUpdateMessage(stage: int, lp: LPARAM) =
 
 proc quitApp()   # 前置声明：-testtranslate 钩子在 onTranslated 里提前用到
 
-proc onTranslated(res: cstring) =
+proc onTranslated(seq: int, res: cstring) =
+  if seq != g_transSeq:
+    if not res.isNil: fy_free(cast[pointer](res))
+    return
   g_translating = false
-  btnZh2En.enable(); btnEn2Zh.enable(); btnTrans.enable()
+  btnZh2En.enable(); btnEn2Zh.enable()
+  btnTrans.label = "翻译"
   if res.isNil:
     resultBox.setValue("翻译失败\n" & $fy_last_error())
     g_resultValid = false
@@ -830,11 +853,13 @@ proc onTranslated(res: cstring) =
   resultBox.setValue($res)
   g_resultValid = true
   fy_free(cast[pointer](res))
+  let eng = $fy_last_engine()
+  if eng.len > 0: flashTitle("（" & eng & "翻译）")
   let text = input.getValue().strip()
   if text.len != 0:
     fy_hist_push(g_hist, text.cstring)
     g_histIdx = -1
-  fy_log_write("翻译", "完成 结果%u字节", cuint(resultBox.getValue().len))
+  fy_log_write("翻译", "完成 引擎=%s 结果%u字节", eng.cstring, cuint(resultBox.getValue().len))
   if g_testTranslate:
     let f = open(g_appDir / "test.log", fmAppend)
     f.writeLine("TEST-RESULT: OK " & resultBox.getValue())
@@ -1106,7 +1131,23 @@ proc applyWinSize(w, h: int) =
   if hl < 260.0: hl = 260.0
   frame.size = (int(wl), int(hl))
 
+const EmSetPasswordChar = UINT(0x00CC)
+
+proc setKeyMask(edt: wTextCtrl, btn: wButton, show: bool) =
+  ## 切换密钥输入框的明文/掩码显示
+  if edt != nil:
+    let h = cast[HWND](edt.getHandle())
+    discard SendMessageW(h, EmSetPasswordChar,
+                         if show: WPARAM(0) else: WPARAM(0x25CF), 0)
+    discard InvalidateRect(h, nil, TRUE)
+  if btn != nil:
+    btn.label = if show: "隐藏" else: "显示"
+
 proc openSettings() =
+  g_aiKeyShown = false
+  g_baiduKeyShown = false
+  setKeyMask(edtAiKey, btnToggleAiKey, false)
+  setKeyMask(edtBaiduKey, btnToggleBaiduKey, false)
   chkTop.setValue(g_set.topmost)
   chkCloseExit.setValue(g_set.closeExit)
   chkAutoStart.setValue(g_set.autoStart)
@@ -1487,7 +1528,7 @@ proc main() =
   frame.wEvent_TrayRightUp do ():
     showTrayMenu()
   frame.connect(UINT(WmAppTranslated)) do (event: wEvent):
-    onTranslated(cast[cstring](event.getlParam()))
+    onTranslated(int(event.getwParam()), cast[cstring](event.getlParam()))
   frame.connect(UINT(WmAppUpdate)) do (event: wEvent):
     onUpdateMessage(int event.getwParam(), event.getlParam())
 
@@ -1507,7 +1548,8 @@ proc main() =
     discard fy_cfg_save(g_cfg)
     fy_log_write("设置", "命名对象即时切换=%d", cint(g_set.nameKind))
   btnTrans.wEvent_Button do ():
-    doTranslate(FY_AUTO)
+    if g_translating: cancelTranslate()
+    else: doTranslate(FY_AUTO)
   btnSettings.wEvent_Button do ():
     openSettings()
   input.wEvent_TextEnter do ():
@@ -1648,18 +1690,20 @@ proc main() =
                          size=(dpx(160), dpx(30)))
   discard StaticText(page3, label="地址（可带 /v1）", pos=(dpx(390), dpx(16)),
                      size=(dpx(140), dpx(22)))
-  edtAiUrl = TextCtrl(page3, pos=(dpx(PadL), dpx(48)), size=(dpx(300), dpx(30)))
-  discard StaticText(page3, label="密钥", pos=(dpx(340), dpx(52)), size=(dpx(40), dpx(22)))
-  edtAiKey = TextCtrl(page3, pos=(dpx(384), dpx(48)), size=(dpx(136), dpx(30)))
+  edtAiUrl = TextCtrl(page3, pos=(dpx(PadL), dpx(48)), size=(dpx(252), dpx(30)))
+  discard StaticText(page3, label="密钥", pos=(dpx(284), dpx(52)), size=(dpx(36), dpx(22)))
+  edtAiKey = TextCtrl(page3, pos=(dpx(322), dpx(48)), size=(dpx(142), dpx(30)), style=wTePassword)
+  btnToggleAiKey = Button(page3, label="显示", pos=(dpx(470), dpx(48)), size=(dpx(50), dpx(30)))
   discard StaticText(page3, label="模型", pos=(dpx(PadL), dpx(90)), size=(dpx(40), dpx(22)))
   edtAiModel = TextCtrl(page3, pos=(dpx(68), dpx(86)), size=(dpx(200), dpx(30)))
 
   chkBaidu = CheckBox(page3, label="百度翻译开放平台（免费标准版，fanyi-api.baidu.com 注册）",
                       pos=(dpx(PadL), dpx(134)))
   discard StaticText(page3, label="AppID", pos=(dpx(PadL), dpx(170)), size=(dpx(50), dpx(22)))
-  edtBaiduAppId = TextCtrl(page3, pos=(dpx(78), dpx(166)), size=(dpx(200), dpx(30)))
-  discard StaticText(page3, label="密钥", pos=(dpx(296), dpx(170)), size=(dpx(40), dpx(22)))
-  edtBaiduKey = TextCtrl(page3, pos=(dpx(340), dpx(166)), size=(dpx(180), dpx(30)))
+  edtBaiduAppId = TextCtrl(page3, pos=(dpx(78), dpx(166)), size=(dpx(156), dpx(30)))
+  discard StaticText(page3, label="密钥", pos=(dpx(244), dpx(170)), size=(dpx(36), dpx(22)))
+  edtBaiduKey = TextCtrl(page3, pos=(dpx(282), dpx(166)), size=(dpx(182), dpx(30)), style=wTePassword)
+  btnToggleBaiduKey = Button(page3, label="显示", pos=(dpx(470), dpx(166)), size=(dpx(50), dpx(30)))
   discard StaticText(page3, label="地址（可选，默认官方接口）", pos=(dpx(PadL), dpx(208)),
                      size=(dpx(200), dpx(22)))
   edtBaiduUrl = TextCtrl(page3, pos=(dpx(232), dpx(204)), size=(dpx(288), dpx(30)))
@@ -1714,6 +1758,12 @@ proc main() =
     saveSettings()
   btnSaveSet3.wEvent_Button do ():
     saveSettings()
+  btnToggleAiKey.wEvent_Button do ():
+    g_aiKeyShown = not g_aiKeyShown
+    setKeyMask(edtAiKey, btnToggleAiKey, g_aiKeyShown)
+  btnToggleBaiduKey.wEvent_Button do ():
+    g_baiduKeyShown = not g_baiduKeyShown
+    setKeyMask(edtBaiduKey, btnToggleBaiduKey, g_baiduKeyShown)
   btnAddAbbr.wEvent_Button do ():
     if dlAbbr != nil: dlAbbr.addRow(g_uiScale)
   btnSaveAbbr.wEvent_Button do ():

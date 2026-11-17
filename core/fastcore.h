@@ -27,6 +27,7 @@ extern "C" {
 void  fy_free(void *p);                 /* 释放核心返回的堆内存 */
 char *fy_strdup(const char *s);         /* C 堆复制（跨线程传递用） */
 const char *fy_last_error(void);        /* 最近一次错误（UTF-8） */
+const char *fy_last_engine(void);       /* 最近一次成功命中的引擎名（AI/百度/必应） */
 
 /* 运行日志（fastT\run.log，UTF-8）：每次启动自动把上次内容轮换为 run.last.log。
  * 写入线程安全，未开启时为空操作；fy_log_write 的 fmt 用 printf 风格。

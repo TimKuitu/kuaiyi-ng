@@ -16,10 +16,12 @@
 #include <stdlib.h>
 #include <ctype.h>
 
-/* 错误消息需由后台线程写入、UI 主线程读取，不能用 __thread */
+/* 错误消息与命中引擎需由后台线程写入、UI 主线程读取，不能用 __thread */
 static char g_err[256];
+static char g_engine[16];
 
-const char *fy_last_error(void) { return g_err; }
+const char *fy_last_error(void)  { return g_err; }
+const char *fy_last_engine(void) { return g_engine; }
 
 static void set_err(const char *msg)
 {
@@ -387,6 +389,7 @@ char *fy_translate_chain(const char *utf8_text, int mode,
     notes[0] = 0;
 
     char *res = NULL;
+    g_engine[0] = 0;
 
     /* 1. AI（OpenAI 格式） */
     if (!res && ai_url && ai_url[0] && ai_key && ai_key[0]) {
@@ -396,6 +399,7 @@ char *fy_translate_chain(const char *utf8_text, int mode,
             const char *e = fy_last_error();
             nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "AI：%s；", e);
         } else {
+            snprintf(g_engine, sizeof(g_engine), "AI");
             fy_log_write("链路", "AI 成功 %u字节", (unsigned)strlen(res));
         }
     }
@@ -408,6 +412,7 @@ char *fy_translate_chain(const char *utf8_text, int mode,
             const char *e = fy_last_error();
             nlen += (size_t)snprintf(notes + nlen, sizeof(notes) - nlen, "百度：%s；", e);
         } else {
+            snprintf(g_engine, sizeof(g_engine), "百度");
             fy_log_write("链路", "百度 成功 %u字节", (unsigned)strlen(res));
         }
     }
@@ -422,6 +427,7 @@ char *fy_translate_chain(const char *utf8_text, int mode,
             fy_log_write("链路", "全部失败");
             return NULL;   /* 全部失败 */
         }
+        snprintf(g_engine, sizeof(g_engine), "必应");
         if (nlen > 0) {
             /* notes 尾部固定带"；"，去掉再接"。"，避免出现"；。" */
             size_t L = strlen(notes);

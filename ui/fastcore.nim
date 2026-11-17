@@ -17,6 +17,7 @@
 proc fy_free*(p: pointer) {.importc.}
 proc fy_strdup*(s: cstring): cstring {.importc.}
 proc fy_last_error*(): cstring {.importc.}
+proc fy_last_engine*(): cstring {.importc.}
 proc fy_log_open*(path: cstring) {.importc.}
 proc fy_log_write*(tag: cstring, fmt: cstring) {.importc, varargs.}
 proc fy_log_install_crash_filter*() {.importc.}
