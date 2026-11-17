@@ -1547,6 +1547,7 @@ proc main() =
     of HkHistDown: histJump(1)
     of HkCopy: namingCopy()
     of HkSnip: triggerSnip()
+    of HkSnipEsc: cancelSnip()
     else: discard
   frame.wEvent_Timer do (event: wEvent):
     # 88 = 标题反馈到期，恢复原标题

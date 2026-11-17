@@ -8,6 +8,7 @@ import fastcore
 
 const
   WmAppSnipDone* = WM_APP + 0x0202
+  HkSnipEsc* = 99
   ToolbarH = 38
   MinWinW = 380
 
@@ -97,6 +98,13 @@ proc freeResultBitmaps() =
   g_bitsResOrig = nil
   g_bitsResTrans = nil
 
+proc syncEscHotkey() =
+  if g_hwndMain == 0: return
+  if g_hwndOverlay != 0 or g_hwndResult != 0:
+    discard RegisterHotKey(g_hwndMain, UINT(HkSnipEsc), 0, UINT(VK_ESCAPE))
+  else:
+    discard UnregisterHotKey(g_hwndMain, HkSnipEsc)
+
 proc closeResultWindow*() =
   if g_hwndResult != 0:
     DestroyWindow(g_hwndResult)
@@ -104,6 +112,7 @@ proc closeResultWindow*() =
   freeResultBitmaps()
   g_zhText = ""
   g_statusMsg = ""
+  syncEscHotkey()
 
 proc normRect(p1, p2: POINT): RECT =
   result.left = min(p1.x, p2.x)
@@ -400,6 +409,8 @@ proc openResultWindow(screenX, screenY, w, h: cint, cropBits: pointer) =
     0, 0, GetModuleHandleW(nil), nil
   )
   SetForegroundWindow(g_hwndResult)
+  SetFocus(g_hwndResult)
+  syncEscHotkey()
 
   # 启动后台 OCR + 翻译线程
   let job = cast[ptr SnipJob](alloc0(sizeof(SnipJob)))
@@ -442,6 +453,11 @@ proc closeOverlay() =
     DestroyWindow(g_hwndOverlay)
     g_hwndOverlay = 0
   freeOverlayBitmaps()
+  syncEscHotkey()
+
+proc cancelSnip*() =
+  closeOverlay()
+  closeResultWindow()
 
 proc finishSelection() =
   let rc = normRect(g_ptStart, g_ptCurr)
@@ -466,7 +482,11 @@ proc finishSelection() =
 
   let sx = g_vx + cint(rc.left)
   let sy = g_vy + cint(rc.top)
-  closeOverlay()
+  if g_hwndOverlay != 0:
+    DestroyWindow(g_hwndOverlay)
+    g_hwndOverlay = 0
+  g_dragging = false
+  freeOverlayBitmaps()
   openResultWindow(sx, sy, sw, sh, cropBits)
   c_free(cropBits)
 
@@ -622,3 +642,5 @@ proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string)) =
     0, 0, GetModuleHandleW(nil), nil
   )
   SetForegroundWindow(g_hwndOverlay)
+  SetFocus(g_hwndOverlay)
+  syncEscHotkey()
