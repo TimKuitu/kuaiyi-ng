@@ -8,6 +8,7 @@ import fastcore
 import naming_reducer
 import dict_list
 import snip_ui
+import modern_main
 
 # winim/lean 未包含 shellapi，这里单独引入打开目录所需的函数
 proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
@@ -235,7 +236,6 @@ var
   input, resultBox, edtCache: wTextCtrl
   edtAiUrl, edtAiKey, edtAiModel: wTextCtrl
   edtBaiduAppId, edtBaiduKey, edtBaiduUrl: wTextCtrl
-  btnZh2En, btnEn2Zh, btnTrans, btnSettings: wButton
   btnOpenCache, btnSaveSet1, btnSaveSet2, btnSaveSet3, btnResetHot: wButton
   btnCheckUpdate: wButton
   btnToggleAiKey, btnToggleBaiduKey: wButton
@@ -247,8 +247,6 @@ var
   btnResetSize: wButton
   cmbUiScale: wComboBox
   lblScaleHint: wStaticText
-  cmbStyle: wComboBox      # 主窗口按钮行：命名风格下拉（snake_case/驼峰法）
-  cmbKind: wComboBox       # 命名对象下拉（局部变量…函数），选中即生效
   cmbAiPreset: wComboBox
   chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi, chkBaidu: wCheckBox
   chkSummonClear, chkDblClear: wCheckBox
@@ -660,8 +658,9 @@ proc copyText(s: string) =
   discard wSetClipboard(DataObject(s))
 
 proc flashTitle(msg: string) =
-  # 短暂改标题作反馈，2 秒后自动恢复（标题被永久改动会破坏按标题找窗口的逻辑）
+  # 短暂在标题栏显示反馈，2 秒后自动恢复
   frame.title = AppTitle & "  " & msg
+  modernSetHint(msg)
   frame.startTimer(2.0, 88)
 
 # ---------------- 翻译（后台线程） ----------------
@@ -703,8 +702,7 @@ proc cancelTranslate() =
   if not g_translating: return
   inc g_transSeq
   g_translating = false
-  btnZh2En.enable(); btnEn2Zh.enable()
-  btnTrans.label = "翻译"
+  modernRefreshState()
   resultBox.setValue("已取消本次翻译")
   fy_log_write("翻译", "用户取消等待 seq=%d", cint(g_transSeq))
 
@@ -718,8 +716,7 @@ proc doTranslate(mode: int) =
   # 记录本次翻译目标：中→英时结果区是英文（复制目标）
   g_lastToEn = (mode == FY_ZH2EN) or (mode == FY_AUTO and nimHasCjk(text))
   resultBox.setValue("正在翻译……")
-  btnZh2En.disable(); btnEn2Zh.disable()
-  btnTrans.label = "取消"
+  modernRefreshState()
   # 中文输入不用 AI，直接走 百度 → 必应 二级链（useAi 置假时 C 核心自动跳过 AI 段）
   let useAi = (not nimHasCjk(text)) and g_set.aiEnabled and
               g_set.aiKey.len > 0 and g_set.aiUrl.len > 0
@@ -843,8 +840,7 @@ proc onTranslated(seq: int, res: cstring) =
     if not res.isNil: fy_free(cast[pointer](res))
     return
   g_translating = false
-  btnZh2En.enable(); btnEn2Zh.enable()
-  btnTrans.label = "翻译"
+  modernRefreshState()
   if res.isNil:
     resultBox.setValue("翻译失败\n" & $fy_last_error())
     g_resultValid = false
@@ -873,50 +869,11 @@ proc onTranslated(seq: int, res: cstring) =
 
 # ---------------- 布局 ----------------
 proc layoutMain() =
-  # pos/size 都是像素；整体按 g_uiScale（字体缩放）等比换算，别混用。
-  template S(x: int): int = int(float(x) * g_uiScale)
   let cs = frame.getClientSize()
   let w = cs.width
   let h = cs.height
-  let gap = S(8)
-  let rh = rowH()
   panel.setSize((0, 0), (w, h))
-  # 输入区与结果区默认各 96 逻辑像素；窗口拉高时余量平分，两者永远等高
-  let fixedH = gap * 4 + rh                 # 上下边距 + 两个间距 + 按钮行
-  var extra = h - (fixedH + S(96) + S(96))
-  if extra < 0: extra = 0
-  let inH = S(96) + extra div 2
-  let resH = S(96) + (extra - extra div 2)
-  input.setSize((gap, gap), (w - gap * 2, inH))
-  # 按钮行：行高随 DPI 缩放，和字号同步
-  # 宽度按实测文字宽定的（snake_case=94px、结构体类型=90px @YaHei 18px）：
-  # 下拉留 text+30，按钮留 text+18；翻译靠右吃剩余，窗口最小宽保证整行放得下
-  let rowY = gap + inH + gap
-  btnZh2En.setSize((S(8), rowY), (S(78), rh))
-  btnEn2Zh.setSize((S(90), rowY), (S(78), rh))
-  btnSettings.setSize((S(172), rowY), (S(54), rh))
-  cmbStyle.setSize((S(230), rowY), (S(122), rh))
-  cmbKind.setSize((S(356), rowY), (S(118), rh))
-  btnTrans.setSize((S(478), rowY), (w - S(486), rh))
-  let resultTop = rowY + rh + gap
-  resultBox.setSize((gap, resultTop), (w - gap * 2, resH))
-
-proc fitComboVisibleHeight(cb: wComboBox) =
-  # ComboBox 收起时的可视高度由 item 高度决定，setSize 设的是含下拉列表的总高。
-  # 发 CB_SETITEMHEIGHT 把可视高度校准到行高（32 物理像素），量两次收敛
-  let h = cb.getHandle()
-  let want = rowH()
-  var itemH = want - 8
-  var rc: RECT
-  for i in 1 .. 3:
-    discard SendMessageW(h, CB_SETITEMHEIGHT, WPARAM(0xFFFFFFFF), itemH)
-    discard SetWindowPos(h, HWND(0), 0, 0, 0, 0,
-                         SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or
-                         SWP_FRAMECHANGED)
-    discard GetWindowRect(h, rc)
-    let got = int(rc.bottom - rc.top)
-    if got == want: break
-    itemH += want - got
+  modernLayoutMain(w, h, g_uiScale, rowH())
 
 # ---------------- 显示/隐藏 ----------------
 proc forceForeground(h: HWND) =
@@ -1127,11 +1084,10 @@ proc refreshSettings(target: float) =
   if nbSet != nil: nbSet.setSize(nbSet.getSize())
 
 proc computeDefWinSize(): tuple[w, h: int] =
-  ## 默认窗口尺寸：宽 550（按钮行六控件）、高度刚好放下 输入框/按钮行/结果框（随字体缩放变化）
-  let chrome = int(frame.getSize().height) - int(frame.getClientSize().height)
-  let contentH = dpx(8) + dpx(96) + dpx(8) + rowH() + dpx(8) + dpx(96) + dpx(8)
+  ## 默认窗口尺寸：宽 550（按钮行六控件）、高度刚好放下 标题栏/输入框/按钮行/结果框
+  let contentH = modernTitleHeight(g_uiScale) + dpx(96) + dpx(8) + rowH() + dpx(8) + dpx(96) + dpx(10)
   result.w = max(546, int(550.0 * g_uiScale))
-  result.h = max(200, contentH + chrome)
+  result.h = max(200, contentH)
 
 proc applyWinSize(w, h: int) =
   var wl = float(w)
@@ -1266,6 +1222,8 @@ proc saveSettings() =
     let cur = frame.getSize()
     g_uiFont = makeUiFont()
     applyUiFont(frame)
+    modernStyleDarkEdit(cast[HWND](input.getHandle()), false)
+    modernStyleDarkEdit(cast[HWND](resultBox.getHandle()), true)
     if nearSize((int(cur.width), int(cur.height)), oldDef):
       frame.size = (def.w, def.h)          # 没自定义过：直接用新档位的默认尺寸
     else:
@@ -1274,8 +1232,6 @@ proc saveSettings() =
     g_defWinW = def.w
     g_defWinH = def.h
     layoutMain()
-    fitComboVisibleHeight(cmbStyle)
-    fitComboVisibleHeight(cmbKind)
     syncSizeFields()
     # 设置窗口：同样按比例缩放，并立刻重排里面的字和控件
     if not setFrame.isNil and setFrame.getHandle() != HWND(0):
@@ -1499,13 +1455,49 @@ proc main() =
 
   panel = Panel(frame)
   input = TextCtrl(panel, style=wTeMultiLine or wTeRich)
-  btnZh2En = Button(panel, label="中 > 英")
-  btnEn2Zh = Button(panel, label="英 > 中")
-  btnSettings = Button(panel, label="设置")
-  cmbStyle = ComboBox(panel, style=wCbReadOnly)
-  cmbKind = ComboBox(panel, style=wCbReadOnly)
-  btnTrans = Button(panel, label="翻译")
   resultBox = TextCtrl(panel, style=wTeMultiLine or wTeRich or wTeReadOnly)
+
+  initModernMain(frame, panel, input, resultBox, ModernHooks(
+    onZh2En: proc () = doTranslate(FY_ZH2EN),
+    onEn2Zh: proc () = doTranslate(FY_EN2ZH),
+    onSettings: proc () = openSettings(),
+    onTrans: proc () =
+      if g_translating: cancelTranslate()
+      else: doTranslate(FY_AUTO),
+    onStyleSelect: proc (idx: int) =
+      g_set.wordFmt = StyleCodes[idx]
+      fy_cfg_set(g_cfg, "通用设置", "命名格式", $g_set.wordFmt)
+      discard fy_cfg_save(g_cfg)
+      fy_log_write("设置", "命名风格即时切换=%d", cint(g_set.wordFmt)),
+    onKindSelect: proc (idx: int) =
+      g_set.nameKind = idx
+      fy_cfg_set(g_cfg, "通用设置", "命名对象", $g_set.nameKind)
+      discard fy_cfg_save(g_cfg)
+      fy_log_write("设置", "命名对象即时切换=%d", cint(g_set.nameKind)),
+    onToggleTop: proc () =
+      g_set.topMost = not g_set.topMost
+      let h = cast[HWND](frame.getHandle())
+      discard SetWindowPos(h, if g_set.topMost: HWND_TOPMOST else: HWND_NOTOPMOST,
+                           0, 0, 0, 0, SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE)
+      fy_cfg_set(g_cfg, "通用设置", "置顶", if g_set.topMost: "1" else: "0")
+      discard fy_cfg_save(g_cfg)
+      if not chkTop.isNil: chkTop.setValue(g_set.topMost)
+      modernRefreshState(),
+    onMinimize: proc () =
+      discard ShowWindow(cast[HWND](frame.getHandle()), SW_MINIMIZE),
+    onClose: proc () =
+      if g_set.closeExit:
+        quitApp()
+      else:
+        frame.hide(),
+    isTranslating: proc (): bool = g_translating,
+    isTopMost: proc (): bool = g_set.topMost,
+    getStyleIdx: proc (): int =
+      if g_set.wordFmt == FY_FMT_SNAKE: 0 else: 1,
+    getKindIdx: proc (): int = g_set.nameKind,
+    styleNames: @StyleNames,
+    kindNames: @KindNames,
+  ))
 
   # 窗口高度按内容自适应：边距8 + 输入96 + 间距8 + 按钮行 + 间距8 + 结果96 + 边距8
   # 宽度默认 550；用实测的边框/标题栏差值把客户区顶到刚好放下内容
@@ -1555,6 +1547,7 @@ proc main() =
     if event.timerId == 88:
       frame.stopTimer(88)
       frame.title = AppTitle
+      modernSetHint("")
   frame.wEvent_TrayLeftUp do ():
     toggleMain()
   frame.wEvent_TrayRightUp do ():
@@ -1566,26 +1559,6 @@ proc main() =
   frame.connect(UINT(WmAppSnipDone)) do (event: wEvent):
     onSnipDone(int(event.getwParam()), cast[ptr FySnipResult](event.getlParam()))
 
-  btnZh2En.wEvent_Button do ():
-    doTranslate(FY_ZH2EN)
-  btnEn2Zh.wEvent_Button do ():
-    doTranslate(FY_EN2ZH)
-  cmbStyle.wEvent_ComboBox do ():
-    # 风格/对象两个下拉都即时生效并写配置，不用进设置页保存
-    g_set.wordFmt = StyleCodes[cmbStyle.getSelection()]
-    fy_cfg_set(g_cfg, "通用设置", "命名格式", $g_set.wordFmt)
-    discard fy_cfg_save(g_cfg)
-    fy_log_write("设置", "命名风格即时切换=%d", cint(g_set.wordFmt))
-  cmbKind.wEvent_ComboBox do ():
-    g_set.nameKind = cmbKind.getSelection()
-    fy_cfg_set(g_cfg, "通用设置", "命名对象", $g_set.nameKind)
-    discard fy_cfg_save(g_cfg)
-    fy_log_write("设置", "命名对象即时切换=%d", cint(g_set.nameKind))
-  btnTrans.wEvent_Button do ():
-    if g_translating: cancelTranslate()
-    else: doTranslate(FY_AUTO)
-  btnSettings.wEvent_Button do ():
-    openSettings()
   input.wEvent_TextEnter do ():
     doTranslate(FY_AUTO)
   # 开关开启：双击输入区＝清空输入区；默认仍按当前「风格+对象」直接生成命名并复制
@@ -1599,9 +1572,9 @@ proc main() =
 
   g_uiFont = makeUiFont()
   applyUiFont(frame)
+  modernStyleDarkEdit(cast[HWND](input.getHandle()), false)
+  modernStyleDarkEdit(cast[HWND](resultBox.getHandle()), true)
   layoutMain()
-  fitComboVisibleHeight(cmbStyle)
-  fitComboVisibleHeight(cmbKind)
   frame.setTrayIcon(Icon("", 0), AppTitle & "（双击显示/隐藏）")
 
   # 设置窗口：按「字体缩放」给默认尺寸建窗（先量客户区当缩放基准），再套用用户保存的大小
@@ -1782,10 +1755,6 @@ proc main() =
     "改英文＝覆盖内置映射（串口 → serial port），删行＝停用；可加全新词条，保存即生效。",
     btnAddPref, btnSavePref, lblPrefStatus)
 
-  cmbStyle.append(StyleNames)
-  cmbStyle.setSelection(if g_set.wordFmt == FY_FMT_SNAKE: 0 else: 1)
-  cmbKind.append(KindNames)
-  cmbKind.setSelection(g_set.nameKind)
   for p in AiPresets:
     cmbAiPreset.append(if p[0].len == 0: "选择预设…" else: p[0])
   cmbAiPreset.setSelection(0)
