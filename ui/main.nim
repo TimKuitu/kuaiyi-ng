@@ -6,6 +6,7 @@ import wNim
 import winim/lean
 import fastcore
 import naming_reducer
+import dict_list
 
 # winim/lean 未包含 shellapi，这里单独引入打开目录所需的函数
 proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
@@ -251,47 +252,14 @@ var
 #   忽略页删行 = 该内置泛词保留（文件里记 `+原词`）
 #   常用词页改英文 = 覆盖内置映射（串口=serial port），删行 = 停用该映射（文件里记 `中文=-`），
 #                   也可加全新词条（气泵=pump）；自定义英文词自动享受常用词待遇
-# 每行控件懒创建、只隐藏不销毁（运行期销毁 wNim 控件不安全），行槽上限 AbbrMaxRows。
-const
-  AbbrTop = 116         # 行区起始 y（逻辑像素；上方两行提示各占 50）
-  AbbrRowH = 32         # 行距
-  AbbrViewRows = 10     # 每页可见行数
-  AbbrMaxRows = 240     # 行槽上限（缩略约 60 + 忽略约 65 + 常用词约 100，其余留给自定义）
-
-type
-  AbbrRowCtl = object
-    word, abbr: wTextCtrl
-    arrow: wStaticText
-    del: wButton
-
-  IgnoreRowCtl = object
-    word: wTextCtrl
-    del: wButton
-
-  PrefRowCtl = object
-    zh, en: wTextCtrl
-    arrow: wStaticText
-    del: wButton
-
+# 词库列表由 dict_list.nim 统一提供（固定 10 槽位虚拟滚动 + 搜索过滤，无条数上限）。
 var
   nbSet: wNoteBook
   pageAbbr, pageIgnore, pagePreferred: wPanel
-  abbrRows: seq[AbbrRowCtl]
-  ignoreRows: seq[IgnoreRowCtl]
-  prefRows: seq[PrefRowCtl]
-  abbrCount = 0           # 当前显示行数（含末尾空行）
-  ignoreCount = 0
-  prefCount = 0
-  abbrScroll = 0          # 顶部行索引
-  ignoreScroll = 0
-  prefScroll = 0
-  sbAbbr, sbIgnore, sbPref: wScrollBar
+  dlAbbr, dlIgnore, dlPreferred: DictList
   btnAddAbbr, btnAddIgnore, btnSaveAbbr, btnSaveIgnore: wButton
   btnAddPref, btnSavePref: wButton
   lblAbbrStatus, lblIgnoreStatus, lblPrefStatus: wStaticText
-  g_abbrOverflow = false  # 文件条数超过行槽上限：禁止保存，避免静默截断
-  g_ignOverflow = false
-  g_prefOverflow = false
 
 proc rowH(): int {.inline.} =
   # 按钮行高：逻辑 32px 按 DPI 放大，跟字号一起变
@@ -413,11 +381,6 @@ proc DefSubclassProc(hWnd: HWND, uMsg: UINT, wParam: WPARAM,
                      lParam: LPARAM): LRESULT
     {.stdcall, dynlib: "comctl32", importc.}
 
-proc scrollAbbrPage(notches: int)
-proc scrollIgnorePage(notches: int)
-proc scrollPrefPage(notches: int)
-proc renderPref()
-
 proc wheelSubclass(hWnd: HWND, uMsg: UINT, wParam: WPARAM, lParam: LPARAM,
                    uIdSubclass: UINT_PTR, dwRefData: DWORD_PTR): LRESULT {.stdcall.} =
   if uMsg == WmMouseWheel:
@@ -425,9 +388,9 @@ proc wheelSubclass(hWnd: HWND, uMsg: UINT, wParam: WPARAM, lParam: LPARAM,
     if d >= 0x8000: d -= 0x10000      # 高位是带符号的滚动增量，一格 120
     let n = d div 120
     if n != 0:
-      if dwRefData == DWORD_PTR(WheelTagAbbr): scrollAbbrPage(n)
-      elif dwRefData == DWORD_PTR(WheelTagIgnore): scrollIgnorePage(n)
-      elif dwRefData == DWORD_PTR(WheelTagPreferred): scrollPrefPage(n)
+      if dwRefData == DWORD_PTR(WheelTagAbbr) and dlAbbr != nil: dlAbbr.scrollBy(n)
+      elif dwRefData == DWORD_PTR(WheelTagIgnore) and dlIgnore != nil: dlIgnore.scrollBy(n)
+      elif dwRefData == DWORD_PTR(WheelTagPreferred) and dlPreferred != nil: dlPreferred.scrollBy(n)
       return 0
   result = DefSubclassProc(hWnd, uMsg, wParam, lParam)
 
@@ -436,79 +399,8 @@ proc hookWheel(w: wWindow, tag: int) =
     discard SetWindowSubclass(w.getHandle(), wheelSubclass,
                               UINT_PTR(WheelSubId), DWORD_PTR(tag))
 
-# —— 缩略词页 ——
-proc renderAbbr()
-proc deleteAbbrRow(i: int)
-
-proc bindAbbrDelete(btn: wButton, idx: int) =
-  # 单独一个 proc 建闭包：idx 落在本次调用的环境里。循环里直接捕获会共享同一个变量
-  btn.wEvent_Button do ():
-    deleteAbbrRow(idx)
-
-proc ensureAbbrRows(n: int) =
-  while abbrRows.len < n and abbrRows.len < AbbrMaxRows:
-    var r: AbbrRowCtl
-    r.word = TextCtrl(pageAbbr, pos=(0, 0), size=(10, 10))
-    r.arrow = StaticText(pageAbbr, label="→", pos=(0, 0), size=(10, 10))
-    r.abbr = TextCtrl(pageAbbr, pos=(0, 0), size=(10, 10))
-    r.del = Button(pageAbbr, label="删除", pos=(0, 0), size=(10, 10))
-    bindAbbrDelete(r.del, abbrRows.len)
-    hookWheel(r.word, WheelTagAbbr)
-    hookWheel(r.arrow, WheelTagAbbr)
-    hookWheel(r.abbr, WheelTagAbbr)
-    hookWheel(r.del, WheelTagAbbr)
-    r.word.hide()
-    r.arrow.hide()
-    r.abbr.hide()
-    r.del.hide()
-    abbrRows.add(r)
-
-proc collectAbbrSlots(): seq[(string, string)] =
-  result = @[]
-  for i in 0 ..< abbrCount:
-    result.add((abbrRows[i].word.getValue().strip(),
-                abbrRows[i].abbr.getValue().strip()))
-
-proc renderAbbr() =
-  ## 只摆可见行（滚动窗口），宽高按页面实际宽度换算
-  ensureAbbrRows(abbrCount)
-  if pageAbbr.isNil: return
-  var pw = int(float(pageAbbr.getSize().width) / g_uiScale)
-  if pw < 200: pw = 520            # 页面还没布局时兜底
-  let maxS = max(0, abbrCount - AbbrViewRows)
-  if abbrScroll > maxS: abbrScroll = maxS
-  if abbrScroll < 0: abbrScroll = 0
-  let left = 24
-  let right = pw - 24 - 18 - 4     # 右侧让出滚动条
-  let delW = 56
-  let arrowW = 20
-  let gap = 8
-  let delX = right - delW
-  let half = (delX - left - arrowW - 3 * gap) div 2
-  for i in 0 ..< abbrRows.len:
-    let slot = i - abbrScroll
-    if i < abbrCount and slot >= 0 and slot < AbbrViewRows:
-      let y = AbbrTop + slot * AbbrRowH
-      abbrRows[i].word.setSize(dpx(left), dpx(y), dpx(half), dpx(24))
-      abbrRows[i].arrow.setSize(dpx(left + half + gap), dpx(y + 3), dpx(arrowW), dpx(18))
-      abbrRows[i].abbr.setSize(dpx(left + half + gap + arrowW + gap), dpx(y),
-                               dpx(half), dpx(24))
-      abbrRows[i].del.setSize(dpx(delX), dpx(y), dpx(delW), dpx(24))
-      abbrRows[i].word.show()
-      abbrRows[i].arrow.show()
-      abbrRows[i].abbr.show()
-      abbrRows[i].del.show()
-    else:
-      abbrRows[i].word.hide()
-      abbrRows[i].arrow.hide()
-      abbrRows[i].abbr.hide()
-      abbrRows[i].del.hide()
-  sbAbbr.setSize(dpx(pw - 24 - 18), dpx(AbbrTop), dpx(18),
-                 dpx(AbbrViewRows * AbbrRowH - 8))
-  sbAbbr.setScrollbar(abbrScroll, AbbrViewRows, max(abbrCount - 1, 1))
-  if abbrCount > AbbrViewRows: sbAbbr.enable() else: sbAbbr.disable()
-
-proc abbrMerge(): seq[(string, string)] =
+# —— 缩略词页（业务逻辑；UI 槽位与搜索由 dict_list.nim 统一托管）——
+proc abbrMerge(): seq[DictItem] =
   ## 内置 + 自定义合并：自定义覆盖内置，"-" = 禁用（不出行），按原词排序
   var t = initTable[string, string]()
   for (w, a) in builtinAbbreviations(): t[w] = a
@@ -517,7 +409,7 @@ proc abbrMerge(): seq[(string, string)] =
     else: t[w] = a
   result = @[]
   for k, v in t: result.add((k, v))
-  result.sort(proc (x, y: (string, string)): int = cmp(x[0], y[0]))
+  result.sort(proc (x, y: DictItem): int = cmp(x.key, y.key))
 
 proc abbrSummary(total: int): string =
   let builtin = builtinAbbreviations().len
@@ -529,61 +421,17 @@ proc abbrSummary(total: int): string =
 proc loadAbbrRows(preserveScroll = false) =
   ## 打开设置窗口 / 保存后按生效表回填（内置 + 自定义，未保存的编辑丢弃）
   let pairs = abbrMerge()
-  g_abbrOverflow = pairs.len > AbbrMaxRows
-  abbrCount = max(1, min(pairs.len, AbbrMaxRows))
-  if not preserveScroll: abbrScroll = 0
-  ensureAbbrRows(abbrCount)
-  for i in 0 ..< abbrRows.len:
-    if i < pairs.len and i < abbrCount:
-      abbrRows[i].word.setValue(pairs[i][0])
-      abbrRows[i].abbr.setValue(pairs[i][1])
-    else:
-      abbrRows[i].word.setValue("")
-      abbrRows[i].abbr.setValue("")
-  renderAbbr()
-  if g_abbrOverflow:
-    lblAbbrStatus.label = "共 " & $pairs.len & " 条，超过界面上限 " & $AbbrMaxRows
-  else:
-    lblAbbrStatus.label = abbrSummary(pairs.len)
-
-proc deleteAbbrRow(i: int) =
-  if i < 0 or i >= abbrCount: return
-  var slots = collectAbbrSlots()
-  if i >= slots.len: return
-  slots.delete(i)
-  abbrCount = max(1, slots.len)
-  ensureAbbrRows(abbrCount)
-  for k in 0 ..< abbrRows.len:
-    if k < slots.len:
-      abbrRows[k].word.setValue(slots[k][0])
-      abbrRows[k].abbr.setValue(slots[k][1])
-    else:
-      abbrRows[k].word.setValue("")
-      abbrRows[k].abbr.setValue("")
-  renderAbbr()
-
-proc addAbbrRow() =
-  if abbrCount >= AbbrMaxRows:
-    lblAbbrStatus.label = "最多 " & $AbbrMaxRows & " 条，先删掉不用的行"
-    return
-  abbrCount += 1
-  ensureAbbrRows(abbrCount)
-  abbrScroll = max(0, abbrCount - AbbrViewRows)
-  renderAbbr()
-  abbrRows[abbrCount - 1].word.setFocus()
+  if dlAbbr != nil: dlAbbr.setItems(pairs, g_uiScale, preserveScroll)
+  if lblAbbrStatus != nil: lblAbbrStatus.label = abbrSummary(pairs.len)
 
 proc saveAbbrRows(): bool =
-  if g_abbrOverflow:
-    warnBox("合并后的词条超过界面上限 " & $AbbrMaxRows &
-            " 条，界面保存会丢数据。\n请先把 custom_abbr.txt 删到 " &
-            $AbbrMaxRows & " 条以内，再重开设置窗口。")
-    return false
+  if dlAbbr.isNil: return false
   var rows: seq[(string, string)] = @[]
   var seen = initHashSet[string]()
   var err = ""
-  for i in 0 ..< abbrCount:
-    let w = abbrRows[i].word.getValue().strip().toLowerAscii()
-    let a = abbrRows[i].abbr.getValue().strip().toLowerAscii()
+  for i, it in dlAbbr.items:
+    let w = it.key.strip().toLowerAscii()
+    let a = it.val.strip().toLowerAscii()
     if w.len == 0 and a.len == 0: continue
     if w.len == 0 or a.len == 0:
       err = "第 " & $(i + 1) & " 行只填了一个框，原词和缩写都要填。"
@@ -628,103 +476,21 @@ proc saveAbbrRows(): bool =
                cint(rows.len), cint(dis))
   true
 
-# —— 忽略词页 ——
-proc renderIgnore()
-proc deleteIgnoreRow(i: int)
-
-proc bindIgnoreDelete(btn: wButton, idx: int) =
-  btn.wEvent_Button do ():
-    deleteIgnoreRow(idx)
-
-proc ensureIgnoreRows(n: int) =
-  while ignoreRows.len < n and ignoreRows.len < AbbrMaxRows:
-    var r: IgnoreRowCtl
-    r.word = TextCtrl(pageIgnore, pos=(0, 0), size=(10, 10))
-    r.del = Button(pageIgnore, label="删除", pos=(0, 0), size=(10, 10))
-    bindIgnoreDelete(r.del, ignoreRows.len)
-    hookWheel(r.word, WheelTagIgnore)
-    hookWheel(r.del, WheelTagIgnore)
-    r.word.hide()
-    r.del.hide()
-    ignoreRows.add(r)
-
-proc collectIgnoreSlots(): seq[string] =
-  result = @[]
-  for i in 0 ..< ignoreCount: result.add(ignoreRows[i].word.getValue().strip())
-
-proc renderIgnore() =
-  ensureIgnoreRows(ignoreCount)
-  if pageIgnore.isNil: return
-  var pw = int(float(pageIgnore.getSize().width) / g_uiScale)
-  if pw < 200: pw = 520
-  let maxS = max(0, ignoreCount - AbbrViewRows)
-  if ignoreScroll > maxS: ignoreScroll = maxS
-  if ignoreScroll < 0: ignoreScroll = 0
-  let left = 24
-  let right = pw - 24 - 18 - 4
-  let delW = 56
-  let gap = 8
-  let delX = right - delW
-  let wordW = delX - left - gap
-  for i in 0 ..< ignoreRows.len:
-    let slot = i - ignoreScroll
-    if i < ignoreCount and slot >= 0 and slot < AbbrViewRows:
-      let y = AbbrTop + slot * AbbrRowH
-      ignoreRows[i].word.setSize(dpx(left), dpx(y), dpx(wordW), dpx(24))
-      ignoreRows[i].del.setSize(dpx(delX), dpx(y), dpx(delW), dpx(24))
-      ignoreRows[i].word.show()
-      ignoreRows[i].del.show()
-    else:
-      ignoreRows[i].word.hide()
-      ignoreRows[i].del.hide()
-  sbIgnore.setSize(dpx(pw - 24 - 18), dpx(AbbrTop), dpx(18),
-                   dpx(AbbrViewRows * AbbrRowH - 8))
-  sbIgnore.setScrollbar(ignoreScroll, AbbrViewRows, max(ignoreCount - 1, 1))
-  if ignoreCount > AbbrViewRows: sbIgnore.enable() else: sbIgnore.disable()
-
-# —— 滚轮滚动（一格 3 行；正增量＝向上滚＝行号减小）——
-proc scrollAbbrPage(notches: int) =
-  if abbrCount <= AbbrViewRows: return
-  var s = abbrScroll - notches * 3
-  if s < 0: s = 0
-  let maxS = abbrCount - AbbrViewRows
-  if s > maxS: s = maxS
-  if s == abbrScroll: return
-  abbrScroll = s
-  renderAbbr()
-
-proc scrollIgnorePage(notches: int) =
-  if ignoreCount <= AbbrViewRows: return
-  var s = ignoreScroll - notches * 3
-  if s < 0: s = 0
-  let maxS = ignoreCount - AbbrViewRows
-  if s > maxS: s = maxS
-  if s == ignoreScroll: return
-  ignoreScroll = s
-  renderIgnore()
-
-proc scrollPrefPage(notches: int) =
-  if prefCount <= AbbrViewRows: return
-  var s = prefScroll - notches * 3
-  if s < 0: s = 0
-  let maxS = prefCount - AbbrViewRows
-  if s > maxS: s = maxS
-  if s == prefScroll: return
-  prefScroll = s
-  renderPref()
-
-proc ignoreMerge(): seq[string] =
+# —— 忽略词页（业务逻辑；UI 槽位与搜索由 dict_list.nim 统一托管）——
+proc ignoreMerge(): seq[DictItem] =
   ## 内置泛词 + 自定义忽略，去掉被显式保留（+word）的，按字母序
   let keep = toHashSet(customKeepWords())
   var seen = initHashSet[string]()
-  result = @[]
+  var words: seq[string] = @[]
   for w in builtinStopWords():
     if w in keep or seen.contains(w): continue
-    seen.incl(w); result.add(w)
+    seen.incl(w); words.add(w)
   for w in customIgnoreWords():
     if w in keep or seen.contains(w): continue
-    seen.incl(w); result.add(w)
-  result.sort()
+    seen.incl(w); words.add(w)
+  words.sort()
+  result = @[]
+  for w in words: result.add((w, ""))
 
 proc ignoreSummary(total: int): string =
   let builtin = builtinStopWords().len
@@ -736,52 +502,16 @@ proc ignoreSummary(total: int): string =
 proc loadIgnoreRows(preserveScroll = false) =
   ## 打开设置窗口 / 保存后按生效表回填（内置泛词 + 自定义忽略）
   let words = ignoreMerge()
-  g_ignOverflow = words.len > AbbrMaxRows
-  ignoreCount = max(1, min(words.len, AbbrMaxRows))
-  if not preserveScroll: ignoreScroll = 0
-  ensureIgnoreRows(ignoreCount)
-  for i in 0 ..< ignoreRows.len:
-    if i < words.len and i < ignoreCount: ignoreRows[i].word.setValue(words[i])
-    else: ignoreRows[i].word.setValue("")
-  renderIgnore()
-  if g_ignOverflow:
-    lblIgnoreStatus.label = "共 " & $words.len & " 条，超过界面上限 " & $AbbrMaxRows
-  else:
-    lblIgnoreStatus.label = ignoreSummary(words.len)
-
-proc deleteIgnoreRow(i: int) =
-  if i < 0 or i >= ignoreCount: return
-  var vals = collectIgnoreSlots()
-  if i >= vals.len: return
-  vals.delete(i)
-  ignoreCount = max(1, vals.len)
-  ensureIgnoreRows(ignoreCount)
-  for k in 0 ..< ignoreRows.len:
-    if k < vals.len: ignoreRows[k].word.setValue(vals[k])
-    else: ignoreRows[k].word.setValue("")
-  renderIgnore()
-
-proc addIgnoreRow() =
-  if ignoreCount >= AbbrMaxRows:
-    lblIgnoreStatus.label = "最多 " & $AbbrMaxRows & " 条，先删掉不用的行"
-    return
-  ignoreCount += 1
-  ensureIgnoreRows(ignoreCount)
-  ignoreScroll = max(0, ignoreCount - AbbrViewRows)
-  renderIgnore()
-  ignoreRows[ignoreCount - 1].word.setFocus()
+  if dlIgnore != nil: dlIgnore.setItems(words, g_uiScale, preserveScroll)
+  if lblIgnoreStatus != nil: lblIgnoreStatus.label = ignoreSummary(words.len)
 
 proc saveIgnoreRows(): bool =
-  if g_ignOverflow:
-    warnBox("合并后的词条超过界面上限 " & $AbbrMaxRows &
-            " 条，界面保存会丢数据。\n请先把 custom_ignore.txt 删到 " &
-            $AbbrMaxRows & " 条以内，再重开设置窗口。")
-    return false
+  if dlIgnore.isNil: return false
   var words: seq[string] = @[]
   var seen = initHashSet[string]()
   var err = ""
-  for i in 0 ..< ignoreCount:
-    let w = ignoreRows[i].word.getValue().strip().toLowerAscii()
+  for i, it in dlIgnore.items:
+    let w = it.key.strip().toLowerAscii()
     if w.len == 0: continue
     if not isPlainWord(w):
       err = "第 " & $(i + 1) & " 行只能是英文字母/数字（中文词请先在缩略页映射）。"
@@ -814,75 +544,10 @@ proc saveIgnoreRows(): bool =
                cint(n), cint(kept))
   true
 
-# —— 常用词页（中文 → 英文词库；机制与缩略词页相同）——
-# renderPref 的前向声明在滚轮小节（scrollPrefPage 先用到）
-proc deletePrefRow(i: int)
-
-proc bindPrefDelete(btn: wButton, idx: int) =
-  btn.wEvent_Button do ():
-    deletePrefRow(idx)
-
-proc ensurePrefRows(n: int) =
-  while prefRows.len < n and prefRows.len < AbbrMaxRows:
-    var r: PrefRowCtl
-    r.zh = TextCtrl(pagePreferred, pos=(0, 0), size=(10, 10))
-    r.arrow = StaticText(pagePreferred, label="→", pos=(0, 0), size=(10, 10))
-    r.en = TextCtrl(pagePreferred, pos=(0, 0), size=(10, 10))
-    r.del = Button(pagePreferred, label="删除", pos=(0, 0), size=(10, 10))
-    bindPrefDelete(r.del, prefRows.len)
-    hookWheel(r.zh, WheelTagPreferred)
-    hookWheel(r.arrow, WheelTagPreferred)
-    hookWheel(r.en, WheelTagPreferred)
-    hookWheel(r.del, WheelTagPreferred)
-    r.zh.hide()
-    r.arrow.hide()
-    r.en.hide()
-    r.del.hide()
-    prefRows.add(r)
-
-proc collectPrefSlots(): seq[(string, string)] =
+# —— 常用词页（业务逻辑；UI 槽位与搜索由 dict_list.nim 统一托管）——
+proc prefMergeItems(): seq[DictItem] =
   result = @[]
-  for i in 0 ..< prefCount:
-    result.add((prefRows[i].zh.getValue().strip(),
-                prefRows[i].en.getValue().strip()))
-
-proc renderPref() =
-  ensurePrefRows(prefCount)
-  if pagePreferred.isNil: return
-  var pw = int(float(pagePreferred.getSize().width) / g_uiScale)
-  if pw < 200: pw = 520            # 页面还没布局时兜底
-  let maxS = max(0, prefCount - AbbrViewRows)
-  if prefScroll > maxS: prefScroll = maxS
-  if prefScroll < 0: prefScroll = 0
-  let left = 24
-  let right = pw - 24 - 18 - 4     # 右侧让出滚动条
-  let delW = 56
-  let arrowW = 20
-  let gap = 8
-  let delX = right - delW
-  let half = (delX - left - arrowW - 3 * gap) div 2
-  for i in 0 ..< prefRows.len:
-    let slot = i - prefScroll
-    if i < prefCount and slot >= 0 and slot < AbbrViewRows:
-      let y = AbbrTop + slot * AbbrRowH
-      prefRows[i].zh.setSize(dpx(left), dpx(y), dpx(half), dpx(24))
-      prefRows[i].arrow.setSize(dpx(left + half + gap), dpx(y + 3), dpx(arrowW), dpx(18))
-      prefRows[i].en.setSize(dpx(left + half + gap + arrowW + gap), dpx(y),
-                             dpx(half), dpx(24))
-      prefRows[i].del.setSize(dpx(delX), dpx(y), dpx(delW), dpx(24))
-      prefRows[i].zh.show()
-      prefRows[i].arrow.show()
-      prefRows[i].en.show()
-      prefRows[i].del.show()
-    else:
-      prefRows[i].zh.hide()
-      prefRows[i].arrow.hide()
-      prefRows[i].en.hide()
-      prefRows[i].del.hide()
-  sbPref.setSize(dpx(pw - 24 - 18), dpx(AbbrTop), dpx(18),
-                 dpx(AbbrViewRows * AbbrRowH - 8))
-  sbPref.setScrollbar(prefScroll, AbbrViewRows, max(prefCount - 1, 1))
-  if prefCount > AbbrViewRows: sbPref.enable() else: sbPref.disable()
+  for (zh, en) in preferredMerge(): result.add((zh, en))
 
 proc prefSummary(total: int): string =
   let builtin = builtinPreferredPairs().len
@@ -893,49 +558,9 @@ proc prefSummary(total: int): string =
 
 proc loadPrefRows(preserveScroll = false) =
   ## 打开设置窗口 / 保存后按生效表回填（内置 + 自定义，未保存的编辑丢弃）
-  let pairs = preferredMerge()
-  g_prefOverflow = pairs.len > AbbrMaxRows
-  prefCount = max(1, min(pairs.len, AbbrMaxRows))
-  if not preserveScroll: prefScroll = 0
-  ensurePrefRows(prefCount)
-  for i in 0 ..< prefRows.len:
-    if i < pairs.len and i < prefCount:
-      prefRows[i].zh.setValue(pairs[i][0])
-      prefRows[i].en.setValue(pairs[i][1])
-    else:
-      prefRows[i].zh.setValue("")
-      prefRows[i].en.setValue("")
-  renderPref()
-  if g_prefOverflow:
-    lblPrefStatus.label = "共 " & $pairs.len & " 条，超过界面上限 " & $AbbrMaxRows
-  else:
-    lblPrefStatus.label = prefSummary(pairs.len)
-
-proc deletePrefRow(i: int) =
-  if i < 0 or i >= prefCount: return
-  var slots = collectPrefSlots()
-  if i >= slots.len: return
-  slots.delete(i)
-  prefCount = max(1, slots.len)
-  ensurePrefRows(prefCount)
-  for k in 0 ..< prefRows.len:
-    if k < slots.len:
-      prefRows[k].zh.setValue(slots[k][0])
-      prefRows[k].en.setValue(slots[k][1])
-    else:
-      prefRows[k].zh.setValue("")
-      prefRows[k].en.setValue("")
-  renderPref()
-
-proc addPrefRow() =
-  if prefCount >= AbbrMaxRows:
-    lblPrefStatus.label = "最多 " & $AbbrMaxRows & " 条，先删掉不用的行"
-    return
-  prefCount += 1
-  ensurePrefRows(prefCount)
-  prefScroll = max(0, prefCount - AbbrViewRows)
-  renderPref()
-  prefRows[prefCount - 1].zh.setFocus()
+  let pairs = prefMergeItems()
+  if dlPreferred != nil: dlPreferred.setItems(pairs, g_uiScale, preserveScroll)
+  if lblPrefStatus != nil: lblPrefStatus.label = prefSummary(pairs.len)
 
 proc zhRuneLen(s: string): int =
   # UTF-8 字数（不含续字节）；main.nim 不引 unicode，这里按字节判
@@ -949,17 +574,13 @@ proc zhHasCjk(s: string): bool =
   false
 
 proc savePrefRows(): bool =
-  if g_prefOverflow:
-    warnBox("合并后的词条超过界面上限 " & $AbbrMaxRows &
-            " 条，界面保存会丢数据。\n请先把 custom_preferred.txt 删到 " &
-            $AbbrMaxRows & " 条以内，再重开设置窗口。")
-    return false
+  if dlPreferred.isNil: return false
   var rows: seq[(string, string)] = @[]
   var seen = initHashSet[string]()
   var err = ""
-  for i in 0 ..< prefCount:
-    let zh = prefRows[i].zh.getValue().strip()
-    let en = prefRows[i].en.getValue().strip()
+  for i, it in dlPreferred.items:
+    let zh = it.key.strip()
+    let en = it.val.strip()
     if zh.len == 0 and en.len == 0: continue
     if zh.len == 0 or en.len == 0:
       err = "第 " & $(i + 1) & " 行只填了一个框，中文和英文都要填。"
@@ -2052,78 +1673,24 @@ proc main() =
   btnSaveSet3 = Button(page3, label="保存设置", pos=(dpx(544 - PadL - 92), by),
                        size=(dpx(92), dpx(32)))
 
-  # 缩略词 / 忽略词两页：行控件由 ensureXxxRows 懒创建，这里只放文案、滚动条和按钮
-  let hintAbbr1 = StaticText(pageAbbr,
-    label="每行一条：原词 → 缩写，例 Initialization → Init（内置已列出）",
-    pos=(dpx(PadL), dpx(10)), size=(dpx(ContW), dpx(50)))
-  let hintAbbr2 = StaticText(pageAbbr,
-    label="可改可删：删行＝该词不再缩写；空白行忽略，保存后立即生效。",
-    pos=(dpx(PadL), dpx(60)), size=(dpx(ContW), dpx(50)))
-  sbAbbr = ScrollBar(pageAbbr, pos=(dpx(496), dpx(AbbrTop)),
-                     size=(dpx(18), dpx(AbbrViewRows * AbbrRowH - 8)),
-                     style=wSbVertical)
-  btnAddAbbr = Button(pageAbbr, label="添加一行",
-                      pos=(dpx(PadL), by), size=(dpx(92), dpx(32)))
-  lblAbbrStatus = StaticText(pageAbbr, label="",
-                             pos=(dpx(PadL + 104), by + 6), size=(dpx(300), dpx(22)))
-  btnSaveAbbr = Button(pageAbbr, label="保存",
-                       pos=(dpx(544 - PadL - 92), by), size=(dpx(92), dpx(32)))
-  # 页面上的每一块都挂滚轮：说明文字/状态栏/按钮/滚动条上滚也能滚列表
-  hookWheel(hintAbbr1, WheelTagAbbr)
-  hookWheel(hintAbbr2, WheelTagAbbr)
-  hookWheel(sbAbbr, WheelTagAbbr)
-  hookWheel(btnAddAbbr, WheelTagAbbr)
-  hookWheel(lblAbbrStatus, WheelTagAbbr)
-  hookWheel(btnSaveAbbr, WheelTagAbbr)
+  # 缩略词 / 忽略词 / 常用词三页：统一由 dict_list.nim 建搜索框 + 10 槽位虚拟滚动列表
+  dlAbbr = newDictList(
+    pageAbbr, dlTwoCol, WheelTagAbbr, g_uiScale, hookWheel,
+    "每行一条：原词 → 缩写，例 Initialization → Init（内置已列出）",
+    "可改可删：删行＝该词不再缩写；空白行忽略，保存后立即生效。",
+    btnAddAbbr, btnSaveAbbr, lblAbbrStatus)
 
-  let hintIgn1 = StaticText(pageIgnore,
-    label="每行一个英文单词，生成命名时直接删掉（内置泛词已列出）",
-    pos=(dpx(PadL), dpx(10)), size=(dpx(ContW), dpx(50)))
-  let hintIgn2 = StaticText(pageIgnore,
-    label="删掉某行＝保留该词；中文先经内置词表转英文（如 状态 → state）再判断。",
-    pos=(dpx(PadL), dpx(60)), size=(dpx(ContW), dpx(50)))
-  sbIgnore = ScrollBar(pageIgnore, pos=(dpx(496), dpx(AbbrTop)),
-                       size=(dpx(18), dpx(AbbrViewRows * AbbrRowH - 8)),
-                       style=wSbVertical)
-  btnAddIgnore = Button(pageIgnore, label="添加一行",
-                        pos=(dpx(PadL), by), size=(dpx(92), dpx(32)))
-  lblIgnoreStatus = StaticText(pageIgnore, label="",
-                               pos=(dpx(PadL + 104), by + 6), size=(dpx(300), dpx(22)))
-  btnSaveIgnore = Button(pageIgnore, label="保存",
-                         pos=(dpx(544 - PadL - 92), by), size=(dpx(92), dpx(32)))
-  # 页面本体 + 页面上每一块都挂滚轮：说明文字/状态栏/按钮/滚动条上滚也能滚列表
-  hookWheel(pageAbbr, WheelTagAbbr)
-  hookWheel(pageIgnore, WheelTagIgnore)
-  hookWheel(hintIgn1, WheelTagIgnore)
-  hookWheel(hintIgn2, WheelTagIgnore)
-  hookWheel(sbIgnore, WheelTagIgnore)
-  hookWheel(btnAddIgnore, WheelTagIgnore)
-  hookWheel(lblIgnoreStatus, WheelTagIgnore)
-  hookWheel(btnSaveIgnore, WheelTagIgnore)
+  dlIgnore = newDictList(
+    pageIgnore, dlOneCol, WheelTagIgnore, g_uiScale, hookWheel,
+    "每行一个英文单词，生成命名时直接删掉（内置泛词已列出）",
+    "删掉某行＝保留该词；中文先经内置词表转英文（如 状态 → state）再判断。",
+    btnAddIgnore, btnSaveIgnore, lblIgnoreStatus)
 
-  # 常用词页：与缩略词页同款布局（中文 → 英文词库）
-  let hintPref1 = StaticText(pagePreferred,
-    label="每行一条：中文 → 英文词库，例 串口 → uart（内置已列出）",
-    pos=(dpx(PadL), dpx(10)), size=(dpx(ContW), dpx(50)))
-  let hintPref2 = StaticText(pagePreferred,
-    label="改英文＝覆盖内置映射（串口 → serial port），删行＝停用该映射；也可加全新词条，保存后立即生效。",
-    pos=(dpx(PadL), dpx(60)), size=(dpx(ContW), dpx(50)))
-  sbPref = ScrollBar(pagePreferred, pos=(dpx(496), dpx(AbbrTop)),
-                     size=(dpx(18), dpx(AbbrViewRows * AbbrRowH - 8)),
-                     style=wSbVertical)
-  btnAddPref = Button(pagePreferred, label="添加一行",
-                      pos=(dpx(PadL), by), size=(dpx(92), dpx(32)))
-  lblPrefStatus = StaticText(pagePreferred, label="",
-                             pos=(dpx(PadL + 104), by + 6), size=(dpx(300), dpx(22)))
-  btnSavePref = Button(pagePreferred, label="保存",
-                       pos=(dpx(544 - PadL - 92), by), size=(dpx(92), dpx(32)))
-  hookWheel(pagePreferred, WheelTagPreferred)
-  hookWheel(hintPref1, WheelTagPreferred)
-  hookWheel(hintPref2, WheelTagPreferred)
-  hookWheel(sbPref, WheelTagPreferred)
-  hookWheel(btnAddPref, WheelTagPreferred)
-  hookWheel(lblPrefStatus, WheelTagPreferred)
-  hookWheel(btnSavePref, WheelTagPreferred)
+  dlPreferred = newDictList(
+    pagePreferred, dlTwoCol, WheelTagPreferred, g_uiScale, hookWheel,
+    "每行一条：中文 → 英文词库，例 串口 → uart（内置已列出）",
+    "改英文＝覆盖内置映射（串口 → serial port），删行＝停用；可加全新词条，保存即生效。",
+    btnAddPref, btnSavePref, lblPrefStatus)
 
   cmbStyle.append(StyleNames)
   cmbStyle.setSelection(if g_set.wordFmt == FY_FMT_SNAKE: 0 else: 1)
@@ -2145,26 +1712,17 @@ proc main() =
   btnSaveSet3.wEvent_Button do ():
     saveSettings()
   btnAddAbbr.wEvent_Button do ():
-    addAbbrRow()
+    if dlAbbr != nil: dlAbbr.addRow(g_uiScale)
   btnSaveAbbr.wEvent_Button do ():
     discard saveAbbrRows()
-  sbAbbr.wEvent_ScrollBar do ():
-    abbrScroll = sbAbbr.getScrollPos()
-    renderAbbr()
   btnAddIgnore.wEvent_Button do ():
-    addIgnoreRow()
+    if dlIgnore != nil: dlIgnore.addRow(g_uiScale)
   btnSaveIgnore.wEvent_Button do ():
     discard saveIgnoreRows()
-  sbIgnore.wEvent_ScrollBar do ():
-    ignoreScroll = sbIgnore.getScrollPos()
-    renderIgnore()
   btnAddPref.wEvent_Button do ():
-    addPrefRow()
+    if dlPreferred != nil: dlPreferred.addRow(g_uiScale)
   btnSavePref.wEvent_Button do ():
     discard savePrefRows()
-  sbPref.wEvent_ScrollBar do ():
-    prefScroll = sbPref.getScrollPos()
-    renderPref()
   cmbAiPreset.wEvent_ComboBox do ():
     # 预设填充地址与模型（第 0 项"选择预设…"不动）
     let i = cmbAiPreset.getSelection()
@@ -2255,9 +1813,9 @@ proc main() =
           frame.stopTimer(68)
           openSettings()
           nbSet.setSelection(wantTab)
-          renderAbbr()
-          renderIgnore()
-          renderPref()
+          if dlAbbr != nil: dlAbbr.render(g_uiScale)
+          if dlIgnore != nil: dlIgnore.render(g_uiScale)
+          if dlPreferred != nil: dlPreferred.render(g_uiScale)
       frame.startTimer(1.5, 68)
 
   # 测试钩子：-testtranslate 启动后自动翻译一段固定文本，结果写入 test.log 后退出
