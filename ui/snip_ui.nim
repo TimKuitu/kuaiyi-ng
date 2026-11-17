@@ -3,6 +3,7 @@
 ## 2. 后台裸线程调用 fy_snip_translate（WinRT OCR + 英文→中文 + 原图覆盖渲染）
 ## 3. 结果悬浮窗：支持原图/译图切换、复制译文、复制图片、重新框选、拖拽移动
 
+import std/math
 import winim/lean
 import fastcore
 
@@ -64,6 +65,7 @@ var
   g_resW, g_resH: cint
   g_dispW, g_dispH: cint
   g_winW, g_winH: cint
+  g_zoomScale = 1.0
   g_hbmResOrig, g_hbmResTrans: HBITMAP
   g_bitsResOrig, g_bitsResTrans: pointer
   g_showOrig = false
@@ -197,6 +199,53 @@ proc layoutResultButtons() =
     )
     x -= 6
 
+proc applyResultZoom(hwnd: HWND, targetScale: float, anchorMouse: bool) =
+  if hwnd == 0 or g_resW <= 0 or g_resH <= 0: return
+  let minBySize = max(80.0 / float(g_resW), 40.0 / float(g_resH))
+  let minScale = min(1.0, max(0.15, minBySize))
+  let maxBySize = min(4096.0 / float(g_resW), 4096.0 / float(g_resH))
+  let maxScale = max(1.0, min(5.0, maxBySize))
+  let newScale = clamp(targetScale, minScale, maxScale)
+
+  let newDispW = max(1, int(round(float(g_resW) * newScale)))
+  let newDispH = max(1, int(round(float(g_resH) * newScale)))
+  let newWinW = max(newDispW, MinWinW)
+  let newWinH = newDispH + ToolbarH
+
+  var wr: RECT
+  discard GetWindowRect(hwnd, addr wr)
+  var newLeft = int(wr.left)
+  var newTop = int(wr.top)
+
+  if anchorMouse:
+    var pt: POINT
+    discard GetCursorPos(addr pt)
+    let oldImgX = (int(g_winW) - int(g_dispW)) div 2
+    let rx = clamp(float(pt.x - int(wr.left) - oldImgX) / float(max(1, int(g_dispW))), 0.0, 1.0)
+    let ry = clamp(float(pt.y - int(wr.top)) / float(max(1, int(g_dispH))), 0.0, 1.0)
+    let newImgX = (newWinW - newDispW) div 2
+    newLeft = int(pt.x) - newImgX - int(round(rx * float(newDispW)))
+    newTop = int(pt.y) - int(round(ry * float(newDispH)))
+  else:
+    let cx = int(wr.left) + int(g_winW) div 2
+    let cy = int(wr.top) + int(g_winH) div 2
+    newLeft = cx - newWinW div 2
+    newTop = cy - newWinH div 2
+
+  g_zoomScale = newScale
+  g_dispW = cint(newDispW)
+  g_dispH = cint(newDispH)
+  g_winW = cint(newWinW)
+  g_winH = cint(newWinH)
+  layoutResultButtons()
+  if not g_translating:
+    let pct = int(round(newScale * 100.0))
+    g_statusMsg = if pct == 100: "翻译完成（空格切换原图）"
+                  else: "缩放 " & $pct & "%（空格切换原图）"
+  SetWindowPos(hwnd, 0, cint(newLeft), cint(newTop), g_winW, g_winH,
+               SWP_NOZORDER or SWP_NOACTIVATE)
+  InvalidateRect(hwnd, nil, FALSE)
+
 proc openResultWindow(screenX, screenY, w, h: cint, cropBits: pointer) =
   closeResultWindow()
   inc g_snipSeq
@@ -229,6 +278,7 @@ proc openResultWindow(screenX, screenY, w, h: cint, cropBits: pointer) =
     dh = max(1, int(float(dh) * scale))
   g_dispW = cint(dw)
   g_dispH = cint(dh)
+  g_zoomScale = float(dw) / float(max(1, int(w)))
   g_winW = cint(max(dw, MinWinW))
   g_winH = cint(dh + ToolbarH)
 
@@ -383,6 +433,13 @@ proc openResultWindow(screenX, screenY, w, h: cint, cropBits: pointer) =
           SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
         return 0
 
+      of WM_MOUSEWHEEL:
+        let delta = int(cast[int16]((wp shr 16) and 0xFFFF))
+        if delta != 0:
+          let steps = float(delta) / 120.0
+          applyResultZoom(hwnd, g_zoomScale * pow(1.1, steps), true)
+        return 0
+
       of WM_KEYDOWN:
         if wp == VK_ESCAPE:
           closeResultWindow()
@@ -391,6 +448,9 @@ proc openResultWindow(screenX, screenY, w, h: cint, cropBits: pointer) =
           g_showOrig = not g_showOrig
           layoutResultButtons()
           InvalidateRect(hwnd, nil, FALSE)
+          return 0
+        elif wp == WPARAM('0') or wp == WPARAM('1'):
+          applyResultZoom(hwnd, 1.0, false)
           return 0
         return 0
 
