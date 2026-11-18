@@ -177,6 +177,12 @@ var
 proc argb(r, g, b: uint8, a: uint8 = 255): ARGB {.inline.} =
   (ARGB(a) shl 24) or (ARGB(r) shl 16) or (ARGB(g) shl 8) or ARGB(b)
 
+proc loSigned(v: int64): int {.inline.} =
+  int(cast[int16](uint16(uint64(v) and 0xFFFF'u64)))
+
+proc hiSigned(v: int64): int {.inline.} =
+  int(cast[int16](uint16((uint64(v) shr 16) and 0xFFFF'u64)))
+
 proc S(x: int): int {.inline.} =
   max(1, int(round(float(x) * g_scale)))
 
@@ -453,7 +459,7 @@ proc showPopupMenu(kind: int, anchorRc: RECT, items: seq[string], curIdx: int) =
         paintPopup(hwnd)
         return 0
       of WM_MOUSEMOVE:
-        let y = int(int16(HIWORD(lp)))
+        let y = hiSigned(int64(lp))
         let idx = (y - S(4)) div max(1, g_popItemH)
         let nh = if idx >= 0 and idx < g_popItems.len: idx else: -1
         if nh != g_popHover:
@@ -461,7 +467,7 @@ proc showPopupMenu(kind: int, anchorRc: RECT, items: seq[string], curIdx: int) =
           discard InvalidateRect(hwnd, nil, FALSE)
         return 0
       of WM_LBUTTONUP:
-        let y = int(int16(HIWORD(lp)))
+        let y = hiSigned(int64(lp))
         let idx = (y - S(4)) div max(1, g_popItemH)
         let k = g_popKind
         closePopup()
@@ -720,8 +726,8 @@ proc paintMainPanel(hwnd: HWND) =
 proc frameHitTest(hwnd: HWND, lp: LPARAM): LRESULT =
   var rc: RECT
   discard GetWindowRect(hwnd, addr rc)
-  let x = int(int16(LOWORD(lp)))
-  let y = int(int16(HIWORD(lp)))
+  let x = loSigned(int64(lp))
+  let y = hiSigned(int64(lp))
   let b = S(6)
   let left = x < int(rc.left) + b
   let right = x >= int(rc.right) - b
@@ -743,12 +749,12 @@ proc frameHitTest(hwnd: HWND, lp: LPARAM): LRESULT =
   result = HtClient
 
 proc handleWheelAtCursor(wp: WPARAM, lp: LPARAM): bool =
-  var pt = POINT(x: LONG(int16(LOWORD(lp))), y: LONG(int16(HIWORD(lp))))
+  var pt = POINT(x: LONG(loSigned(int64(lp))), y: LONG(hiSigned(int64(lp))))
   ScreenToClient(g_hwndPanel, addr pt)
   let hit = hitTestControl(int(pt.x), int(pt.y))
   if hit != IdStyle and hit != IdKind:
     return false
-  let delta = int(int16(HIWORD(wp)))
+  let delta = hiSigned(int64(wp))
   if delta == 0: return true
   let step = if delta > 0: -1 else: 1
   if hit == IdStyle and g_hooks.styleNames.len > 0:
@@ -794,7 +800,7 @@ proc panelSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
   case uMsg
   of WmNcHitTest:
     # 让边框和标题栏空白区穿透给父窗口 frame 处理拖拽/缩放
-    var pt = POINT(x: LONG(int16(LOWORD(lp))), y: LONG(int16(HIWORD(lp))))
+    var pt = POINT(x: LONG(loSigned(int64(lp))), y: LONG(hiSigned(int64(lp))))
     ScreenToClient(hWnd, addr pt)
     let b = S(6)
     if int(pt.x) < b or int(pt.x) >= g_winW - b or int(pt.y) < b or int(pt.y) >= g_winH - b:
@@ -815,8 +821,8 @@ proc panelSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
       tme.hwndTrack = hWnd
       discard TrackMouseEvent(addr tme)
       g_tracking = true
-    let x = int(int16(LOWORD(lp)))
-    let y = int(int16(HIWORD(lp)))
+    let x = loSigned(int64(lp))
+    let y = hiSigned(int64(lp))
     let nh = hitTestControl(x, y)
     if nh != g_hoverId:
       g_hoverId = nh
@@ -830,8 +836,8 @@ proc panelSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
       repaintMain()
     return 0
   of WM_LBUTTONDOWN:
-    let x = int(int16(LOWORD(lp)))
-    let y = int(int16(HIWORD(lp)))
+    let x = loSigned(int64(lp))
+    let y = hiSigned(int64(lp))
     let hit = hitTestControl(x, y)
     g_downId = hit
     if hit != IdNone:
@@ -843,8 +849,8 @@ proc panelSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
     g_downId = IdNone
     if GetCapture() == hWnd:
       ReleaseCapture()
-    let x = int(int16(LOWORD(lp)))
-    let y = int(int16(HIWORD(lp)))
+    let x = loSigned(int64(lp))
+    let y = hiSigned(int64(lp))
     let hit = hitTestControl(x, y)
     repaintMain()
     if wasDown != IdNone and hit == wasDown:
