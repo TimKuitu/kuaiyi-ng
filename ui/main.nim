@@ -9,6 +9,7 @@ import naming_reducer
 import dict_list
 import snip_ui
 import modern_main
+import modern_settings
 
 # winim/lean 未包含 shellapi，这里单独引入打开目录所需的函数
 proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
@@ -261,7 +262,6 @@ var
 #                   也可加全新词条（气泵=pump）；自定义英文词自动享受常用词待遇
 # 词库列表由 dict_list.nim 统一提供（固定 10 槽位虚拟滚动 + 搜索过滤，无条数上限）。
 var
-  nbSet: wNoteBook
   pageAbbr, pageIgnore, pagePreferred: wPanel
   dlAbbr, dlIgnore, dlPreferred: DictList
   btnAddAbbr, btnAddIgnore, btnSaveAbbr, btnSaveIgnore: wButton
@@ -1049,13 +1049,14 @@ proc recordSettingsDesign(f: float) =
   g_setZoom = f
 
 proc defSettingsSize(): tuple[w, h: int] =
-  (max(440, int(544.0 * g_uiScale) + 22), max(340, int(600.0 * g_uiScale) + 56))
+  (max(480, int(float(SetWinW) * g_uiScale)), max(380, int(float(SetWinH) * g_uiScale)))
 
 proc nearSize(actual: tuple[w, h: int], expect: tuple[w, h: int], tol = 4): bool =
   abs(actual.w - expect.w) <= tol and abs(actual.h - expect.h) <= tol
 
 proc relayoutSettings(target: float) =
   if setFrame.isNil or g_setDesign.len == 0: return
+  modernLayoutSettings(target)
   let k = target / g_setZoom
   if abs(k - 1.0) >= 0.005:
     for e in g_setDesign:
@@ -1067,7 +1068,7 @@ proc relayoutSettings(target: float) =
   let old = g_setFont
   g_setFont = makeFontAt(UiFontPx * target)
   applyFont(setFrame, g_setFont)
-  if nbSet != nil: nbSet.setSize(nbSet.getSize())
+  if setPanel != nil: discard InvalidateRect(cast[HWND](setPanel.getHandle()), nil, FALSE)
   if old != HFONT(0): discard DeleteObject(old)
 
 proc refreshSettings(target: float) =
@@ -1081,7 +1082,7 @@ proc refreshSettings(target: float) =
   g_uiScale = saved
   recordSettingsDesign(target)
   applyFont(setFrame, g_setFont)
-  if nbSet != nil: nbSet.setSize(nbSet.getSize())
+  if setPanel != nil: discard InvalidateRect(cast[HWND](setPanel.getHandle()), nil, FALSE)
 
 proc computeDefWinSize(): tuple[w, h: int] =
   ## 默认窗口尺寸：宽 550（按钮行六控件）、高度刚好放下 标题栏/输入框/按钮行/结果框
@@ -1236,8 +1237,8 @@ proc saveSettings() =
     # 设置窗口：同样按比例缩放，并立刻重排里面的字和控件
     if not setFrame.isNil and setFrame.getHandle() != HWND(0):
       let sc = setFrame.getSize()
-      let oldDef = (max(440, int(544.0 * float(oldPct) / 100.0) + 22),
-                    max(340, int(534.0 * float(oldPct) / 100.0) + 56))
+      let oldDef = (max(480, int(float(SetWinW) * float(oldPct) / 100.0)),
+                    max(380, int(float(SetWinH) * float(oldPct) / 100.0)))
       let nd = defSettingsSize()
       var nw = nd.w
       var nh = nd.h
@@ -1577,169 +1578,212 @@ proc main() =
   layoutMain()
   frame.setTrayIcon(Icon("", 0), AppTitle & "（双击显示/隐藏）")
 
-  # 设置窗口：按「字体缩放」给默认尺寸建窗（先量客户区当缩放基准），再套用用户保存的大小
-  let dw = max(440, int(544.0 * g_uiScale) + 22)
-  let dh = max(340, int(600.0 * g_uiScale) + 56)
-  # 固定尺寸：不给 wResizeBorder（拖边不能改大小）、不给 wMaximizeBox（无最大化）
+  # 设置窗口：无边框深色圆角（尺寸直接等于客户区设计像素 × 缩放比例）
+  let dw = max(480, int(float(SetWinW) * g_uiScale))
+  let dh = max(380, int(float(SetWinH) * g_uiScale))
   setFrame = Frame(title=AppTitle & " - 设置", size=(dw, dh),
-                   style=wCaption or wSystemMenu or wMinimizeBox)
+                   style=wSystemMenu or wMinimizeBox)
   setFrame.icon = Icon("", 0)
   setFrame.minSize = (dw, dh)      # 固定尺寸：最小 = 最大 = 内容尺寸
   setFrame.maxSize = (dw, dh)
   setPanel = Panel(setFrame)
-  const PadL = 24
-  const ContW = 496            # 544 - 2*24
-  const PageH = 562            # 页面内容高度（设计像素）
-  nbSet = NoteBook(setPanel, pos=(dpx(8), dpx(8)), size=(dpx(544), dpx(PageH + 38)))
-  # 先设字体再调整页签内边距并添加页面，避免 Tab 按小字体算高度导致文字被子页遮住
-  discard SendMessageW(cast[HWND](nbSet.getHandle()), WM_SETFONT, WPARAM(g_uiFont), LPARAM(1))
-  const TCM_SETPADDING = 0x1300 + 43
-  discard SendMessage(cast[HWND](nbSet.getHandle()), TCM_SETPADDING, 0,
-                      LPARAM(8 or (5 shl 16)))
-  page1 = nbSet.addPage(text="通用设置")
-  page2 = nbSet.addPage(text="快捷按键")
-  page3 = nbSet.addPage(text="翻译接口")
-  pageAbbr = nbSet.addPage(text="缩略词")
-  pageIgnore = nbSet.addPage(text="忽略词")
-  pagePreferred = nbSet.addPage(text="常用词")
+  const PadL = SetPadL
+  const ContW = SetContW           # 600 - 2*24 = 552
+  const PageH = SetPageH           # 548
+  const CardPadX = 16
+  const InnerW = ContW - CardPadX * 2   # 520
+
+  page1 = Panel(setPanel, pos=(0, dpx(SetPageY)), size=(dpx(SetWinW), dpx(PageH)))
+  page2 = Panel(setPanel, pos=(0, dpx(SetPageY)), size=(dpx(SetWinW), dpx(PageH)))
+  page3 = Panel(setPanel, pos=(0, dpx(SetPageY)), size=(dpx(SetWinW), dpx(PageH)))
+  pageAbbr = Panel(setPanel, pos=(0, dpx(SetPageY)), size=(dpx(SetWinW), dpx(PageH)))
+  pageIgnore = Panel(setPanel, pos=(0, dpx(SetPageY)), size=(dpx(SetWinW), dpx(PageH)))
+  pagePreferred = Panel(setPanel, pos=(0, dpx(SetPageY)), size=(dpx(SetWinW), dpx(PageH)))
+
+  modernRegisterPage(page1, @[
+    (PadL, 10, ContW, 120),
+    (PadL, 140, ContW, 148),
+    (PadL, 298, ContW, 186)
+  ])
+  modernRegisterPage(page2, @[
+    (PadL, 12, ContW, 336)
+  ])
+  modernRegisterPage(page3, @[
+    (PadL, 12, ContW, 138),
+    (PadL, 162, ContW, 146),
+    (PadL, 320, ContW, 100)
+  ])
+  for dp in [pageAbbr, pageIgnore, pagePreferred]:
+    modernRegisterPage(dp, @[(PadL, 8, ContW, 78)])
+
   g_pageHwnds = @[]
   for pp in [page1, page2, page3, pageAbbr, pageIgnore, pagePreferred]:
     g_pageHwnds.add(cast[HWND](pp.getHandle()))
 
-  # ---------- 通用设置页：分三组，左右留白 24，组间 22，行距 33 ----------
-  var cy = dpx(16)
-  let by = dpx(PageH - 48)     # 底部操作条（检查更新 / 保存设置）统一基线
+  # ---------- 通用设置页：三张圆角深色卡片 + 底部操作条 ----------
+  let by = dpx(PageH - 48)
+  let cxIn = dpx(PadL + CardPadX)
+  let wIn = dpx(InnerW)
 
-  template setTitle(txt: string) =
-    discard StaticText(page1, label="▍" & txt,
-                       pos=(dpx(PadL), cy), size=(dpx(280), dpx(26)))
-    cy += dpx(26)
-  template setDivider() =
-    cy += dpx(5)
-    discard StaticText(page1, pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(2)),
-                       style=0x10)      # SS_ETCHEDHORZ，浅灰分割线
-    cy += dpx(17)
+  template setTitle(txt: string, y0: int) =
+    let lblT = StaticText(page1, label="▍" & txt,
+                          pos=(cxIn, dpx(y0)), size=(dpx(280), dpx(24)))
+    modernMarkStatic(cast[HWND](lblT.getHandle()), inCard=true, role=trTitle)
 
-  setTitle("基础设置")
+  setTitle("基础设置", 18)
   chkTop = CheckBox(page1, label="软件窗口永远在最上面",
-                    pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
-  cy += dpx(33)
-  chkCloseExit = CheckBox(page1, label="点击右上角关闭为退出程序（不勾选=隐藏到托盘）",
-                          pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
-  cy += dpx(33)
+                    pos=(cxIn, dpx(44)), size=(wIn, dpx(24)))
+  chkCloseExit = CheckBox(page1, label="点击右上角关闭为退出程序（不勾选＝隐藏到托盘）",
+                          pos=(cxIn, dpx(72)), size=(wIn, dpx(24)))
   chkDblClear = CheckBox(page1, label="双击输入区＝清空输入区（不勾选＝双击复制命名）",
-                         pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
-  cy += dpx(33)
+                         pos=(cxIn, dpx(100)), size=(wIn, dpx(24)))
 
-  setDivider()
-  setTitle("启动设置")
+  setTitle("启动设置", 148)
   chkAutoStart = CheckBox(page1, label="开机自动启动快译NG",
-                          pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
-  cy += dpx(33)
+                          pos=(cxIn, dpx(174)), size=(wIn, dpx(24)))
   chkAutoHide = CheckBox(page1, label="     开机启动后隐藏界面",
-                         pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
-  cy += dpx(33)
+                         pos=(cxIn, dpx(202)), size=(wIn, dpx(24)))
   chkSummon = CheckBox(page1, label="热键召唤窗口时出现在鼠标旁边",
-                       pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
-  cy += dpx(33)
+                       pos=(cxIn, dpx(230)), size=(wIn, dpx(24)))
   chkSummonClear = CheckBox(page1, label="热键召唤窗口时清空输入区和结果区",
-                            pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
-  cy += dpx(33)
+                            pos=(cxIn, dpx(258)), size=(wIn, dpx(24)))
 
-  setDivider()
-  setTitle("缓存与窗口")
-  discard StaticText(page1, label="缓存目录（历史记录存放位置，可修改）",
-                     pos=(dpx(PadL), cy), size=(dpx(ContW), dpx(24)))
-  cy += dpx(26)
-  edtCache = TextCtrl(page1, pos=(dpx(PadL), cy), size=(dpx(336), dpx(30)))
-  btnOpenCache = Button(page1, label="查看目录", pos=(dpx(PadL + 348), cy),
-                        size=(dpx(96), dpx(30)))
-  cy += dpx(34)
+  setTitle("缓存与窗口", 306)
+  let lblCache = StaticText(page1, label="缓存目录（历史记录存放位置，可修改）",
+                            pos=(cxIn, dpx(332)), size=(wIn, dpx(22)))
+  modernMarkStatic(cast[HWND](lblCache.getHandle()), inCard=true, role=trHint)
+  edtCache = TextCtrl(page1, pos=(cxIn, dpx(358)), size=(dpx(InnerW - 108), dpx(28)))
+  btnOpenCache = Button(page1, label="查看目录", pos=(dpx(PadL + CardPadX + InnerW - 96), dpx(358)),
+                        size=(dpx(96), dpx(28)))
 
-  # 窗口大小：宽 × 高（像素）—— 标签与输入框垂直居中
-  discard StaticText(page1, label="窗口大小", pos=(dpx(PadL), cy + 5), size=(dpx(76), dpx(22)))
-  edtWinW = TextCtrl(page1, pos=(dpx(PadL + 80), cy), size=(dpx(64), dpx(30)))
-  discard StaticText(page1, label="×", pos=(dpx(PadL + 152), cy + 5), size=(dpx(16), dpx(22)))
-  edtWinH = TextCtrl(page1, pos=(dpx(PadL + 176), cy), size=(dpx(64), dpx(30)))
-  discard StaticText(page1, label="像素", pos=(dpx(PadL + 248), cy + 5), size=(dpx(40), dpx(22)))
-  btnResetSize = Button(page1, label="恢复默认", pos=(dpx(PadL + 300), cy),
-                        size=(dpx(92), dpx(30)))
-  cy += dpx(34)
+  let lblWsz = StaticText(page1, label="窗口大小", pos=(cxIn, dpx(402)), size=(dpx(76), dpx(22)))
+  modernMarkStatic(cast[HWND](lblWsz.getHandle()), inCard=true, role=trNormal)
+  edtWinW = TextCtrl(page1, pos=(dpx(PadL + CardPadX + 82), dpx(398)), size=(dpx(68), dpx(28)))
+  let lblMul = StaticText(page1, label="×", pos=(dpx(PadL + CardPadX + 158), dpx(402)), size=(dpx(16), dpx(22)))
+  modernMarkStatic(cast[HWND](lblMul.getHandle()), inCard=true, role=trHint)
+  edtWinH = TextCtrl(page1, pos=(dpx(PadL + CardPadX + 180), dpx(398)), size=(dpx(68), dpx(28)))
+  let lblPx = StaticText(page1, label="像素", pos=(dpx(PadL + CardPadX + 256), dpx(402)), size=(dpx(44), dpx(22)))
+  modernMarkStatic(cast[HWND](lblPx.getHandle()), inCard=true, role=trHint)
+  btnResetSize = Button(page1, label="恢复默认", pos=(dpx(PadL + CardPadX + 312), dpx(398)),
+                        size=(dpx(96), dpx(28)))
 
-  # 字体缩放：设置窗口 + 翻译窗口一起放大（不吃系统 DPI，自己说了算）
-  discard StaticText(page1, label="字体缩放", pos=(dpx(PadL), cy + 5), size=(dpx(76), dpx(22)))
+  let lblScl = StaticText(page1, label="字体缩放", pos=(cxIn, dpx(444)), size=(dpx(76), dpx(22)))
+  modernMarkStatic(cast[HWND](lblScl.getHandle()), inCard=true, role=trNormal)
   cmbUiScale = ComboBox(page1, style=wCbReadOnly,
-                        pos=(dpx(PadL + 80), cy), size=(dpx(92), dpx(30)))
+                        pos=(dpx(PadL + CardPadX + 82), dpx(440)), size=(dpx(96), dpx(28)))
   for pct in UiScalePresets: cmbUiScale.append(pct & "%")
+  modernStyleDarkSystem(cast[HWND](cmbUiScale.getHandle()), "DarkMode_CFD")
   lblScaleHint = StaticText(page1, label="整窗等比缩放，设置窗口固定尺寸",
-                            pos=(dpx(PadL + 184), cy + 5), size=(dpx(300), dpx(22)))
+                            pos=(dpx(PadL + CardPadX + 190), dpx(444)), size=(dpx(320), dpx(22)))
+  modernMarkStatic(cast[HWND](lblScaleHint.getHandle()), inCard=true, role=trHint)
 
-  btnCheckUpdate = Button(page1, label="检查更新", pos=(dpx(PadL), by), size=(dpx(92), dpx(32)))
+  for c in [chkTop, chkCloseExit, chkDblClear, chkAutoStart, chkAutoHide, chkSummon, chkSummonClear]:
+    modernStyleCheck(c, inCard=true)
+  for e in [edtCache, edtWinW, edtWinH]:
+    modernStyleEdit(e, inCard=true)
+  modernStyleButton(btnOpenCache, mbNormal, inCard=true)
+  modernStyleButton(btnResetSize, mbNormal, inCard=true)
+
+  btnCheckUpdate = Button(page1, label="检查更新", pos=(dpx(PadL), by), size=(dpx(96), dpx(32)))
   lblUpdateStatus = StaticText(page1, label="当前版本 v" & AppVersion,
-                               pos=(dpx(PadL + 104), by + 6), size=(dpx(240), dpx(22)))
-  btnSaveSet1 = Button(page1, label="保存设置", pos=(dpx(544 - PadL - 92), by),
-                       size=(dpx(92), dpx(32)))
+                               pos=(dpx(PadL + 108), by + dpx(6)), size=(dpx(280), dpx(22)))
+  modernMarkStatic(cast[HWND](lblUpdateStatus.getHandle()), inCard=false, role=trHint)
+  btnSaveSet1 = Button(page1, label="保存设置", pos=(dpx(SetWinW - PadL - 96), by),
+                       size=(dpx(96), dpx(32)))
+  modernStyleButton(btnCheckUpdate, mbNormal)
+  modernStyleButton(btnSaveSet1, mbPrimary)
 
   # ---------- 快捷按键页 ----------
-  discard StaticText(page2, label="显示/隐藏快译", pos=(dpx(PadL), dpx(24)), size=(dpx(160), dpx(24)))
-  hkToggleCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(18)), size=(dpx(220), dpx(32)))
-  discard StaticText(page2, label="上一个历史记录", pos=(dpx(PadL), dpx(70)), size=(dpx(160), dpx(24)))
-  hkUpCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(64)), size=(dpx(220), dpx(32)))
-  discard StaticText(page2, label="下一个历史记录", pos=(dpx(PadL), dpx(116)), size=(dpx(160), dpx(24)))
-  hkDownCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(110)), size=(dpx(220), dpx(32)))
-  discard StaticText(page2, label="复制单词", pos=(dpx(PadL), dpx(162)), size=(dpx(160), dpx(24)))
-  hkCopyCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(156)), size=(dpx(220), dpx(32)))
-  discard StaticText(page2, label="截屏翻译（英→中）", pos=(dpx(PadL), dpx(208)), size=(dpx(160), dpx(24)))
-  hkSnipCtrl = HotkeyCtrl(page2, pos=(dpx(200), dpx(202)), size=(dpx(220), dpx(32)))
-  discard StaticText(page2,
+  let hkSpecs = [
+    ("显示/隐藏快译", 28),
+    ("上一个历史记录", 74),
+    ("下一个历史记录", 120),
+    ("复制单词", 166),
+    ("截屏翻译（英→中）", 212)
+  ]
+  for hs in hkSpecs:
+    let lbl = StaticText(page2, label=hs[0], pos=(cxIn, dpx(hs[1] + 4)), size=(dpx(176), dpx(24)))
+    modernMarkStatic(cast[HWND](lbl.getHandle()), inCard=true, role=trNormal)
+  hkToggleCtrl = HotkeyCtrl(page2, pos=(dpx(PadL + CardPadX + 186), dpx(28)), size=(dpx(240), dpx(30)))
+  hkUpCtrl = HotkeyCtrl(page2, pos=(dpx(PadL + CardPadX + 186), dpx(74)), size=(dpx(240), dpx(30)))
+  hkDownCtrl = HotkeyCtrl(page2, pos=(dpx(PadL + CardPadX + 186), dpx(120)), size=(dpx(240), dpx(30)))
+  hkCopyCtrl = HotkeyCtrl(page2, pos=(dpx(PadL + CardPadX + 186), dpx(166)), size=(dpx(240), dpx(30)))
+  hkSnipCtrl = HotkeyCtrl(page2, pos=(dpx(PadL + CardPadX + 186), dpx(212)), size=(dpx(240), dpx(30)))
+  for hk in [hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl, hkSnipCtrl]:
+    modernStyleHotkeyHwnd(cast[HWND](hk.getHandle()), inCard=true)
+  let lblHkHint = StaticText(page2,
     label="点击输入框后直接按下组合键（Ctrl/Shift/Alt 任意组合 + 普通键）",
-    pos=(dpx(PadL), dpx(254)), size=(dpx(ContW), dpx(24)))
-  btnResetHot = Button(page2, label="恢复默认设置", pos=(dpx(200), dpx(296)),
-                       size=(dpx(120), dpx(32)))
-  btnSaveSet2 = Button(page2, label="保存设置", pos=(dpx(544 - PadL - 92), by),
-                       size=(dpx(92), dpx(32)))
+    pos=(cxIn, dpx(262)), size=(wIn, dpx(24)))
+  modernMarkStatic(cast[HWND](lblHkHint.getHandle()), inCard=true, role=trHint)
+  btnResetHot = Button(page2, label="恢复默认设置", pos=(dpx(PadL + CardPadX + 186), dpx(300)),
+                       size=(dpx(128), dpx(32)))
+  modernStyleButton(btnResetHot, mbNormal, inCard=true)
+  btnSaveSet2 = Button(page2, label="保存设置", pos=(dpx(SetWinW - PadL - 96), by),
+                       size=(dpx(96), dpx(32)))
+  modernStyleButton(btnSaveSet2, mbPrimary)
 
   # ---------- 翻译接口页（AI → 百度 → 必应 依次回退） ----------
   chkAi = CheckBox(page3, label="AI 接口（OpenAI 格式）",
-                   pos=(dpx(PadL), dpx(14)), size=(dpx(180), dpx(24)))
-  cmbAiPreset = ComboBox(page3, style=wCbReadOnly, pos=(dpx(210), dpx(10)),
-                         size=(dpx(160), dpx(30)))
-  discard StaticText(page3, label="地址（可带 /v1）", pos=(dpx(390), dpx(16)),
-                     size=(dpx(140), dpx(22)))
-  edtAiUrl = TextCtrl(page3, pos=(dpx(PadL), dpx(48)), size=(dpx(252), dpx(30)))
-  discard StaticText(page3, label="密钥", pos=(dpx(284), dpx(52)), size=(dpx(36), dpx(22)))
-  edtAiKey = TextCtrl(page3, pos=(dpx(322), dpx(48)), size=(dpx(142), dpx(30)), style=wTePassword)
-  btnToggleAiKey = Button(page3, label="显示", pos=(dpx(470), dpx(48)), size=(dpx(50), dpx(30)))
-  discard StaticText(page3, label="模型", pos=(dpx(PadL), dpx(90)), size=(dpx(40), dpx(22)))
-  edtAiModel = TextCtrl(page3, pos=(dpx(68), dpx(86)), size=(dpx(200), dpx(30)))
+                   pos=(cxIn, dpx(24)), size=(dpx(200), dpx(24)))
+  modernStyleCheck(chkAi, inCard=true)
+  cmbAiPreset = ComboBox(page3, style=wCbReadOnly, pos=(dpx(PadL + CardPadX + 206), dpx(20)),
+                         size=(dpx(166), dpx(28)))
+  modernStyleDarkSystem(cast[HWND](cmbAiPreset.getHandle()), "DarkMode_CFD")
+  let lblAiTip = StaticText(page3, label="地址（可带 /v1）", pos=(dpx(PadL + CardPadX + 382), dpx(24)),
+                            size=(dpx(136), dpx(22)))
+  modernMarkStatic(cast[HWND](lblAiTip.getHandle()), inCard=true, role=trHint)
+
+  edtAiUrl = TextCtrl(page3, pos=(cxIn, dpx(58)), size=(dpx(260), dpx(28)))
+  let lblAiKey = StaticText(page3, label="密钥", pos=(dpx(PadL + CardPadX + 270), dpx(62)), size=(dpx(38), dpx(22)))
+  modernMarkStatic(cast[HWND](lblAiKey.getHandle()), inCard=true, role=trNormal)
+  edtAiKey = TextCtrl(page3, pos=(dpx(PadL + CardPadX + 312), dpx(58)), size=(dpx(146), dpx(28)), style=wTePassword)
+  btnToggleAiKey = Button(page3, label="显示", pos=(dpx(PadL + CardPadX + 466), dpx(58)), size=(dpx(54), dpx(28)))
+
+  let lblAiModel = StaticText(page3, label="模型", pos=(cxIn, dpx(102)), size=(dpx(42), dpx(22)))
+  modernMarkStatic(cast[HWND](lblAiModel.getHandle()), inCard=true, role=trNormal)
+  edtAiModel = TextCtrl(page3, pos=(dpx(PadL + CardPadX + 46), dpx(98)), size=(dpx(214), dpx(28)))
 
   chkBaidu = CheckBox(page3, label="百度翻译开放平台（免费标准版，fanyi-api.baidu.com 注册）",
-                      pos=(dpx(PadL), dpx(134)), size=(dpx(ContW), dpx(24)))
-  discard StaticText(page3, label="AppID", pos=(dpx(PadL), dpx(170)), size=(dpx(50), dpx(22)))
-  edtBaiduAppId = TextCtrl(page3, pos=(dpx(78), dpx(166)), size=(dpx(156), dpx(30)))
-  discard StaticText(page3, label="密钥", pos=(dpx(244), dpx(170)), size=(dpx(36), dpx(22)))
-  edtBaiduKey = TextCtrl(page3, pos=(dpx(282), dpx(166)), size=(dpx(182), dpx(30)), style=wTePassword)
-  btnToggleBaiduKey = Button(page3, label="显示", pos=(dpx(470), dpx(166)), size=(dpx(50), dpx(30)))
-  discard StaticText(page3, label="地址（可选，默认官方接口）", pos=(dpx(PadL), dpx(208)),
-                     size=(dpx(200), dpx(22)))
-  edtBaiduUrl = TextCtrl(page3, pos=(dpx(232), dpx(204)), size=(dpx(288), dpx(30)))
+                      pos=(cxIn, dpx(174)), size=(wIn, dpx(24)))
+  modernStyleCheck(chkBaidu, inCard=true)
+  let lblBId = StaticText(page3, label="AppID", pos=(cxIn, dpx(212)), size=(dpx(54), dpx(22)))
+  modernMarkStatic(cast[HWND](lblBId.getHandle()), inCard=true, role=trNormal)
+  edtBaiduAppId = TextCtrl(page3, pos=(dpx(PadL + CardPadX + 58), dpx(208)), size=(dpx(156), dpx(28)))
+  let lblBKey = StaticText(page3, label="密钥", pos=(dpx(PadL + CardPadX + 224), dpx(212)), size=(dpx(38), dpx(22)))
+  modernMarkStatic(cast[HWND](lblBKey.getHandle()), inCard=true, role=trNormal)
+  edtBaiduKey = TextCtrl(page3, pos=(dpx(PadL + CardPadX + 266), dpx(208)), size=(dpx(192), dpx(28)), style=wTePassword)
+  btnToggleBaiduKey = Button(page3, label="显示", pos=(dpx(PadL + CardPadX + 466), dpx(208)), size=(dpx(54), dpx(28)))
 
-  discard StaticText(page3,
+  let lblBUrl = StaticText(page3, label="地址（可选，默认官方接口）", pos=(cxIn, dpx(252)),
+                           size=(dpx(210), dpx(22)))
+  modernMarkStatic(cast[HWND](lblBUrl.getHandle()), inCard=true, role=trHint)
+  edtBaiduUrl = TextCtrl(page3, pos=(dpx(PadL + CardPadX + 216), dpx(248)), size=(dpx(InnerW - 216), dpx(28)))
+
+  for e in [edtAiUrl, edtAiKey, edtAiModel, edtBaiduAppId, edtBaiduKey, edtBaiduUrl]:
+    modernStyleEdit(e, inCard=true)
+  modernStyleButton(btnToggleAiKey, mbNormal, inCard=true)
+  modernStyleButton(btnToggleBaiduKey, mbNormal, inCard=true)
+
+  let lblNote1 = StaticText(page3,
     label="翻译顺序：AI → 百度 → 必应免费（前面的未启用或失败自动用后面的）。",
-    pos=(dpx(PadL), dpx(254)), size=(dpx(ContW), dpx(22)))
-  discard StaticText(page3,
+    pos=(cxIn, dpx(330)), size=(wIn, dpx(22)))
+  let lblNote2 = StaticText(page3,
     label="单词词典（音标/释义）始终走必应；百度免费版每秒 1 次、每月 5 万字符。",
-    pos=(dpx(PadL), dpx(278)), size=(dpx(ContW), dpx(22)))
-  discard StaticText(page3,
+    pos=(cxIn, dpx(356)), size=(wIn, dpx(22)))
+  let lblNote3 = StaticText(page3,
     label="Ollama 本地无需密钥（密钥随意填）；百度需实名注册后开通“通用文本翻译”。",
-    pos=(dpx(PadL), dpx(302)), size=(dpx(ContW), dpx(22)))
-  btnSaveSet3 = Button(page3, label="保存设置", pos=(dpx(544 - PadL - 92), by),
-                       size=(dpx(92), dpx(32)))
+    pos=(cxIn, dpx(382)), size=(wIn, dpx(22)))
+  for ln in [lblNote1, lblNote2, lblNote3]:
+    modernMarkStatic(cast[HWND](ln.getHandle()), inCard=true, role=trHint)
+
+  btnSaveSet3 = Button(page3, label="保存设置", pos=(dpx(SetWinW - PadL - 96), by),
+                       size=(dpx(96), dpx(32)))
+  modernStyleButton(btnSaveSet3, mbPrimary)
 
   # 缩略词 / 忽略词 / 常用词三页：统一由 dict_list.nim 建搜索框 + 10 槽位虚拟滚动列表
   dlAbbr = newDictList(
     pageAbbr, dlTwoCol, WheelTagAbbr, g_uiScale, hookWheel,
-    "每行一条：原词 → 缩写，例 Initialization → Init（内置已列出）",
+    "原词 → 缩写，例 Initialization → Init（内置已列出）",
     "可改可删：删行＝该词不再缩写；空白行忽略，保存后立即生效。",
     btnAddAbbr, btnSaveAbbr, lblAbbrStatus)
 
@@ -1758,6 +1802,20 @@ proc main() =
   for p in AiPresets:
     cmbAiPreset.append(if p[0].len == 0: "选择预设…" else: p[0])
   cmbAiPreset.setSelection(0)
+
+  initModernSettings(
+    setFrame, setPanel,
+    @[page1, page2, page3, pageAbbr, pageIgnore, pagePreferred],
+    g_uiScale,
+    onTabChange = proc (idx: int) =
+      if idx == 3 and dlAbbr != nil: dlAbbr.render(g_uiScale)
+      elif idx == 4 and dlIgnore != nil: dlIgnore.render(g_uiScale)
+      elif idx == 5 and dlPreferred != nil: dlPreferred.render(g_uiScale),
+    onMin = proc () = setFrame.minimize(),
+    onClose = proc () =
+      discard fy_cfg_save(g_cfg)
+      setFrame.hide()
+  )
 
   setFrame.wEvent_Close do (event: wEvent):
     # 关掉设置页时记住窗口大小
@@ -1878,7 +1936,7 @@ proc main() =
         if event.timerId == 68:
           frame.stopTimer(68)
           openSettings()
-          nbSet.setSelection(wantTab)
+          modernSelectSettingsTab(wantTab)
           if dlAbbr != nil: dlAbbr.render(g_uiScale)
           if dlIgnore != nil: dlIgnore.render(g_uiScale)
           if dlPreferred != nil: dlPreferred.render(g_uiScale)
