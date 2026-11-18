@@ -16,6 +16,9 @@ const
 
   WmNcCalcSize = UINT(0x0083)
   WmNcHitTest = UINT(0x0084)
+  WmNcPaint = UINT(0x0085)
+  WmNcActivate = UINT(0x0086)
+  WmMouseWheel = UINT(0x020A)
   WmMouseLeave = UINT(0x02A3)
   EmSetBkgndColor = UINT(WM_USER + 67)
   EmSetCharFormat = UINT(WM_USER + 68)
@@ -739,11 +742,46 @@ proc frameHitTest(hwnd: HWND, lp: LPARAM): LRESULT =
     return HtCaption
   result = HtClient
 
+proc handleWheelAtCursor(wp: WPARAM, lp: LPARAM): bool =
+  var pt = POINT(x: LONG(int16(LOWORD(lp))), y: LONG(int16(HIWORD(lp))))
+  ScreenToClient(g_hwndPanel, addr pt)
+  let hit = hitTestControl(int(pt.x), int(pt.y))
+  if hit != IdStyle and hit != IdKind:
+    return false
+  let delta = int(int16(HIWORD(wp)))
+  if delta == 0: return true
+  let step = if delta > 0: -1 else: 1
+  if hit == IdStyle and g_hooks.styleNames.len > 0:
+    let cur = if g_hooks.getStyleIdx != nil: g_hooks.getStyleIdx() else: 0
+    let nxt = clamp(cur + step, 0, g_hooks.styleNames.high)
+    if nxt != cur and g_hooks.onStyleSelect != nil:
+      g_hooks.onStyleSelect(nxt)
+      if g_hwndPop != 0 and g_popKind == IdStyle:
+        g_popSelected = nxt
+        discard InvalidateRect(g_hwndPop, nil, FALSE)
+      repaintMain()
+  elif hit == IdKind and g_hooks.kindNames.len > 0:
+    let cur = if g_hooks.getKindIdx != nil: g_hooks.getKindIdx() else: 0
+    let nxt = clamp(cur + step, 0, g_hooks.kindNames.high)
+    if nxt != cur and g_hooks.onKindSelect != nil:
+      g_hooks.onKindSelect(nxt)
+      if g_hwndPop != 0 and g_popKind == IdKind:
+        g_popSelected = nxt
+        discard InvalidateRect(g_hwndPop, nil, FALSE)
+      repaintMain()
+  result = true
+
 proc frameSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
                        uId: UINT_PTR, dwRef: DWORD_PTR): LRESULT {.stdcall.} =
   case uMsg
   of WmNcCalcSize:
     if wp != 0: return 0
+  of WmNcPaint:
+    # 阻止系统绘制非客户区白框
+    return 0
+  of WmNcActivate:
+    # 失焦/激活时不让 DefWindowProcW 画系统边框，同时避免激活态重绘闪烁
+    return 1
   of WmNcHitTest:
     return frameHitTest(hWnd, lp)
   of WM_ERASEBKGND:
@@ -835,6 +873,9 @@ proc panelSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
         showPopupMenu(IdKind, g_btns[7].rect, g_hooks.kindNames, idx)
       else: discard
     return 0
+  of WmMouseWheel:
+    if handleWheelAtCursor(wp, lp):
+      return 0
   else: discard
   result = ModDefSubclassProc(hWnd, uMsg, wp, lp)
 
@@ -846,6 +887,16 @@ proc inputSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
   elif uMsg == WM_KILLFOCUS:
     g_inputFocused = false
     repaintMain()
+  elif uMsg == WmMouseWheel:
+    if handleWheelAtCursor(wp, lp):
+      return 0
+  result = ModDefSubclassProc(hWnd, uMsg, wp, lp)
+
+proc resultSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
+                        uId: UINT_PTR, dwRef: DWORD_PTR): LRESULT {.stdcall.} =
+  if uMsg == WmMouseWheel:
+    if handleWheelAtCursor(wp, lp):
+      return 0
   result = ModDefSubclassProc(hWnd, uMsg, wp, lp)
 
 proc initModernMain*(frame: wFrame, panel: wPanel, input, resultBox: wTextCtrl,
@@ -858,8 +909,11 @@ proc initModernMain*(frame: wFrame, panel: wPanel, input, resultBox: wTextCtrl,
 
   # 去掉系统标题栏与边框，保留原生 WS_THICKFRAME 支持拖拽改大小与 Win11 圆角阴影
   var style = GetWindowLongPtrW(g_hwndFrame, GWL_STYLE)
-  style = (style and (not (WS_CAPTION or WS_BORDER))) or WS_THICKFRAME or WS_MINIMIZEBOX or WS_SYSMENU
+  style = (style and (not (WS_CAPTION or WS_BORDER))) or WS_THICKFRAME or WS_MINIMIZEBOX or WS_SYSMENU or WS_CLIPCHILDREN
   discard SetWindowLongPtrW(g_hwndFrame, GWL_STYLE, style)
+
+  let pStyle = GetWindowLongPtrW(g_hwndPanel, GWL_STYLE)
+  discard SetWindowLongPtrW(g_hwndPanel, GWL_STYLE, pStyle or WS_CLIPCHILDREN)
 
   var dark = 1'i32
   discard DwmSetWindowAttribute(g_hwndFrame, DwmwaUseImmersiveDarkMode, addr dark, DWORD(sizeof(dark)))
@@ -872,6 +926,7 @@ proc initModernMain*(frame: wFrame, panel: wPanel, input, resultBox: wTextCtrl,
   discard ModSetWindowSubclass(g_hwndFrame, frameSubclassProc, 0x4D01, 0)
   discard ModSetWindowSubclass(g_hwndPanel, panelSubclassProc, 0x4D02, 0)
   discard ModSetWindowSubclass(g_hwndInput, inputSubclassProc, 0x4D03, 0)
+  discard ModSetWindowSubclass(g_hwndResult, resultSubclassProc, 0x4D04, 0)
 
   modernStyleDarkEdit(g_hwndInput, false)
   modernStyleDarkEdit(g_hwndResult, true)
