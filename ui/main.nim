@@ -18,7 +18,7 @@ proc ShellExecuteW*(hwnd: HWND, lpOperation, lpFile, lpParameters,
 
 const
   AppTitle = "快译NG"
-  AppVersion = "2.4.0"
+  AppVersion = "2.4.1"
   # wNim 自定义事件占用 WM_APP+0x10..0xE8，自定义消息必须避开（曾因冲突随机崩溃）
   WmAppTranslated = WM_APP + 0x0200
   WmAppUpdate = WM_APP + 0x0201
@@ -47,6 +47,7 @@ const
 
   # 字体缩放可选档位（百分比）
   UiScalePresets = ["75", "100", "110", "125", "150", "175", "200"]
+  ThemePresets = ["跟随系统", "白色", "黑色"]
   MinFontPx = 9.0          # 字号下限，最小档（75%）也有 13px
 
   RowHeightLogical = 32   # 按钮行高（100% 时的像素，随「字体缩放」放大）
@@ -88,6 +89,7 @@ type
     winW: int               # 主窗口外框尺寸（像素；0 = 默认自适应高度）
     winH: int
     uiScale: int            # 字体缩放（百分比，作用于设置窗口与翻译窗口）
+    themeMode: int          # 界面主题：0=跟随系统, 1=白色, 2=黑色
     setW: int               # 旧版记录过设置窗口尺寸，现在窗口固定尺寸，不再使用
     setH: int
 
@@ -198,6 +200,8 @@ proc loadSettings() =
   g_set.uiScale = cfgInt("通用设置", "界面缩放", 100)
   if g_set.uiScale < 75: g_set.uiScale = 75      # 50% 及以下已取消，最小 75%
   if g_set.uiScale > 200: g_set.uiScale = 200
+  g_set.themeMode = cfgInt("通用设置", "主题模式", 0)
+  if g_set.themeMode < 0 or g_set.themeMode > 2: g_set.themeMode = 0
 
 # ---------------- 热键编码（1=Ctrl 2=Shift 4=Alt 按位相加；8=Win 扩展位） ----------------
 proc origToWin(m: int): UINT =
@@ -247,7 +251,7 @@ var
   edtWinW, edtWinH: wTextCtrl
   btnResetSize: wButton
   cmbUiScale: wComboBox
-  lblScaleHint: wStaticText
+  cmbTheme: wComboBox
   cmbAiPreset: wComboBox
   chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi, chkBaidu: wCheckBox
   chkSummonClear, chkDblClear: wCheckBox
@@ -1109,6 +1113,33 @@ proc setKeyMask(edt: wTextCtrl, btn: wButton, show: bool) =
   if btn != nil:
     btn.label = if show: "隐藏" else: "显示"
 
+proc isSystemDarkTheme(): bool =
+  ## 读取 Windows 系统应用主题（AppsUseLightTheme=0 为深色，1 为浅色）
+  var key: HKEY
+  if RegOpenKeyExW(HKEY_CURRENT_USER,
+                   r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize".newWideCString(),
+                   0, KEY_QUERY_VALUE, addr key) == ERROR_SUCCESS:
+    var val: DWORD = 1
+    var cb: DWORD = DWORD(sizeof(val))
+    var typ: DWORD = 0
+    let rc = RegQueryValueExW(key, "AppsUseLightTheme".newWideCString(), nil,
+                              addr typ, cast[ptr BYTE](addr val), addr cb)
+    RegCloseKey(key)
+    if rc == ERROR_SUCCESS and typ == REG_DWORD:
+      return val == 0
+  result = false
+
+proc resolveThemeDark(mode: int): bool =
+  case mode
+  of 1: false
+  of 2: true
+  else: isSystemDarkTheme()
+
+proc applyTheme(mode: int) =
+  let dark = resolveThemeDark(mode)
+  modernSetDark(dark)
+  modernSetSettingsDark(dark)
+
 proc openSettings() =
   g_aiKeyShown = false
   g_baiduKeyShown = false
@@ -1146,6 +1177,7 @@ proc openSettings() =
   for i, pct in UiScalePresets:
     if pct == $g_set.uiScale: pidx = i
   cmbUiScale.setSelection(pidx)
+  cmbTheme.setSelection(g_set.themeMode)
   syncSizeFields()
   setFrame.center()
   setFrame.show()
@@ -1249,8 +1281,12 @@ proc saveSettings() =
       setFrame.maxSize = (nw, nh)
       setFrame.size = (nw, nh)
       refreshSettings(g_uiScale)
-    lblScaleHint.label = "已应用 $1%（两个窗口都已缩放）" % [$newScale]
   fy_cfg_set(g_cfg, "通用设置", "界面缩放", $g_set.uiScale)
+  let tSel = cmbTheme.getSelection()
+  if tSel >= 0 and tSel <= 2:
+    g_set.themeMode = tSel
+  fy_cfg_set(g_cfg, "通用设置", "主题模式", $g_set.themeMode)
+  applyTheme(g_set.themeMode)
   # 只在这里落盘（退出时只存位置），下次启动按保存值还原
   let wsz = frame.getSize()
   g_set.winW = int(wsz.width)
@@ -1432,6 +1468,7 @@ proc main() =
   g_cfg = fy_cfg_open((g_appDir / "config").cstring)
   loadSettings()
   g_uiScale = float(g_set.uiScale) / 100.0
+  applyTheme(g_set.themeMode)
   fy_log_write("启动", "v%s 缓存=%s AI=%d 地址=%s 百度=%d AppID=%s 地址=%s",
                AppVersion.cstring, g_set.cacheDir.cstring,
                cint(ord(g_set.aiEnabled)), g_set.aiUrl.cstring,
@@ -1559,6 +1596,11 @@ proc main() =
     onUpdateMessage(int event.getwParam(), event.getlParam())
   frame.connect(UINT(WmAppSnipDone)) do (event: wEvent):
     onSnipDone(int(event.getwParam()), cast[ptr FySnipResult](event.getlParam()))
+  frame.connect(WM_SETTINGCHANGE) do (event: wEvent):
+    if g_set.themeMode == 0:
+      let wantDark = isSystemDarkTheme()
+      if wantDark != modernIsDark():
+        applyTheme(0)
 
   input.wEvent_TextEnter do ():
     doTranslate(FY_AUTO)
@@ -1673,9 +1715,13 @@ proc main() =
                         pos=(dpx(PadL + CardPadX + 82), dpx(440)), size=(dpx(96), dpx(28)))
   for pct in UiScalePresets: cmbUiScale.append(pct & "%")
   modernStyleDarkSystem(cast[HWND](cmbUiScale.getHandle()), "DarkMode_CFD")
-  lblScaleHint = StaticText(page1, label="整窗等比缩放，设置窗口固定尺寸",
-                            pos=(dpx(PadL + CardPadX + 190), dpx(444)), size=(dpx(320), dpx(22)))
-  modernMarkStatic(cast[HWND](lblScaleHint.getHandle()), inCard=true, role=trHint)
+
+  let lblTheme = StaticText(page1, label="界面主题", pos=(dpx(PadL + CardPadX + 202), dpx(444)), size=(dpx(76), dpx(22)))
+  modernMarkStatic(cast[HWND](lblTheme.getHandle()), inCard=true, role=trNormal)
+  cmbTheme = ComboBox(page1, style=wCbReadOnly,
+                      pos=(dpx(PadL + CardPadX + 284), dpx(440)), size=(dpx(124), dpx(28)))
+  for t in ThemePresets: cmbTheme.append(t)
+  modernStyleDarkSystem(cast[HWND](cmbTheme.getHandle()), "DarkMode_CFD")
 
   for c in [chkTop, chkCloseExit, chkDblClear, chkAutoStart, chkAutoHide, chkSummon, chkSummonClear]:
     modernStyleCheck(c, inCard=true)

@@ -162,6 +162,7 @@ var
   g_downId = IdNone
   g_tracking = false
   g_inputFocused = false
+  g_isDark = true
 
   # 弹出下拉菜单
   g_popClassReg = false
@@ -249,14 +250,33 @@ proc modernStyleDarkEdit*(h: HWND, isResult: bool) =
     discard SetWindowLongPtrW(h, GWL_STYLE, st and (not WS_BORDER))
     discard SetWindowPos(h, 0, 0, 0, 0, 0,
                          SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_FRAMECHANGED)
-  # 卡片底色 #22262E
-  discard SendMessageW(h, EmSetBkgndColor, 0, LPARAM(RGB(34, 38, 46)))
+  # 卡片底色（深色 #22262E / 浅色 #FFFFFF）
+  let bgCol = if g_isDark: RGB(34, 38, 46) else: RGB(255, 255, 255)
+  discard SendMessageW(h, EmSetBkgndColor, 0, LPARAM(bgCol))
   var cf: ModCharFormatW
   zeroMem(addr cf, sizeof(ModCharFormatW))
   cf.cbSize = UINT(sizeof(ModCharFormatW))
   cf.dwMask = DWORD(CfmColor)
-  cf.crTextColor = if isResult: RGB(224, 232, 245) else: RGB(240, 244, 250)
+  cf.crTextColor = if g_isDark:
+                     (if isResult: RGB(224, 232, 245) else: RGB(240, 244, 250))
+                   else:
+                     (if isResult: RGB(30, 41, 59) else: RGB(15, 23, 42))
   discard SendMessageW(h, EmSetCharFormat, WPARAM(ScfAll), cast[LPARAM](addr cf))
+
+proc modernIsDark*(): bool = g_isDark
+
+proc modernSetDark*(dark: bool) =
+  g_isDark = dark
+  if g_hwndFrame != 0:
+    var d = if g_isDark: 1'i32 else: 0'i32
+    discard DwmSetWindowAttribute(g_hwndFrame, DwmwaUseImmersiveDarkMode, addr d, DWORD(sizeof(d)))
+  if g_hwndInput != 0:
+    modernStyleDarkEdit(g_hwndInput, false)
+  if g_hwndResult != 0:
+    modernStyleDarkEdit(g_hwndResult, true)
+  if g_hwndPop != 0:
+    discard InvalidateRect(g_hwndPop, nil, FALSE)
+  repaintMain()
 
 proc modernSetTitle*(title: string) =
   g_titleStr = title
@@ -364,7 +384,7 @@ proc paintPopup(hwnd: HWND) =
   let oldBm = SelectObject(hdcBuf, hbmBuf)
 
   var fullRc = RECT(left: 0, top: 0, right: LONG(g_popW), bottom: LONG(g_popH))
-  let bg = CreateSolidBrush(RGB(24, 26, 32))
+  let bg = CreateSolidBrush(if g_isDark: RGB(24, 26, 32) else: RGB(243, 245, 249))
   FillRect(hdcBuf, addr fullRc, bg)
   DeleteObject(bg)
 
@@ -373,8 +393,8 @@ proc paintPopup(hwnd: HWND) =
   if g_gpReady and GdipCreateFromHDC(hdcBuf, addr g) == 0 and g != nil:
     discard GdipSetSmoothingMode(g, 4)
     let cardRc = RECT(left: 1, top: 1, right: LONG(g_popW - 1), bottom: LONG(g_popH - 1))
-    fillRoundRect(g, cardRc, float(S(6)), argb(34, 38, 46))
-    drawRoundRect(g, cardRc, float(S(6)), argb(62, 72, 90), 1.0'f32)
+    fillRoundRect(g, cardRc, float(S(6)), if g_isDark: argb(34, 38, 46) else: argb(255, 255, 255))
+    drawRoundRect(g, cardRc, float(S(6)), if g_isDark: argb(62, 72, 90) else: argb(203, 213, 225), 1.0'f32)
 
     let pad = S(4)
     for i in 0 ..< g_popItems.len:
@@ -383,7 +403,7 @@ proc paintPopup(hwnd: HWND) =
       if i == g_popHover:
         fillRoundRect(g, itemRc, float(S(5)), argb(59, 130, 246))
       elif i == g_popSelected:
-        fillRoundRect(g, itemRc, float(S(5)), argb(46, 54, 68))
+        fillRoundRect(g, itemRc, float(S(5)), if g_isDark: argb(46, 54, 68) else: argb(239, 246, 255))
 
       if i == g_popSelected:
         var brDot: GpBrush = nil
@@ -404,8 +424,8 @@ proc paintPopup(hwnd: HWND) =
     let iy = pad + i * g_popItemH
     var tr = RECT(left: LONG(pad + S(20)), top: LONG(iy), right: LONG(g_popW - pad - S(6)), bottom: LONG(iy + g_popItemH - S(2)))
     SetTextColor(hdcBuf, if i == g_popHover: RGB(255, 255, 255)
-                         elif i == g_popSelected: RGB(147, 197, 253)
-                         else: RGB(224, 232, 245))
+                         elif i == g_popSelected: (if g_isDark: RGB(147, 197, 253) else: RGB(37, 99, 235))
+                         else: (if g_isDark: RGB(224, 232, 245) else: RGB(30, 41, 59)))
     DrawTextW(hdcBuf, newWideCString(g_popItems[i]), -1, addr tr,
               DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX)
   SelectObject(hdcBuf, oldF)
@@ -511,7 +531,9 @@ proc showPopupMenu(kind: int, anchorRc: RECT, items: seq[string], curIdx: int) =
 proc drawPinIcon(g: GpGraphics, rc: RECT, active: bool) =
   let cx = cfloat(rc.left + rc.right) * 0.5'f32
   let cy = cfloat(rc.top + rc.bottom) * 0.5'f32
-  let col = if active: argb(255, 255, 255) else: argb(170, 182, 200)
+  let col = if active: argb(255, 255, 255)
+            elif g_isDark: argb(170, 182, 200)
+            else: argb(100, 116, 139)
   var pen: GpPen = nil
   if GdipCreatePen1(col, cfloat(max(1.3, 1.4 * g_scale)), 2, addr pen) == 0 and pen != nil:
     let u = cfloat(S(4))
@@ -526,8 +548,9 @@ proc drawPinIcon(g: GpGraphics, rc: RECT, active: bool) =
 proc drawMinIcon(g: GpGraphics, rc: RECT) =
   let cx = cfloat(rc.left + rc.right) * 0.5'f32
   let cy = cfloat(rc.top + rc.bottom) * 0.5'f32
+  let col = if g_isDark: argb(190, 200, 215) else: argb(71, 85, 105)
   var pen: GpPen = nil
-  if GdipCreatePen1(argb(190, 200, 215), cfloat(max(1.4, 1.5 * g_scale)), 2, addr pen) == 0 and pen != nil:
+  if GdipCreatePen1(col, cfloat(max(1.4, 1.5 * g_scale)), 2, addr pen) == 0 and pen != nil:
     let u = cfloat(S(5))
     discard GdipDrawLine(g, pen, cx - u, cy, cx + u, cy)
     discard GdipDeletePen(pen)
@@ -535,7 +558,9 @@ proc drawMinIcon(g: GpGraphics, rc: RECT) =
 proc drawCloseIcon(g: GpGraphics, rc: RECT, hover: bool) =
   let cx = cfloat(rc.left + rc.right) * 0.5'f32
   let cy = cfloat(rc.top + rc.bottom) * 0.5'f32
-  let col = if hover: argb(255, 255, 255) else: argb(190, 200, 215)
+  let col = if hover: argb(255, 255, 255)
+            elif g_isDark: argb(190, 200, 215)
+            else: argb(71, 85, 105)
   var pen: GpPen = nil
   if GdipCreatePen1(col, cfloat(max(1.4, 1.5 * g_scale)), 2, addr pen) == 0 and pen != nil:
     let u = cfloat(S(4))
@@ -546,8 +571,9 @@ proc drawCloseIcon(g: GpGraphics, rc: RECT, hover: bool) =
 proc drawArrowDown(g: GpGraphics, rc: RECT) =
   let ax = cfloat(rc.right - S(13))
   let ay = cfloat(rc.top + rc.bottom) * 0.5'f32 - cfloat(S(1))
+  let col = if g_isDark: argb(175, 190, 210) else: argb(100, 116, 139)
   var pen: GpPen = nil
-  if GdipCreatePen1(argb(175, 190, 210), cfloat(max(1.3, 1.4 * g_scale)), 2, addr pen) == 0 and pen != nil:
+  if GdipCreatePen1(col, cfloat(max(1.3, 1.4 * g_scale)), 2, addr pen) == 0 and pen != nil:
     let u = cfloat(S(3))
     discard GdipDrawLine(g, pen, ax - u, ay - u * 0.5'f32, ax, ay + u * 0.6'f32)
     discard GdipDrawLine(g, pen, ax, ay + u * 0.6'f32, ax + u, ay - u * 0.5'f32)
@@ -564,9 +590,9 @@ proc paintMainPanel(hwnd: HWND) =
   let hbmBuf = CreateCompatibleBitmap(hdc, cint(g_winW), cint(g_winH))
   let oldBm = SelectObject(hdcBuf, hbmBuf)
 
-  # 主背景 #181A20
+  # 主背景（深色 #181A20 / 浅色 #F3F5F9）
   var fullRc = RECT(left: 0, top: 0, right: LONG(g_winW), bottom: LONG(g_winH))
-  let bg = CreateSolidBrush(RGB(24, 26, 32))
+  let bg = CreateSolidBrush(if g_isDark: RGB(24, 26, 32) else: RGB(243, 245, 249))
   FillRect(hdcBuf, addr fullRc, bg)
   DeleteObject(bg)
 
@@ -578,9 +604,9 @@ proc paintMainPanel(hwnd: HWND) =
   if g_gpReady and GdipCreateFromHDC(hdcBuf, addr g) == 0 and g != nil:
     discard GdipSetSmoothingMode(g, 4)
 
-    # 窗口微弱外框线（让深色窗口在深色壁纸上也有清晰轮廓）
+    # 窗口微弱外框线
     drawRoundRect(g, RECT(left: 0, top: 0, right: LONG(g_winW), bottom: LONG(g_winH)),
-                  float(S(8)), argb(46, 52, 64), 1.0'f32)
+                  float(S(8)), if g_isDark: argb(46, 52, 64) else: argb(203, 213, 225), 1.0'f32)
 
     # 标题栏左侧小蓝点标识
     var brDot: GpBrush = nil
@@ -591,6 +617,7 @@ proc paintMainPanel(hwnd: HWND) =
       discard GdipDeleteBrush(brDot)
 
     # 标题栏右侧 3 个图标按钮
+    let topHoverBg = if g_isDark: argb(54, 60, 72) else: argb(226, 232, 240)
     for i in 0 .. 2:
       let b = g_btns[i]
       let hover = (g_hoverId == b.id)
@@ -599,11 +626,11 @@ proc paintMainPanel(hwnd: HWND) =
         if topMost:
           fillRoundRect(g, b.rect, float(S(5)), if hover: argb(79, 145, 250) else: argb(59, 130, 246))
         elif hover or down:
-          fillRoundRect(g, b.rect, float(S(5)), argb(54, 60, 72))
+          fillRoundRect(g, b.rect, float(S(5)), topHoverBg)
         drawPinIcon(g, b.rect, topMost)
       elif b.id == IdMin:
         if hover or down:
-          fillRoundRect(g, b.rect, float(S(5)), argb(54, 60, 72))
+          fillRoundRect(g, b.rect, float(S(5)), topHoverBg)
         drawMinIcon(g, b.rect)
       elif b.id == IdClose:
         if hover or down:
@@ -611,12 +638,14 @@ proc paintMainPanel(hwnd: HWND) =
         drawCloseIcon(g, b.rect, hover or down)
 
     # 输入卡片 & 结果卡片
-    let inBorder = if g_inputFocused: argb(59, 130, 246) else: argb(48, 54, 66)
-    fillRoundRect(g, g_inCardRc, float(S(8)), argb(34, 38, 46))
+    let cardBg = if g_isDark: argb(34, 38, 46) else: argb(255, 255, 255)
+    let cardBorder = if g_isDark: argb(48, 54, 66) else: argb(226, 232, 240)
+    let inBorder = if g_inputFocused: argb(59, 130, 246) else: cardBorder
+    fillRoundRect(g, g_inCardRc, float(S(8)), cardBg)
     drawRoundRect(g, g_inCardRc, float(S(8)), inBorder, 1.0'f32)
 
-    fillRoundRect(g, g_resCardRc, float(S(8)), argb(34, 38, 46))
-    drawRoundRect(g, g_resCardRc, float(S(8)), argb(48, 54, 66), 1.0'f32)
+    fillRoundRect(g, g_resCardRc, float(S(8)), cardBg)
+    drawRoundRect(g, g_resCardRc, float(S(8)), cardBorder, 1.0'f32)
 
     # 工具栏 6 个自绘圆角按钮/下拉
     let rBtn = float(S(6))
@@ -626,8 +655,8 @@ proc paintMainPanel(hwnd: HWND) =
       let down = (g_downId == b.id)
       let disabled = trans and (b.id == IdZh2En or b.id == IdEn2Zh)
 
-      var fillCol = argb(54, 60, 72)
-      var borderCol = argb(68, 76, 92)
+      var fillCol = if g_isDark: argb(54, 60, 72) else: argb(255, 255, 255)
+      var borderCol = if g_isDark: argb(68, 76, 92) else: argb(203, 213, 225)
       if b.id == IdTrans:
         if trans:
           fillCol = if hover: argb(218, 74, 74) else: argb(200, 62, 62)
@@ -636,16 +665,16 @@ proc paintMainPanel(hwnd: HWND) =
           fillCol = if down: argb(42, 108, 220) elif hover: argb(79, 145, 250) else: argb(59, 130, 246)
           borderCol = fillCol
       elif disabled:
-        fillCol = argb(40, 44, 54)
-        borderCol = argb(48, 54, 66)
+        fillCol = if g_isDark: argb(40, 44, 54) else: argb(241, 245, 249)
+        borderCol = if g_isDark: argb(48, 54, 66) else: argb(226, 232, 240)
       elif (b.id == IdStyle or b.id == IdKind) and g_hwndPop != 0 and g_popKind == b.id:
-        fillCol = argb(62, 70, 84)
+        fillCol = if g_isDark: argb(62, 70, 84) else: argb(239, 246, 255)
         borderCol = argb(59, 130, 246)
       elif down:
-        fillCol = argb(45, 50, 60)
+        fillCol = if g_isDark: argb(45, 50, 60) else: argb(226, 232, 240)
       elif hover:
-        fillCol = argb(68, 76, 92)
-        borderCol = argb(88, 100, 120)
+        fillCol = if g_isDark: argb(68, 76, 92) else: argb(241, 245, 249)
+        borderCol = if g_isDark: argb(88, 100, 120) else: argb(148, 163, 184)
 
       fillRoundRect(g, b.rect, rBtn, fillCol)
       if b.id != IdTrans:
@@ -662,7 +691,7 @@ proc paintMainPanel(hwnd: HWND) =
                             0, 0, CLEARTYPE_QUALITY, 0, newWideCString("Microsoft YaHei UI"))
   let oldF = SelectObject(hdcBuf, hfTitle)
   SetBkMode(hdcBuf, TRANSPARENT)
-  SetTextColor(hdcBuf, RGB(230, 236, 246))
+  SetTextColor(hdcBuf, if g_isDark: RGB(230, 236, 246) else: RGB(30, 41, 59))
   var trTitle = RECT(left: LONG(S(24)), top: 0, right: LONG(S(110)), bottom: g_titleRc.bottom)
   DrawTextW(hdcBuf, newWideCString(g_titleStr), -1, addr trTitle,
             DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX)
@@ -674,7 +703,7 @@ proc paintMainPanel(hwnd: HWND) =
     let hfHint = CreateFontW(cint(-hintPx), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                              0, 0, CLEARTYPE_QUALITY, 0, newWideCString("Microsoft YaHei UI"))
     let oldH = SelectObject(hdcBuf, hfHint)
-    SetTextColor(hdcBuf, RGB(147, 197, 253))
+    SetTextColor(hdcBuf, if g_isDark: RGB(147, 197, 253) else: RGB(37, 99, 235))
     var trHint = RECT(left: LONG(S(92)), top: 0, right: g_btns[0].rect.left - LONG(S(8)), bottom: g_titleRc.bottom)
     DrawTextW(hdcBuf, newWideCString(g_hintStr), -1, addr trHint,
               DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_END_ELLIPSIS or DT_NOPREFIX)
@@ -699,9 +728,9 @@ proc paintMainPanel(hwnd: HWND) =
       txt = g_hooks.kindNames[kIdx]
 
     let disabled = trans and (b.id == IdZh2En or b.id == IdEn2Zh)
-    SetTextColor(hdcBuf, if disabled: RGB(120, 128, 142)
+    SetTextColor(hdcBuf, if disabled: (if g_isDark: RGB(120, 128, 142) else: RGB(148, 163, 184))
                          elif b.id == IdTrans: RGB(255, 255, 255)
-                         else: RGB(240, 244, 250))
+                         else: (if g_isDark: RGB(240, 244, 250) else: RGB(30, 41, 59)))
 
     var tr = b.rect
     if b.id == IdStyle or b.id == IdKind:
@@ -921,7 +950,7 @@ proc initModernMain*(frame: wFrame, panel: wPanel, input, resultBox: wTextCtrl,
   let pStyle = GetWindowLongPtrW(g_hwndPanel, GWL_STYLE)
   discard SetWindowLongPtrW(g_hwndPanel, GWL_STYLE, pStyle or WS_CLIPCHILDREN)
 
-  var dark = 1'i32
+  var dark = if g_isDark: 1'i32 else: 0'i32
   discard DwmSetWindowAttribute(g_hwndFrame, DwmwaUseImmersiveDarkMode, addr dark, DWORD(sizeof(dark)))
   var corner = DwmwcpRound
   discard DwmSetWindowAttribute(g_hwndFrame, DwmwaWindowCornerPreference, addr corner, DWORD(sizeof(corner)))

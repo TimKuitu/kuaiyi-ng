@@ -118,6 +118,7 @@ proc SetWindowTheme(hwnd: HWND, pszSubAppName: LPCWSTR, pszSubIdList: LPCWSTR): 
 
 var
   g_setScale = 1.0
+  g_setDark = true
   g_hwndSetFrame: HWND
   g_hwndSetPanel: HWND
   g_pages: seq[wPanel] = @[]
@@ -146,6 +147,7 @@ var
   g_chkMetas = initTable[HWND, ChkMeta]()
   g_staticMetas = initTable[HWND, StaticMeta]()
   g_editMeta = initTable[HWND, bool]()   # hwnd -> inCard
+  g_sysThemeControls: seq[tuple[h: HWND, darkTheme, lightTheme: string]] = @[]
 
 proc argb(r, g, b: uint8, a: uint8 = 255): ARGB {.inline.} =
   (ARGB(a) shl 24) or (ARGB(r) shl 16) or (ARGB(g) shl 8) or ARGB(b)
@@ -159,11 +161,23 @@ proc hiSigned(v: int64): int {.inline.} =
 proc S(x: int): int {.inline.} =
   max(1, int(round(float(x) * g_setScale)))
 
+proc freeBrushes() =
+  if g_brBg != 0: DeleteObject(g_brBg); g_brBg = 0
+  if g_brCard != 0: DeleteObject(g_brCard); g_brCard = 0
+  if g_brEditBg != 0: DeleteObject(g_brEditBg); g_brEditBg = 0
+  if g_brEditCardBg != 0: DeleteObject(g_brEditCardBg); g_brEditCardBg = 0
+
 proc ensureBrushes() =
-  if g_brBg == 0: g_brBg = CreateSolidBrush(RGB(24, 26, 32))
-  if g_brCard == 0: g_brCard = CreateSolidBrush(RGB(34, 38, 46))
-  if g_brEditBg == 0: g_brEditBg = CreateSolidBrush(RGB(27, 30, 38))
-  if g_brEditCardBg == 0: g_brEditCardBg = CreateSolidBrush(RGB(24, 27, 34))
+  if g_setDark:
+    if g_brBg == 0: g_brBg = CreateSolidBrush(RGB(24, 26, 32))
+    if g_brCard == 0: g_brCard = CreateSolidBrush(RGB(34, 38, 46))
+    if g_brEditBg == 0: g_brEditBg = CreateSolidBrush(RGB(27, 30, 38))
+    if g_brEditCardBg == 0: g_brEditCardBg = CreateSolidBrush(RGB(24, 27, 34))
+  else:
+    if g_brBg == 0: g_brBg = CreateSolidBrush(RGB(243, 245, 249))
+    if g_brCard == 0: g_brCard = CreateSolidBrush(RGB(255, 255, 255))
+    if g_brEditBg == 0: g_brEditBg = CreateSolidBrush(RGB(255, 255, 255))
+    if g_brEditCardBg == 0: g_brEditCardBg = CreateSolidBrush(RGB(248, 250, 252))
 
 proc makeRoundPath(x, y, w, h, r: cfloat): GpPath =
   var path: GpPath = nil
@@ -284,7 +298,7 @@ proc paintSetPanel(hwnd: HWND) =
 
     # 窗口微弱外轮廓线
     drawRoundRect(g, RECT(left: 0, top: 0, right: LONG(w), bottom: LONG(h)),
-                  float(S(8)), argb(46, 52, 64), 1.0'f32)
+                  float(S(8)), if g_setDark: argb(46, 52, 64) else: argb(203, 213, 225), 1.0'f32)
 
     # 标题栏左侧蓝点
     var brDot: GpBrush = nil
@@ -296,9 +310,10 @@ proc paintSetPanel(hwnd: HWND) =
 
     # 最小化 / 关闭按钮
     if g_topHover == 100 or g_topDown == 100:
-      fillRoundRect(g, g_minRc, float(S(5)), argb(54, 60, 72))
+      fillRoundRect(g, g_minRc, float(S(5)), if g_setDark: argb(54, 60, 72) else: argb(226, 232, 240))
     var penMin: GpPen = nil
-    if GdipCreatePen1(argb(190, 200, 215), cfloat(max(1.4, 1.5 * g_setScale)), 2, addr penMin) == 0 and penMin != nil:
+    let minCol = if g_setDark: argb(190, 200, 215) else: argb(71, 85, 105)
+    if GdipCreatePen1(minCol, cfloat(max(1.4, 1.5 * g_setScale)), 2, addr penMin) == 0 and penMin != nil:
       let cx = cfloat(g_minRc.left + g_minRc.right) * 0.5'f32
       let cy = cfloat(g_minRc.top + g_minRc.bottom) * 0.5'f32
       let u = cfloat(S(5))
@@ -309,7 +324,9 @@ proc paintSetPanel(hwnd: HWND) =
     if closeHot:
       fillRoundRect(g, g_closeRc, float(S(5)), argb(200, 62, 62))
     var penClose: GpPen = nil
-    let closeCol = if closeHot: argb(255, 255, 255) else: argb(190, 200, 215)
+    let closeCol = if closeHot: argb(255, 255, 255)
+                   elif g_setDark: argb(190, 200, 215)
+                   else: argb(71, 85, 105)
     if GdipCreatePen1(closeCol, cfloat(max(1.4, 1.5 * g_setScale)), 2, addr penClose) == 0 and penClose != nil:
       let cx = cfloat(g_closeRc.left + g_closeRc.right) * 0.5'f32
       let cy = cfloat(g_closeRc.top + g_closeRc.bottom) * 0.5'f32
@@ -319,14 +336,14 @@ proc paintSetPanel(hwnd: HWND) =
       discard GdipDeletePen(penClose)
 
     # 分段式 Tab 导航容器
-    fillRoundRect(g, g_tabBarRc, float(S(8)), argb(34, 38, 46))
-    drawRoundRect(g, g_tabBarRc, float(S(8)), argb(48, 54, 66), 1.0'f32)
+    fillRoundRect(g, g_tabBarRc, float(S(8)), if g_setDark: argb(34, 38, 46) else: argb(255, 255, 255))
+    drawRoundRect(g, g_tabBarRc, float(S(8)), if g_setDark: argb(48, 54, 66) else: argb(226, 232, 240), 1.0'f32)
 
     for i in 0 .. 5:
       if i == g_curTab:
         fillRoundRect(g, g_tabRcs[i], float(S(6)), argb(59, 130, 246))
       elif g_topHover == i:
-        fillRoundRect(g, g_tabRcs[i], float(S(6)), argb(48, 55, 68))
+        fillRoundRect(g, g_tabRcs[i], float(S(6)), if g_setDark: argb(48, 55, 68) else: argb(241, 245, 249))
 
     discard GdipDeleteGraphics(g)
 
@@ -336,7 +353,7 @@ proc paintSetPanel(hwnd: HWND) =
                             0, 0, CLEARTYPE_QUALITY, 0, newWideCString("Microsoft YaHei UI"))
   let oldF = SelectObject(hdcBuf, hfTitle)
   SetBkMode(hdcBuf, TRANSPARENT)
-  SetTextColor(hdcBuf, RGB(230, 236, 246))
+  SetTextColor(hdcBuf, if g_setDark: RGB(230, 236, 246) else: RGB(30, 41, 59))
   var trTitle = RECT(left: LONG(S(26)), top: 0, right: LONG(S(240)), bottom: LONG(S(SetTitleH)))
   DrawTextW(hdcBuf, newWideCString("快译NG · 设置"), -1, addr trTitle,
             DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX)
@@ -350,8 +367,8 @@ proc paintSetPanel(hwnd: HWND) =
   let oldT = SelectObject(hdcBuf, hfTab)
   for i in 0 .. 5:
     SetTextColor(hdcBuf, if i == g_curTab: RGB(255, 255, 255)
-                         elif g_topHover == i: RGB(224, 232, 245)
-                         else: RGB(148, 163, 184))
+                         elif g_topHover == i: (if g_setDark: RGB(224, 232, 245) else: RGB(15, 23, 42))
+                         else: (if g_setDark: RGB(148, 163, 184) else: RGB(100, 116, 139)))
     var tr = g_tabRcs[i]
     DrawTextW(hdcBuf, newWideCString(TabNames[i]), -1, addr tr,
               DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX)
@@ -478,21 +495,25 @@ proc paintPagePanel(hwnd: HWND) =
 
       # 左右边缘保持与外框一致的微弱边线
       var penSide: GpPen = nil
-      if GdipCreatePen1(argb(46, 52, 64), 1.0'f32, 2, addr penSide) == 0 and penSide != nil:
+      let sideCol = if g_setDark: argb(46, 52, 64) else: argb(203, 213, 225)
+      if GdipCreatePen1(sideCol, 1.0'f32, 2, addr penSide) == 0 and penSide != nil:
         discard GdipDrawLine(g, penSide, 0.5'f32, 0.0'f32, 0.5'f32, cfloat(h))
         discard GdipDrawLine(g, penSide, cfloat(w) - 0.5'f32, 0.0'f32, cfloat(w) - 0.5'f32, cfloat(h))
         discard GdipDrawLine(g, penSide, 0.0'f32, cfloat(h) - 0.5'f32, cfloat(w), cfloat(h) - 0.5'f32)
         discard GdipDeletePen(penSide)
 
       # 卡片背景 + 边框
+      let cardBg = if g_setDark: argb(34, 38, 46) else: argb(255, 255, 255)
+      let cardBorder = if g_setDark: argb(48, 54, 66) else: argb(226, 232, 240)
       for c in meta.cards:
         let crc = RECT(left: LONG(S(c.x)), top: LONG(S(c.y)),
                        right: LONG(S(c.x + c.w)), bottom: LONG(S(c.y + c.h)))
-        fillRoundRect(g, crc, float(S(8)), argb(34, 38, 46))
-        drawRoundRect(g, crc, float(S(8)), argb(48, 54, 66), 1.0'f32)
+        fillRoundRect(g, crc, float(S(8)), cardBg)
+        drawRoundRect(g, crc, float(S(8)), cardBorder, 1.0'f32)
 
       # 为本页所有可见 Edit 输入框绘制圆角边框（聚焦高亮蓝）
       let focusH = GetFocus()
+      let editNormalBorder = if g_setDark: argb(58, 66, 82) else: argb(203, 213, 225)
       for e in meta.edits:
         if IsWindowVisible(e.h) != 0:
           var er: RECT
@@ -505,7 +526,7 @@ proc paintPagePanel(hwnd: HWND) =
             let boxRc = RECT(left: pt1.x - pad, top: pt1.y - pad,
                              right: pt2.x + pad, bottom: pt2.y + pad)
             let focused = (focusH == e.h)
-            let bcol = if focused: argb(59, 130, 246) else: argb(58, 66, 82)
+            let bcol = if focused: argb(59, 130, 246) else: editNormalBorder
             drawRoundRect(g, boxRc, float(S(5)), bcol, 1.0'f32)
 
       discard GdipDeleteGraphics(g)
@@ -529,31 +550,37 @@ proc pageSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
     let hdc = cast[HDC](wp)
     let hCtl = cast[HWND](lp)
     let sm = g_staticMetas.getOrDefault(hCtl, StaticMeta(inCard: false, role: trNormal))
-    case sm.role
-    of trTitle: SetTextColor(hdc, RGB(147, 197, 253))
-    of trHint: SetTextColor(hdc, RGB(148, 163, 184))
-    of trNormal: SetTextColor(hdc, RGB(226, 232, 240))
+    if g_setDark:
+      case sm.role
+      of trTitle: SetTextColor(hdc, RGB(147, 197, 253))
+      of trHint: SetTextColor(hdc, RGB(148, 163, 184))
+      of trNormal: SetTextColor(hdc, RGB(226, 232, 240))
+    else:
+      case sm.role
+      of trTitle: SetTextColor(hdc, RGB(37, 99, 235))
+      of trHint: SetTextColor(hdc, RGB(100, 116, 139))
+      of trNormal: SetTextColor(hdc, RGB(30, 41, 59))
     if sm.inCard:
-      SetBkColor(hdc, RGB(34, 38, 46))
+      SetBkColor(hdc, if g_setDark: RGB(34, 38, 46) else: RGB(255, 255, 255))
       return cast[LRESULT](g_brCard)
     else:
-      SetBkColor(hdc, RGB(24, 26, 32))
+      SetBkColor(hdc, if g_setDark: RGB(24, 26, 32) else: RGB(243, 245, 249))
       return cast[LRESULT](g_brBg)
   of WM_CTLCOLOREDIT:
     let hdc = cast[HDC](wp)
     let hCtl = cast[HWND](lp)
     let inCard = g_editMeta.getOrDefault(hCtl, false)
-    SetTextColor(hdc, RGB(240, 244, 250))
+    SetTextColor(hdc, if g_setDark: RGB(240, 244, 250) else: RGB(15, 23, 42))
     if inCard:
-      SetBkColor(hdc, RGB(24, 27, 34))
+      SetBkColor(hdc, if g_setDark: RGB(24, 27, 34) else: RGB(248, 250, 252))
       return cast[LRESULT](g_brEditCardBg)
     else:
-      SetBkColor(hdc, RGB(27, 30, 38))
+      SetBkColor(hdc, if g_setDark: RGB(27, 30, 38) else: RGB(255, 255, 255))
       return cast[LRESULT](g_brEditBg)
   of WM_CTLCOLORLISTBOX:
     let hdc = cast[HDC](wp)
-    SetTextColor(hdc, RGB(240, 244, 250))
-    SetBkColor(hdc, RGB(34, 38, 46))
+    SetTextColor(hdc, if g_setDark: RGB(240, 244, 250) else: RGB(15, 23, 42))
+    SetBkColor(hdc, if g_setDark: RGB(34, 38, 46) else: RGB(255, 255, 255))
     return cast[LRESULT](g_brCard)
   else: discard
   result = SetDefSubclassProc(hWnd, uMsg, wp, lp)
@@ -586,14 +613,14 @@ proc paintModernButton(hWnd: HWND, bm: BtnMeta) =
   FillRect(hdcBuf, addr rc, if bm.inCard: g_brCard else: g_brBg)
 
   let enabled = IsWindowEnabled(hWnd) != 0
-  var fillCol = argb(54, 60, 72)
-  var borderCol = argb(68, 76, 92)
-  var textCol = RGB(240, 244, 250)
+  var fillCol = if g_setDark: argb(54, 60, 72) else: argb(255, 255, 255)
+  var borderCol = if g_setDark: argb(68, 76, 92) else: argb(203, 213, 225)
+  var textCol = if g_setDark: RGB(240, 244, 250) else: RGB(30, 41, 59)
 
   if not enabled:
-    fillCol = argb(38, 42, 52)
-    borderCol = argb(48, 54, 66)
-    textCol = RGB(120, 128, 142)
+    fillCol = if g_setDark: argb(38, 42, 52) else: argb(241, 245, 249)
+    borderCol = if g_setDark: argb(48, 54, 66) else: argb(226, 232, 240)
+    textCol = if g_setDark: RGB(120, 128, 142) else: RGB(148, 163, 184)
   else:
     case bm.kind
     of mbPrimary:
@@ -612,16 +639,16 @@ proc paintModernButton(hWnd: HWND, bm: BtnMeta) =
         borderCol = fillCol
         textCol = RGB(255, 255, 255)
       else:
-        fillCol = argb(45, 50, 62)
-        borderCol = argb(64, 72, 88)
-        textCol = RGB(210, 218, 232)
+        fillCol = if g_setDark: argb(45, 50, 62) else: argb(255, 255, 255)
+        borderCol = if g_setDark: argb(64, 72, 88) else: argb(203, 213, 225)
+        textCol = if g_setDark: RGB(210, 218, 232) else: RGB(71, 85, 105)
     of mbNormal:
       if bm.down:
-        fillCol = argb(45, 50, 60)
-        borderCol = argb(72, 82, 98)
+        fillCol = if g_setDark: argb(45, 50, 60) else: argb(226, 232, 240)
+        borderCol = if g_setDark: argb(72, 82, 98) else: argb(148, 163, 184)
       elif bm.hover:
-        fillCol = argb(68, 76, 92)
-        borderCol = argb(88, 100, 120)
+        fillCol = if g_setDark: argb(68, 76, 92) else: argb(241, 245, 249)
+        borderCol = if g_setDark: argb(88, 100, 120) else: argb(148, 163, 184)
 
   var g: GpGraphics = nil
   if GdipCreateFromHDC(hdcBuf, addr g) == 0 and g != nil:
@@ -760,8 +787,9 @@ proc paintModernCheck(hWnd: HWND, cm: ChkMeta) =
         discard GdipDrawLine(g, pen, x1, y1, x2, y2)
         discard GdipDeletePen(pen)
     else:
-      fillRoundRect(g, boxRc, float(S(4)), argb(24, 27, 34))
-      let bcol = if cm.hover: argb(96, 112, 140) else: argb(68, 76, 92)
+      fillRoundRect(g, boxRc, float(S(4)), if g_setDark: argb(24, 27, 34) else: argb(255, 255, 255))
+      let bcol = if cm.hover: (if g_setDark: argb(96, 112, 140) else: argb(59, 130, 246))
+                 else: (if g_setDark: argb(68, 76, 92) else: argb(148, 163, 184))
       drawRoundRect(g, boxRc, float(S(4)), bcol, 1.0'f32)
     discard GdipDeleteGraphics(g)
 
@@ -770,7 +798,8 @@ proc paintModernCheck(hWnd: HWND, cm: ChkMeta) =
     let hf = cast[HFONT](SendMessageW(hWnd, WM_GETFONT, 0, 0))
     let oldF = if hf != 0: SelectObject(hdcBuf, hf) else: HGDIOBJ(0)
     SetBkMode(hdcBuf, TRANSPARENT)
-    SetTextColor(hdcBuf, if cm.hover: RGB(248, 250, 252) else: RGB(226, 232, 240))
+    SetTextColor(hdcBuf, if cm.hover: (if g_setDark: RGB(248, 250, 252) else: RGB(15, 23, 42))
+                         else: (if g_setDark: RGB(226, 232, 240) else: RGB(30, 41, 59)))
     var tr = RECT(left: LONG(boxS + S(8)), top: 0, right: LONG(w), bottom: LONG(h))
     DrawTextW(hdcBuf, cast[LPCWSTR](unsafeAddr txt[0]), -1, addr tr,
               DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX)
@@ -875,27 +904,52 @@ proc modernMarkStatic*(h: HWND, inCard = false, role: SetTextRole = trNormal) =
   if h != 0:
     g_staticMetas[h] = StaticMeta(inCard: inCard, role: role)
 
-var g_darkThemeInited = false
-
-proc enableAppDarkTheme() =
-  ## 启用 Win10 1903+ / Win11 暗色策略，使 DarkMode_Explorer / DarkMode_CFD 生效
-  if g_darkThemeInited: return
-  g_darkThemeInited = true
+proc applyAppThemeMode(dark: bool) =
+  ## 启用 Win10 1903+ / Win11 暗色/浅色策略，使 DarkMode_Explorer / DarkMode_CFD 动态切换生效
   let hUx = LoadLibraryW(newWideCString("uxtheme.dll"))
   if hUx == 0: return
   let pSetMode = GetProcAddress(hUx, cast[LPCSTR](135))
   if pSetMode != nil:
     type SetPrefModeFn = proc (mode: cint): cint {.stdcall.}
-    discard cast[SetPrefModeFn](pSetMode)(2) # ForceDark
+    discard cast[SetPrefModeFn](pSetMode)(if dark: 2 else: 0) # 2=ForceDark, 0=Default(Light)
   let pFlush = GetProcAddress(hUx, cast[LPCSTR](136))
   if pFlush != nil:
     type FlushFn = proc () {.stdcall.}
     cast[FlushFn](pFlush)()
 
 proc modernStyleDarkSystem*(h: HWND, theme = "DarkMode_Explorer") =
-  enableAppDarkTheme()
-  if h != 0:
-    discard SetWindowTheme(h, newWideCString(theme), nil)
+  applyAppThemeMode(g_setDark)
+  if h == 0: return
+  let lightTheme = if theme.contains("CFD"): "CFD" else: "Explorer"
+  var found = false
+  for item in g_sysThemeControls:
+    if item.h == h:
+      found = true
+      break
+  if not found:
+    g_sysThemeControls.add((h, theme, lightTheme))
+  let targetTheme = if g_setDark: theme else: lightTheme
+  discard SetWindowTheme(h, newWideCString(targetTheme), nil)
+
+proc modernSetSettingsDark*(dark: bool) =
+  g_setDark = dark
+  applyAppThemeMode(dark)
+  freeBrushes()
+  if g_hwndSetFrame != 0:
+    var d = if dark: 1'i32 else: 0'i32
+    discard DwmSetWindowAttribute(g_hwndSetFrame, DwmwaUseImmersiveDarkMode, addr d, DWORD(sizeof(d)))
+  for item in g_sysThemeControls:
+    if item.h != 0 and IsWindow(item.h) != 0:
+      let t = if dark: item.darkTheme else: item.lightTheme
+      discard SetWindowTheme(item.h, newWideCString(t), nil)
+      discard InvalidateRect(item.h, nil, TRUE)
+  if g_hwndSetPanel != 0:
+    discard RedrawWindow(g_hwndSetPanel, nil, 0, RDW_INVALIDATE or RDW_ERASE or RDW_ALLCHILDREN)
+  for p in g_pages:
+    if p != nil:
+      let ph = cast[HWND](p.getHandle())
+      if ph != 0:
+        discard RedrawWindow(ph, nil, 0, RDW_INVALIDATE or RDW_ERASE or RDW_ALLCHILDREN)
 
 proc modernStyleHotkeyHwnd*(h: HWND, inCard = true) =
   if h == 0: return
@@ -930,7 +984,7 @@ proc initModernSettings*(setFrame: wFrame, setPanel: wPanel, pages: seq[wPanel],
                          onTabChange: proc (idx: int),
                          onMin: proc (),
                          onClose: proc ()) =
-  enableAppDarkTheme()
+  applyAppThemeMode(g_setDark)
   g_hwndSetFrame = cast[HWND](setFrame.getHandle())
   g_hwndSetPanel = cast[HWND](setPanel.getHandle())
   g_pages = pages
@@ -946,7 +1000,7 @@ proc initModernSettings*(setFrame: wFrame, setPanel: wPanel, pages: seq[wPanel],
   let pStyle = GetWindowLongPtrW(g_hwndSetPanel, GWL_STYLE)
   discard SetWindowLongPtrW(g_hwndSetPanel, GWL_STYLE, pStyle or WS_CLIPCHILDREN)
 
-  var dark = 1'i32
+  var dark = if g_setDark: 1'i32 else: 0'i32
   discard DwmSetWindowAttribute(g_hwndSetFrame, DwmwaUseImmersiveDarkMode, addr dark, DWORD(sizeof(dark)))
   var corner = DwmwcpRound
   discard DwmSetWindowAttribute(g_hwndSetFrame, DwmwaWindowCornerPreference, addr corner, DWORD(sizeof(corner)))
