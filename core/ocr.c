@@ -1143,6 +1143,26 @@ static COLORREF sample_fg_color(const BYTE *bgra, int w, int h, int bx, int by, 
     return (bg_y > 135) ? RGB(22, 22, 22) : RGB(245, 245, 245);
 }
 
+/* 在 [min_fh, max_fh] 范围内寻找能完全放入 avail_w x avail_h 的最大字号 */
+static HFONT fit_font_to_rect(HDC hdc, const WCHAR *wz, int avail_w, int avail_h,
+                              int max_fh, int min_fh, UINT calc_flags) {
+    if (max_fh < min_fh) max_fh = min_fh;
+    for (int fh = max_fh; fh >= min_fh; fh--) {
+        HFONT f = CreateFontW(-fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                              0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
+        if (!f) continue;
+        HFONT old_f = (HFONT)SelectObject(hdc, f);
+        RECT calc = {0, 0, avail_w, 0};
+        DrawTextW(hdc, wz, -1, &calc, calc_flags | DT_CALCRECT | DT_NOPREFIX);
+        SelectObject(hdc, old_f);
+        if (calc.right <= avail_w && calc.bottom <= avail_h) {
+            return f;
+        }
+        DeleteObject(f);
+    }
+    return NULL;
+}
+
 static void render_blocks(const void *bgra_in, void *bgra_out, int w, int h,
                           const TextBlock *blks, int nb) {
     memcpy(bgra_out, bgra_in, (size_t)w * (size_t)h * 4);
@@ -1195,48 +1215,69 @@ static void render_blocks(const void *bgra_in, void *bgra_out, int w, int h,
         RECT draw_rc = fill_rc;
         int avail_w = draw_rc.right - draw_rc.left;
         int avail_h = draw_rc.bottom - draw_rc.top;
+        if (avail_w <= 0 || avail_h <= 0) {
+            free(wz);
+            continue;
+        }
         int start_fh = (int)((b->n_lines > 1 ? b->line_h : b->h) * 0.92f);
-        if (start_fh < 11) start_fh = 11;
+        if (start_fh < 6) start_fh = 6;
         if (start_fh > 64) start_fh = 64;
 
         HFONT hf = NULL;
         int use_wrap = (b->n_lines > 1);
         if (!use_wrap) {
-            for (int fh = start_fh; fh >= 11; fh--) {
-                HFONT f = CreateFontW(-fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                                      0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
-                HFONT old_f = (HFONT)SelectObject(hdc, f);
-                RECT calc = {0, 0, avail_w, avail_h};
-                DrawTextW(hdc, wz, -1, &calc, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
-                SelectObject(hdc, old_f);
-                if (calc.right <= avail_w + 2 || fh == 11) {
-                    hf = f;
-                    if (calc.right > avail_w + 4) use_wrap = 1;
-                    break;
+            /* 单行块：优先在原框内单行自适应字号，降到 8px 仍放不下再尝试多行折行 */
+            int single_min = (avail_h >= 16) ? 8 : 6;
+            if (single_min > start_fh) single_min = start_fh;
+            hf = fit_font_to_rect(hdc, wz, avail_w, avail_h, start_fh, single_min, DT_SINGLELINE);
+            if (!hf) {
+                hf = fit_font_to_rect(hdc, wz, avail_w, avail_h, start_fh, 6,
+                                      DT_WORDBREAK | DT_EDITCONTROL);
+                if (hf) {
+                    use_wrap = 1;
+                } else if (single_min > 6) {
+                    hf = fit_font_to_rect(hdc, wz, avail_w, avail_h, single_min - 1, 6, DT_SINGLELINE);
                 }
-                DeleteObject(f);
             }
+        } else {
+            /* 多行块：折行后同时约束宽高，确保不超出原文本区域 */
+            hf = fit_font_to_rect(hdc, wz, avail_w, avail_h, start_fh, 6,
+                                  DT_WORDBREAK | DT_EDITCONTROL);
         }
-        if (use_wrap) {
-            if (hf) { DeleteObject(hf); hf = NULL; }
-            for (int fh = start_fh; fh >= 10; fh--) {
-                HFONT f = CreateFontW(-fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                                      0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
-                HFONT old_f = (HFONT)SelectObject(hdc, f);
+
+        /* 兜底：6px 仍超宽时适度收窄字宽并加省略号，避免硬截断 */
+        UINT extra_fmt = 0;
+        if (!hf) {
+            int fallback_fh = 6;
+            int n_width = 0;
+            HFONT f6 = CreateFontW(-fallback_fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                                   0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
+            if (f6 && !use_wrap) {
+                HFONT old_f = (HFONT)SelectObject(hdc, f6);
                 RECT calc = {0, 0, avail_w, 0};
-                DrawTextW(hdc, wz, -1, &calc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
-                SelectObject(hdc, old_f);
-                if (calc.bottom <= avail_h + 4 || fh == 10) {
-                    hf = f;
-                    break;
+                DrawTextW(hdc, wz, -1, &calc, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+                TEXTMETRICW tm;
+                if (calc.right > avail_w && GetTextMetricsW(hdc, &tm) && tm.tmAveCharWidth > 0) {
+                    float ratio = (float)avail_w / (float)calc.right;
+                    if (ratio < 0.72f) ratio = 0.72f;
+                    int nw = (int)(tm.tmAveCharWidth * ratio);
+                    if (nw >= 2 && nw < tm.tmAveCharWidth) n_width = nw;
                 }
-                DeleteObject(f);
+                SelectObject(hdc, old_f);
+                if (n_width > 0) {
+                    DeleteObject(f6);
+                    f6 = CreateFontW(-fallback_fh, n_width, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                                     0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
+                }
+                extra_fmt = DT_END_ELLIPSIS;
             }
+            hf = f6;
         }
+
         if (hf) {
             HFONT old_f = (HFONT)SelectObject(hdc, hf);
-            UINT fmt = use_wrap ? (DT_LEFT | DT_WORDBREAK | DT_NOPREFIX)
-                                : (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            UINT fmt = use_wrap ? (DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX)
+                                : (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | extra_fmt);
             DrawTextW(hdc, wz, -1, &draw_rc, fmt);
             SelectObject(hdc, old_f);
             DeleteObject(hf);
