@@ -3,7 +3,7 @@
 ## 2. 屏幕多贴图悬浮窗（F3）：支持图文剪贴板贴图、拖拽、滚轮缩放、Ctrl+滚轮调透明度、右键菜单
 ## 3. 截屏翻译悬浮窗：后台裸线程调用 fy_snip_translate（WinRT OCR + 译文原图覆盖），支持一键贴图
 
-import std/[math, strutils, tables]
+import std/[os, math, strutils, tables]
 import winim/lean
 import fastcore
 
@@ -36,6 +36,7 @@ const
   OvBtnSave = 15
   OvBtnCancel = 16
   OvBtnCopy = 17
+  OvBtnQuickSave = 18
 
   # 二级属性栏命中 ID
   SubHitNone = 0
@@ -64,6 +65,7 @@ const
   PinMenuBorder = 1008
   PinMenuClose = 1009
   PinMenuCloseAll = 1010
+  PinMenuQuickSave = 1011
 
   PinHudTimerId = UINT_PTR(0x5011)
   TextEditCtrlId = HMENU(0x5021)
@@ -110,6 +112,9 @@ type
     baiduKey*: string
     baiduUrl*: string
     cacheDir*: string
+    saveDir*: string
+    pinMods*: int
+    pinVk*: int
 
   SnipJob = object
     seq: int
@@ -265,6 +270,7 @@ var
   g_hwndMain: HWND
   g_lastCfg: SnipCfg
   g_copyTextCb: proc (s: string)
+  g_notifyCb: proc (msg: string)
   g_overlayClassReg = false
   g_resultClassReg = false
   g_pinClassReg = false
@@ -336,7 +342,8 @@ var
   g_btns: array[6, ToolBtn]
   g_hoverBtn = 0
 
-proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string), directTranslate = false)
+proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string),
+                       directTranslate = false, notifyCb: proc (msg: string) = nil)
 proc openResultWindow(screenX, screenY, w, h: cint, cropBits: pointer)
 proc createPinWindow(screenX, screenY, w, h: cint, bitsIn: pointer): PinWin
 
@@ -456,20 +463,70 @@ proc copyDibToClipboard(hwnd: HWND, bits: pointer, w, h: cint): bool =
   GlobalFree(hMem)
   return false
 
-proc saveBitsAsPngDialog(owner: HWND, bits: pointer, w, h: cint): bool =
-  if bits == nil or w <= 0 or h <= 0: return false
-  ensureGdiplus()
-  if not g_gpReady: return false
-
+proc makeSnipFileName(): string =
   var st: SYSTEMTIME
   GetLocalTime(addr st)
-  let defName = "Snip_" &
+  "Snip_" &
     align($st.wYear, 4, '0') &
     align($st.wMonth, 2, '0') &
     align($st.wDay, 2, '0') & "_" &
     align($st.wHour, 2, '0') &
     align($st.wMinute, 2, '0') &
     align($st.wSecond, 2, '0') & ".png"
+
+proc effectiveSaveDir(): string =
+  result = g_lastCfg.saveDir.strip()
+  if result.len == 0:
+    let base = g_lastCfg.cacheDir.strip()
+    if base.len > 0:
+      result = base / "screenshots"
+    else:
+      result = getAppDir() / "fastT" / "screenshots"
+
+proc saveBitsToPngFile(path: string, bits: pointer, w, h: cint): bool =
+  if bits == nil or w <= 0 or h <= 0 or path.len == 0: return false
+  ensureGdiplus()
+  if not g_gpReady: return false
+  var gpBmp: pointer = nil
+  if GdipCreateBitmapFromScan0(w, h, w * 4, PixelFormat32bppRgb, bits, addr gpBmp) != 0 or gpBmp == nil:
+    return false
+  var clsid = PngClsid
+  let stSave = GdipSaveImageToFile(gpBmp, newWideCString(path), addr clsid, nil)
+  discard GdipDisposeImage(gpBmp)
+  result = (stSave == 0)
+
+proc saveBitsAsPngDefault(bits: pointer, w, h: cint, outPath: var string): bool =
+  outPath = ""
+  if bits == nil or w <= 0 or h <= 0: return false
+  let dir = effectiveSaveDir()
+  try:
+    createDir(dir)
+  except OSError:
+    return false
+  let baseName = makeSnipFileName()
+  let stem = if baseName.endsWith(".png"): baseName[0 .. ^5] else: baseName
+  var candidate = dir / (stem & ".png")
+  var idx = 1
+  while fileExists(candidate) and idx < 1000:
+    candidate = dir / (stem & "_" & $idx & ".png")
+    inc idx
+  if saveBitsToPngFile(candidate, bits, w, h):
+    outPath = candidate
+    return true
+  result = false
+
+proc saveBitsAsPngDialog(owner: HWND, bits: pointer, w, h: cint): bool =
+  if bits == nil or w <= 0 or h <= 0: return false
+  ensureGdiplus()
+  if not g_gpReady: return false
+
+  let defName = makeSnipFileName()
+  let initDir = effectiveSaveDir()
+  try:
+    if initDir.len > 0 and not dirExists(initDir):
+      createDir(initDir)
+  except OSError:
+    discard
 
   var fileBuf = newSeq[uint16](512)
   let wDef = newWideCString(defName)
@@ -489,6 +546,7 @@ proc saveBitsAsPngDialog(owner: HWND, bits: pointer, w, h: cint): bool =
 
   let wExt = newWideCString("png")
   let wTitle = newWideCString("保存截图")
+  let wInitDir = if dirExists(initDir): newWideCString(initDir) else: nil
 
   var ofn: SnipOpenFileNameW
   zeroMem(addr ofn, sizeof(SnipOpenFileNameW))
@@ -498,6 +556,8 @@ proc saveBitsAsPngDialog(owner: HWND, bits: pointer, w, h: cint): bool =
   ofn.nFilterIndex = 1
   ofn.lpstrFile = cast[LPWSTR](addr fileBuf[0])
   ofn.nMaxFile = DWORD(fileBuf.len)
+  if wInitDir != nil:
+    ofn.lpstrInitialDir = cast[LPCWSTR](wInitDir)
   ofn.lpstrDefExt = cast[LPCWSTR](wExt)
   ofn.lpstrTitle = cast[LPCWSTR](wTitle)
   ofn.Flags = OfnOverwritePrompt or OfnPathMustExist or OfnNoChangeDir
@@ -510,13 +570,7 @@ proc saveBitsAsPngDialog(owner: HWND, bits: pointer, w, h: cint): bool =
   if not path.toLowerAscii().endsWith(".png"):
     path.add(".png")
 
-  var gpBmp: pointer = nil
-  if GdipCreateBitmapFromScan0(w, h, w * 4, PixelFormat32bppRgb, bits, addr gpBmp) != 0 or gpBmp == nil:
-    return false
-  var clsid = PngClsid
-  let stSave = GdipSaveImageToFile(gpBmp, newWideCString(path), addr clsid, nil)
-  discard GdipDisposeImage(gpBmp)
-  result = (stSave == 0)
+  result = saveBitsToPngFile(path, bits, w, h)
 
 # ---------------- 后台 OCR + 翻译裸线程 ----------------
 proc snipWorker(param: LPVOID): DWORD {.stdcall.} =
@@ -615,8 +669,9 @@ proc showPinContextMenu(pw: PinWin) =
   if pw == nil or pw.hwnd == 0: return
   let menu = CreatePopupMenu()
   if menu == 0: return
-  discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuCopy), newWideCString("复制图片"))
-  discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuSave), newWideCString("保存为 PNG..."))
+  discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuCopy), newWideCString("复制图片 (Ctrl+C)"))
+  discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuQuickSave), newWideCString("快速保存到默认位置 (Ctrl+Shift+S)"))
+  discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuSave), newWideCString("另存为 PNG... (Ctrl+S)"))
   discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuTrans), newWideCString("翻译此贴图"))
   discard AppendMenuW(menu, MF_SEPARATOR, 0, nil)
   discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuResetZoom), newWideCString("重置缩放 (100%)"))
@@ -641,6 +696,14 @@ proc showPinContextMenu(pw: PinWin) =
       pw.hudMsg = "已复制"
       discard SetTimer(pw.hwnd, PinHudTimerId, 850, nil)
       InvalidateRect(pw.hwnd, nil, FALSE)
+  of PinMenuQuickSave:
+    var savedPath = ""
+    if saveBitsAsPngDefault(pw.bits, pw.origW, pw.origH, savedPath):
+      pw.hudMsg = "已保存到默认位置"
+    else:
+      pw.hudMsg = "保存失败"
+    discard SetTimer(pw.hwnd, PinHudTimerId, 1100, nil)
+    InvalidateRect(pw.hwnd, nil, FALSE)
   of PinMenuSave:
     discard saveBitsAsPngDialog(pw.hwnd, pw.bits, pw.origW, pw.origH)
   of PinMenuTrans:
@@ -706,20 +769,24 @@ proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcal
       DeleteObject(pen)
 
     if pw.hudMsg.len > 0:
-      var badge = RECT(left: 6, top: 6, right: min(pw.dispW - 6, 120), bottom: 28)
+      let hf = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+                           0, 0, CLEARTYPE_QUALITY, 0, newWideCString("Microsoft YaHei UI"))
+      let oldF = SelectObject(hdcBuf, hf)
+      let wHud = newWideCString(pw.hudMsg)
+      var calcRc = RECT(left: 0, top: 0, right: 0, bottom: 0)
+      discard DrawTextW(hdcBuf, cast[LPCWSTR](wHud), -1, addr calcRc, DT_CALCRECT or DT_SINGLELINE or DT_NOPREFIX)
+      let badgeW = min(int(pw.dispW) - 12, max(84, int(calcRc.right - calcRc.left) + 20))
+      var badge = RECT(left: 6, top: 6, right: LONG(6 + badgeW), bottom: 28)
       if badge.right > badge.left + 30:
         let br = CreateSolidBrush(RGB(20, 24, 32))
         FillRect(hdcBuf, addr badge, br)
         DeleteObject(br)
-        let hf = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
-                             0, 0, CLEARTYPE_QUALITY, 0, newWideCString("Microsoft YaHei UI"))
-        let oldF = SelectObject(hdcBuf, hf)
         SetBkMode(hdcBuf, TRANSPARENT)
         SetTextColor(hdcBuf, RGB(236, 244, 255))
-        DrawTextW(hdcBuf, newWideCString(pw.hudMsg), -1, addr badge,
+        DrawTextW(hdcBuf, cast[LPCWSTR](wHud), -1, addr badge,
                   DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX)
-        SelectObject(hdcBuf, oldF)
-        DeleteObject(hf)
+      SelectObject(hdcBuf, oldF)
+      DeleteObject(hf)
 
     BitBlt(hdc, 0, 0, pw.dispW, pw.dispH, hdcBuf, 0, 0, SRCCOPY)
     SelectObject(hdcBuf, oldBuf)
@@ -761,8 +828,28 @@ proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcal
     return 0
 
   of WM_KEYDOWN:
+    let ctrlDown = (GetKeyState(VK_CONTROL) and 0x8000'i16) != 0
+    let shiftDown = (GetKeyState(VK_SHIFT) and 0x8000'i16) != 0
     if wp == VK_ESCAPE or wp == VK_DELETE:
       closePinWindow(pw)
+      return 0
+    elif ctrlDown and wp == WPARAM('C'):
+      if copyDibToClipboard(hwnd, pw.bits, pw.origW, pw.origH):
+        pw.hudMsg = "已复制"
+        discard SetTimer(hwnd, PinHudTimerId, 850, nil)
+        InvalidateRect(hwnd, nil, FALSE)
+      return 0
+    elif ctrlDown and wp == WPARAM('S'):
+      if shiftDown:
+        var savedPath = ""
+        if saveBitsAsPngDefault(pw.bits, pw.origW, pw.origH, savedPath):
+          pw.hudMsg = "已保存到默认位置"
+        else:
+          pw.hudMsg = "保存失败"
+        discard SetTimer(hwnd, PinHudTimerId, 1100, nil)
+        InvalidateRect(hwnd, nil, FALSE)
+      else:
+        discard saveBitsAsPngDialog(hwnd, pw.bits, pw.origW, pw.origH)
       return 0
     elif wp == WPARAM('0') or wp == WPARAM('1'):
       applyPinZoom(pw, 1.0, false)
@@ -1146,7 +1233,8 @@ proc openResultWindow(screenX, screenY, w, h: cint, cropBits: pointer) =
                   c_free(tmp)
             of BtnResnip:
               closeResultWindow()
-              startSnipCapture(g_hwndMain, g_lastCfg, g_copyTextCb, directTranslate = true)
+              startSnipCapture(g_hwndMain, g_lastCfg, g_copyTextCb,
+                               directTranslate = true, notifyCb = g_notifyCb)
             of BtnClose:
               closeResultWindow()
             else: discard
@@ -1164,8 +1252,30 @@ proc openResultWindow(screenX, screenY, w, h: cint, cropBits: pointer) =
         return 0
 
       of WM_KEYDOWN:
+        let ctrlDown = (GetKeyState(VK_CONTROL) and 0x8000'i16) != 0
+        let shiftDown = (GetKeyState(VK_SHIFT) and 0x8000'i16) != 0
         if wp == VK_ESCAPE:
           closeResultWindow()
+          return 0
+        elif ctrlDown and wp == WPARAM('C'):
+          let bits = if g_showOrig or g_bitsResTrans == nil: g_bitsResOrig else: g_bitsResTrans
+          if copyDibToClipboard(hwnd, bits, g_resW, g_resH):
+            g_statusMsg = "已复制图片"
+            InvalidateRect(hwnd, nil, FALSE)
+          return 0
+        elif ctrlDown and wp == WPARAM('S'):
+          let bits = if g_showOrig or g_bitsResTrans == nil: g_bitsResOrig else: g_bitsResTrans
+          if shiftDown:
+            var savedPath = ""
+            if saveBitsAsPngDefault(bits, g_resW, g_resH, savedPath):
+              g_statusMsg = "已保存到默认目录"
+            else:
+              g_statusMsg = "保存失败"
+            InvalidateRect(hwnd, nil, FALSE)
+          else:
+            if saveBitsAsPngDialog(hwnd, bits, g_resW, g_resH):
+              g_statusMsg = "已保存图片"
+              InvalidateRect(hwnd, nil, FALSE)
           return 0
         elif wp == VK_SPACE:
           g_showOrig = not g_showOrig
@@ -1714,9 +1824,9 @@ proc layoutOverlayToolbar() =
     (OvBtnRedo, "↷", "重做 (Ctrl+Y)", 28),
     (OvBtnTrans, "翻译", "OCR 截屏翻译 (T)", 44),
     (OvBtnPin, "贴图", "固定到屏幕 (F3)", 44),
-    (OvBtnSave, "保存", "保存 PNG (Ctrl+S)", 44),
+    (OvBtnSave, "保存", "另存为 (Ctrl+S) / 快存默认目录 (Ctrl+Shift+S)", 44),
     (OvBtnCancel, "取消", "退出截屏 (Esc)", 44),
-    (OvBtnCopy, "✓ 复制", "复制截图 (Enter)", 58)
+    (OvBtnCopy, "✓ 复制", "复制截图 (Ctrl+C / Enter)", 58)
   ]
   let gap = 2
   let padX = 7
@@ -1866,10 +1976,13 @@ proc hotkeyToTool(wp: WPARAM): AnnotTool {.inline.} =
   else: atNone
 
 proc toggleAnnotTool(t: AnnotTool)
+proc execOverlayAction(actionId: int)
 
 proc textEditSubProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
                      uId: UINT_PTR, dwRef: DWORD_PTR): LRESULT {.stdcall.} =
   if uMsg == WM_KEYDOWN:
+    let ctrlDown = (GetKeyState(VK_CONTROL) and 0x8000'i16) != 0
+    let shiftDown = (GetKeyState(VK_SHIFT) and 0x8000'i16) != 0
     if wp == VK_ESCAPE:
       destroyTextEdit()
       if g_state == osTextEditing: g_state = osAdjust
@@ -1877,10 +1990,13 @@ proc textEditSubProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
         SetFocus(g_hwndOverlay)
         InvalidateRect(g_hwndOverlay, nil, FALSE)
       return 0
-    elif wp == VK_RETURN and (GetKeyState(VK_CONTROL) and 0x8000'i16) != 0:
+    elif wp == VK_RETURN and ctrlDown:
       commitTextEdit()
       return 0
-    elif (GetKeyState(VK_CONTROL) and 0x8000'i16) != 0:
+    elif ctrlDown and wp == WPARAM('S'):
+      execOverlayAction(if shiftDown: OvBtnQuickSave else: OvBtnSave)
+      return 0
+    elif ctrlDown:
       let kt = hotkeyToTool(wp)
       if kt != atNone:
         toggleAnnotTool(kt)
@@ -2027,9 +2143,19 @@ proc execOverlayAction(actionId: int) =
   of OvBtnPin:
     discard createPinWindow(crop.sx, crop.sy, crop.sw, crop.sh, crop.bits)
   of OvBtnSave:
-    discard saveBitsAsPngDialog(g_hwndMain, crop.bits, crop.sw, crop.sh)
+    if saveBitsAsPngDialog(g_hwndMain, crop.bits, crop.sw, crop.sh) and g_notifyCb != nil:
+      g_notifyCb("（截图已保存）")
+  of OvBtnQuickSave:
+    var savedPath = ""
+    if saveBitsAsPngDefault(crop.bits, crop.sw, crop.sh, savedPath):
+      if g_notifyCb != nil:
+        g_notifyCb("（已保存：" & extractFilename(savedPath) & "）")
+    else:
+      if g_notifyCb != nil:
+        g_notifyCb("（截图保存失败）")
   of OvBtnCopy:
-    discard copyDibToClipboard(g_hwndMain, crop.bits, crop.sw, crop.sh)
+    if copyDibToClipboard(g_hwndMain, crop.bits, crop.sw, crop.sh) and g_notifyCb != nil:
+      g_notifyCb("（已复制截图）")
   else: discard
   c_free(crop.bits)
 
@@ -2274,7 +2400,10 @@ proc drawToolbars(hdcBack: HDC) =
 
   # 按钮悬停微型提示标签
   if hoverTip.len > 0:
-    var tipW = min(156, max(54, hoverTip.len * 7 + 18))
+    let wTip = newWideCString(hoverTip)
+    var calcRc = RECT(left: 0, top: 0, right: 0, bottom: 0)
+    discard DrawTextW(hdcBack, cast[LPCWSTR](wTip), -1, addr calcRc, DT_CALCRECT or DT_SINGLELINE or DT_NOPREFIX)
+    var tipW = clamp(int(calcRc.right - calcRc.left) + 18, 56, 340)
     var tx = clamp((int(hoverRc.left) + int(hoverRc.right) - tipW) div 2, 4, max(4, int(g_vw) - tipW - 4))
     var ty = int(g_ovBarRc.top) - 24
     if ty < 4: ty = int(g_ovBarRc.bottom) + 6
@@ -2283,7 +2412,7 @@ proc drawToolbars(hdcBack: HDC) =
     FillRect(hdcBack, addr tRc, tBr)
     DeleteObject(tBr)
     SetTextColor(hdcBack, RGB(230, 238, 250))
-    DrawTextW(hdcBack, newWideCString(hoverTip), -1, addr tRc,
+    DrawTextW(hdcBack, cast[LPCWSTR](wTip), -1, addr tRc,
               DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX)
 
   SelectObject(hdcBack, oldF)
@@ -2371,10 +2500,13 @@ proc drawMagnifier(hdcBack: HDC, hdcSrcOrig: HDC, mx, my: int, selRc: RECT) =
   SelectObject(hdcBack, oldP2)
   DeleteObject(penBd)
 
-proc pastePinFromClipboard*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string)) =
+proc pastePinFromClipboard*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string),
+                            notifyCb: proc (msg: string) = nil) =
   g_hwndMain = hwndMain
   g_lastCfg = cfg
   g_copyTextCb = copyCb
+  if notifyCb != nil:
+    g_notifyCb = notifyCb
 
   if g_hwndOverlay != 0:
     let rc = activeSelRect()
@@ -2462,10 +2594,13 @@ proc snapLine45(p1, p2: POINT): POINT =
       y: p1.y + LONG(if dy >= 0: d else: -d)
     )
 
-proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string), directTranslate = false) =
+proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string),
+                       directTranslate = false, notifyCb: proc (msg: string) = nil) =
   g_hwndMain = hwndMain
   g_lastCfg = cfg
   g_copyTextCb = copyCb
+  if notifyCb != nil:
+    g_notifyCb = notifyCb
   g_directTranslate = directTranslate
   closeOverlay()
   if directTranslate:
@@ -2898,6 +3033,12 @@ proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string), d
 
       of WM_KEYDOWN:
         let ctrlDown = (GetKeyState(VK_CONTROL) and 0x8000'i16) != 0
+        let shiftDown = (GetKeyState(VK_SHIFT) and 0x8000'i16) != 0
+        let altDown = (GetKeyState(VK_MENU) and 0x8000'i16) != 0
+        var curMods = 0
+        if ctrlDown: curMods = curMods or 1
+        if shiftDown: curMods = curMods or 2
+        if altDown: curMods = curMods or 4
         if wp == VK_ESCAPE:
           if g_state == osTextEditing:
             destroyTextEdit()
@@ -2907,7 +3048,7 @@ proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string), d
           else:
             closeOverlay()
           return 0
-        elif wp == WPARAM('C') and not ctrlDown and g_bitsOrig != nil:
+        elif wp == WPARAM('C') and not ctrlDown and not altDown and g_bitsOrig != nil:
           let mx = clamp(int(g_ptMouse.x), 0, int(g_vw) - 1)
           let my = clamp(int(g_ptMouse.y), 0, int(g_vh) - 1)
           let p = cast[ptr UncheckedArray[uint8]](g_bitsOrig)
@@ -2916,23 +3057,30 @@ proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string), d
           if g_copyTextCb != nil: g_copyTextCb(hexStr)
           closeOverlay()
           return 0
-        elif g_state in {osAdjust, osTextEditing}:
+        elif g_state in {osAdjust, osTextEditing} or (g_state == osHover and g_hasHoverWin):
+          if g_lastCfg.pinVk != 0 and int(wp) == g_lastCfg.pinVk and curMods == g_lastCfg.pinMods:
+            execOverlayAction(OvBtnPin)
+            return 0
           if ctrlDown:
-            let kt = hotkeyToTool(wp)
-            if kt != atNone:
-              toggleAnnotTool(kt)
-              return 0
-            if wp == WPARAM('Z'):
-              if (GetKeyState(VK_SHIFT) and 0x8000'i16) != 0:
+            if g_state in {osAdjust, osTextEditing}:
+              let kt = hotkeyToTool(wp)
+              if kt != atNone:
+                toggleAnnotTool(kt)
+                return 0
+              if wp == WPARAM('Z'):
+                if shiftDown:
+                  redoAnnotation()
+                else:
+                  undoAnnotation()
+                return 0
+              elif wp == WPARAM('Y'):
                 redoAnnotation()
-              else:
-                undoAnnotation()
-              return 0
-            elif wp == WPARAM('Y'):
-              redoAnnotation()
+                return 0
+            if wp == WPARAM('C'):
+              execOverlayAction(OvBtnCopy)
               return 0
             elif wp == WPARAM('S'):
-              execOverlayAction(OvBtnSave)
+              execOverlayAction(if shiftDown: OvBtnQuickSave else: OvBtnSave)
               return 0
           case wp
           of VK_RETURN, VK_SPACE:
@@ -2942,19 +3090,19 @@ proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string), d
           of VK_F3:
             execOverlayAction(OvBtnPin)
           of VK_LEFT:
-            if g_selRc.left > 0 and g_curTool == atNone:
+            if g_state in {osAdjust, osTextEditing} and g_selRc.left > 0 and g_curTool == atNone:
               dec g_selRc.left; dec g_selRc.right
               layoutOverlayToolbar(); InvalidateRect(hwnd, nil, FALSE)
           of VK_RIGHT:
-            if g_selRc.right < g_vw and g_curTool == atNone:
+            if g_state in {osAdjust, osTextEditing} and g_selRc.right < g_vw and g_curTool == atNone:
               inc g_selRc.left; inc g_selRc.right
               layoutOverlayToolbar(); InvalidateRect(hwnd, nil, FALSE)
           of VK_UP:
-            if g_selRc.top > 0 and g_curTool == atNone:
+            if g_state in {osAdjust, osTextEditing} and g_selRc.top > 0 and g_curTool == atNone:
               dec g_selRc.top; dec g_selRc.bottom
               layoutOverlayToolbar(); InvalidateRect(hwnd, nil, FALSE)
           of VK_DOWN:
-            if g_selRc.bottom < g_vh and g_curTool == atNone:
+            if g_state in {osAdjust, osTextEditing} and g_selRc.bottom < g_vh and g_curTool == atNone:
               inc g_selRc.top; inc g_selRc.bottom
               layoutOverlayToolbar(); InvalidateRect(hwnd, nil, FALSE)
           else: discard

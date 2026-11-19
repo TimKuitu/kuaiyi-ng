@@ -184,7 +184,7 @@ const
               subNames: @[], pageIndices: @[3]),
     NavCatDef(name: "命名", icon: 0xE8EC'u16, subtitle: "",
               subNames: @["缩减预算", "缩略词", "忽略词", "常用词"], pageIndices: @[4, 5, 6, 7]),
-    NavCatDef(name: "截屏", icon: 0xE722'u16, subtitle: "F1 截屏 · F3 屏幕贴图 · 截屏翻译",
+    NavCatDef(name: "截屏", icon: 0xE722'u16, subtitle: "快捷键 · 默认保存位置 · 截屏标注与贴图",
               subNames: @[], pageIndices: @[8]),
     NavCatDef(name: "控制", icon: 0xE765'u16, subtitle: "全局快捷键与冲突检测",
               subNames: @[], pageIndices: @[9]),
@@ -273,6 +273,7 @@ var
   g_staticMetas = initTable[HWND, StaticMeta]()
   g_editMeta = initTable[HWND, bool]()      # hwnd -> inCard
   g_editErr = initTable[HWND, bool]()       # hwnd -> 是否红框错误态（如热键冲突）
+  g_hotkeyHwnds: seq[HWND] = @[]            # 所有热键录入控件句柄（用于焦点与钩子保护）
   g_sysThemeControls: seq[tuple[h: HWND, darkTheme, lightTheme: string]] = @[]
 
 proc argb(r, g, b: uint8, a: uint8 = 255): ARGB {.inline.} =
@@ -519,6 +520,19 @@ proc findCatSubForPage(pageIdx: int): tuple[cat, sub: int] =
         return (ci, si)
   result = (0, 0)
 
+proc modernIsHotkeyFocused*(): bool =
+  let f = GetFocus()
+  if f == 0: return false
+  for h in g_hotkeyHwnds:
+    if h == f: return true
+  result = false
+
+proc modernClearSettingsFocus*() =
+  if g_hwndSetPanel != 0:
+    let f = GetFocus()
+    if f != 0 and f != g_hwndSetPanel:
+      discard SetFocus(g_hwndSetPanel)
+
 proc modernSelectSettingsPage*(pageIdx: int, animate = true) =
   if pageIdx < 0 or pageIdx >= g_pages.len: return
   let (newCat, newSub) = findCatSubForPage(pageIdx)
@@ -530,6 +544,10 @@ proc modernSelectSettingsPage*(pageIdx: int, animate = true) =
     finishPageTransition()
 
   let samePage = (pageIdx == oldPage)
+  if not samePage:
+    let curFocus = GetFocus()
+    if curFocus != 0 and g_editMeta.hasKey(curFocus):
+      modernClearSettingsFocus()
   g_curCat = newCat
   g_curSub = newSub
   g_curPage = pageIdx
@@ -627,6 +645,7 @@ proc modernShowSettingsAnimated*(setFrame: wFrame) =
   if setFrame.isNil: return
   let h = cast[HWND](setFrame.getHandle())
   if h == 0: return
+  modernClearSettingsFocus()
   if not g_animEnabled:
     setFrame.show()
     return
@@ -1192,6 +1211,9 @@ proc setPanelSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
       discard InvalidateRect(hWnd, nil, FALSE)
     return 0
   of WM_LBUTTONDOWN:
+    let f = GetFocus()
+    if f != 0 and g_editMeta.hasKey(f):
+      modernClearSettingsFocus()
     let hit = topHitTest(loSigned(int64(lp)), hiSigned(int64(lp)))
     g_topDown = hit
     if hit != -1:
@@ -1302,6 +1324,10 @@ proc pageSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM, lp: LPARAM,
     return 0
   of WM_PRINTCLIENT:
     paintPagePanel(hWnd, cast[HDC](wp))
+    return 0
+  of WM_LBUTTONDOWN:
+    if GetFocus() != hWnd:
+      discard SetFocus(hWnd)
     return 0
   of WM_CTLCOLORSTATIC:
     let hdc = cast[HDC](wp)
@@ -1761,6 +1787,8 @@ proc modernStyleHotkeyHwnd*(h: HWND, inCard = true) =
                          SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_FRAMECHANGED)
   if not g_editMeta.hasKey(h):
     g_editMeta[h] = inCard
+    if h notin g_hotkeyHwnds:
+      g_hotkeyHwnds.add(h)
     discard SetSetWindowSubclass(h, editSubclassProc, 0x4D24, 0)
     let par = GetParent(h)
     if g_pageMetas.hasKey(par):

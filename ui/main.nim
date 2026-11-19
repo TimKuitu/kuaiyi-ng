@@ -73,6 +73,7 @@ type
     summonClear: bool       # 热键召唤窗口时清空上次的输入和结果
     inputDblClear: bool     # 双击输入区＝清空输入区（关=双击生成命名并复制）
     cacheDir: string
+    snipSaveDir: string     # 截图默认保存目录（Ctrl+Shift+S）
     wordFmt: int           # 命名风格（FY_FMT_SNAKE / FY_FMT_CAMEL 两档）
     nameKind: int          # 命名对象（NameKind 枚举序，0=局部变量 … 6=函数）
     aiEnabled: bool         # AI 接口翻译
@@ -171,6 +172,8 @@ proc loadSettings() =
   g_set.inputDblClear = cfgBool("通用设置", "双击清空输入", false)
   g_set.cacheDir = cfgStr("通用设置", "缓存目录", g_appDir)
   if g_set.cacheDir.len == 0: g_set.cacheDir = g_appDir
+  g_set.snipSaveDir = cfgStr("通用设置", "截图保存目录", g_appDir / "screenshots")
+  if g_set.snipSaveDir.len == 0: g_set.snipSaveDir = g_appDir / "screenshots"
   g_set.wordFmt = cfgInt("通用设置", "命名格式", FY_FMT_CAMEL)
   # 风格下拉只剩 snake/camel 两档，旧配置里的其它值归到驼峰
   if g_set.wordFmt != FY_FMT_SNAKE and g_set.wordFmt != FY_FMT_CAMEL:
@@ -252,20 +255,22 @@ var
   pageGenBasic, pageGenUi, pageGenBehavior: wPanel
   pageTrans, pageNamingBudget: wPanel
   pageSnip, pageControl, pageStorage, pageAbout: wPanel
-  input, resultBox, edtCache: wTextCtrl
+  input, resultBox, edtCache, edtSnipSaveDir: wTextCtrl
   edtAiUrl, edtAiKey, edtAiModel: wTextCtrl
   edtBaiduAppId, edtBaiduKey, edtBaiduUrl: wTextCtrl
   edtMaxWords, edtMaxChars: wTextCtrl
-  btnOpenCache, btnResetHot: wButton
+  btnOpenCache, btnBrowseSnipDir, btnOpenSnipDir, btnResetHot: wButton
   btnCheckUpdate, btnOpenRepo, btnTrySnip: wButton
   btnTryCapture, btnTryPin, btnClosePins: wButton
   btnToggleAiKey, btnToggleBaiduKey: wButton
   g_aiKeyShown = false
   g_baiduKeyShown = false
   g_loadingSettings = false
+  g_syncingHotkeys = false
   g_transSeq = 0
   lblUpdateStatus: wStaticText
   lblHkStatus: array[7, wStaticText]
+  lblSnipHkStatus: array[3, wStaticText]
   g_hkOk: array[7, bool] = [true, true, true, true, true, true, true]
   edtWinW, edtWinH: wTextCtrl
   btnResetSize: wButton
@@ -275,6 +280,7 @@ var
   chkTop, chkCloseExit, chkAutoStart, chkAutoHide, chkSummon, chkAi, chkBaidu: wCheckBox
   chkSummonClear, chkDblClear, chkAnim: wCheckBox
   hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl, hkSnipCtrl, hkCaptureCtrl, hkPinCtrl: wHotkeyCtrl
+  hkSnipCapture2, hkSnipPin2, hkSnipTrans2: wHotkeyCtrl
   g_checkingUpdate = false
 
 # ---------------- 自定义缩略 / 忽略 / 常用词（设置页最后三页） ----------------
@@ -1010,6 +1016,21 @@ proc namingCopy() =
     flashTitle("（无法缩减：" & r.reason & "）")
 
 # ---------------- 全局热键注册 ----------------
+proc hotkeyLabel(hk: (int, int)): string =
+  if hk[1] == 0: return ""
+  result = wHotkeyToString((int(origToWin(hk[0])), hk[1])).replace(" + ", "+")
+
+proc refreshHotkeyLabels() =
+  let cap = hotkeyLabel(g_set.hkCapture)
+  let pin = hotkeyLabel(g_set.hkPin)
+  let snip = hotkeyLabel(g_set.hkSnip)
+  if btnTryCapture != nil:
+    btnTryCapture.label = "立即截屏" & (if cap.len > 0: " (" & cap & ")" else: "")
+  if btnTryPin != nil:
+    btnTryPin.label = "剪贴板贴图" & (if pin.len > 0: " (" & pin & ")" else: "")
+  if btnTrySnip != nil:
+    btnTrySnip.label = "直接截屏翻译" & (if snip.len > 0: " (" & snip & ")" else: "")
+
 proc syncHotkeyStatusUi() =
   let ctrls = [hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl, hkSnipCtrl, hkCaptureCtrl, hkPinCtrl]
   let defs = [g_set.hkToggle, g_set.hkHistUp, g_set.hkHistDown, g_set.hkCopy, g_set.hkSnip,
@@ -1030,6 +1051,26 @@ proc syncHotkeyStatusUi() =
       modernMarkStatic(cast[HWND](lblHkStatus[i].getHandle()), inCard=true, role=trDanger)
       lblHkStatus[i].label = "⚠ 已被占用"
     discard InvalidateRect(cast[HWND](lblHkStatus[i].getHandle()), nil, TRUE)
+
+  let snipCtrls = [hkSnipCapture2, hkSnipPin2, hkSnipTrans2]
+  let snipIdx = [5, 6, 4]
+  for j in 0 .. 2:
+    if snipCtrls[j].isNil or lblSnipHkStatus[j].isNil: continue
+    let idx = snipIdx[j]
+    let h = cast[HWND](snipCtrls[j].getHandle())
+    if defs[idx][1] == 0:
+      modernSetEditError(h, false)
+      modernMarkStatic(cast[HWND](lblSnipHkStatus[j].getHandle()), inCard=true, role=trHint)
+      lblSnipHkStatus[j].label = "未设置"
+    elif g_hkOk[idx]:
+      modernSetEditError(h, false)
+      modernMarkStatic(cast[HWND](lblSnipHkStatus[j].getHandle()), inCard=true, role=trSuccess)
+      lblSnipHkStatus[j].label = "✓ 生效"
+    else:
+      modernSetEditError(h, true)
+      modernMarkStatic(cast[HWND](lblSnipHkStatus[j].getHandle()), inCard=true, role=trDanger)
+      lblSnipHkStatus[j].label = "⚠ 已被占用"
+    discard InvalidateRect(cast[HWND](lblSnipHkStatus[j].getHandle()), nil, TRUE)
 
 proc registerHotkeys(): int {.discardable.} =
   let hwnd = cast[HWND](frame.getHandle())
@@ -1217,14 +1258,19 @@ proc openSettings() =
   edtMaxChars.setValue($g_set.maxChars)
   lblUpdateStatus.label = "当前版本 v" & AppVersion
   edtCache.setValue(g_set.cacheDir)
-  hkToggleCtrl.setHotkey(origToWin(g_set.hkToggle[0]), g_set.hkToggle[1])
-  hkUpCtrl.setHotkey(origToWin(g_set.hkHistUp[0]), g_set.hkHistUp[1])
-  hkDownCtrl.setHotkey(origToWin(g_set.hkHistDown[0]), g_set.hkHistDown[1])
-  hkCopyCtrl.setHotkey(origToWin(g_set.hkCopy[0]), g_set.hkCopy[1])
-  hkSnipCtrl.setHotkey(origToWin(g_set.hkSnip[0]), g_set.hkSnip[1])
-  hkCaptureCtrl.setHotkey(origToWin(g_set.hkCapture[0]), g_set.hkCapture[1])
-  hkPinCtrl.setHotkey(origToWin(g_set.hkPin[0]), g_set.hkPin[1])
+  edtSnipSaveDir.setValue(g_set.snipSaveDir)
+  hkToggleCtrl.changeHotkey(int(origToWin(g_set.hkToggle[0])), g_set.hkToggle[1])
+  hkUpCtrl.changeHotkey(int(origToWin(g_set.hkHistUp[0])), g_set.hkHistUp[1])
+  hkDownCtrl.changeHotkey(int(origToWin(g_set.hkHistDown[0])), g_set.hkHistDown[1])
+  hkCopyCtrl.changeHotkey(int(origToWin(g_set.hkCopy[0])), g_set.hkCopy[1])
+  hkSnipCtrl.changeHotkey(int(origToWin(g_set.hkSnip[0])), g_set.hkSnip[1])
+  hkCaptureCtrl.changeHotkey(int(origToWin(g_set.hkCapture[0])), g_set.hkCapture[1])
+  hkPinCtrl.changeHotkey(int(origToWin(g_set.hkPin[0])), g_set.hkPin[1])
+  hkSnipCapture2.changeHotkey(int(origToWin(g_set.hkCapture[0])), g_set.hkCapture[1])
+  hkSnipPin2.changeHotkey(int(origToWin(g_set.hkPin[0])), g_set.hkPin[1])
+  hkSnipTrans2.changeHotkey(int(origToWin(g_set.hkSnip[0])), g_set.hkSnip[1])
   syncHotkeyStatusUi()
+  refreshHotkeyLabels()
   loadAbbrRows()
   loadIgnoreRows()
   loadPrefRows()
@@ -1422,8 +1468,36 @@ proc applyStorageSettings() =
   g_histIdx = -1
   modernShowSavedToast("缓存目录已更新")
 
-proc applyHotkeysNow() =
+proc applySnipSaveDir() =
   if g_loadingSettings: return
+  var dir = edtSnipSaveDir.getValue().strip()
+  if dir.len == 0: dir = g_appDir / "screenshots"
+  if dir == g_set.snipSaveDir: return
+  g_set.snipSaveDir = dir
+  fy_cfg_set(g_cfg, "通用设置", "截图保存目录", g_set.snipSaveDir)
+  discard fy_cfg_save(g_cfg)
+  modernShowSavedToast("保存目录已更新")
+
+proc applyHotkeysNow(fromSnipPage = false) =
+  if g_loadingSettings or g_syncingHotkeys: return
+  g_syncingHotkeys = true
+  defer: g_syncingHotkeys = false
+
+  if fromSnipPage:
+    let sc = hkSnipCapture2.getHotkey()
+    let sp = hkSnipPin2.getHotkey()
+    let st = hkSnipTrans2.getHotkey()
+    hkCaptureCtrl.changeHotkey(sc.modifiers, sc.keyCode)
+    hkPinCtrl.changeHotkey(sp.modifiers, sp.keyCode)
+    hkSnipCtrl.changeHotkey(st.modifiers, st.keyCode)
+  else:
+    let sc = hkCaptureCtrl.getHotkey()
+    let sp = hkPinCtrl.getHotkey()
+    let st = hkSnipCtrl.getHotkey()
+    hkSnipCapture2.changeHotkey(sc.modifiers, sc.keyCode)
+    hkSnipPin2.changeHotkey(sp.modifiers, sp.keyCode)
+    hkSnipTrans2.changeHotkey(st.modifiers, st.keyCode)
+
   let hkt = hkToggleCtrl.getHotkey()
   let hku = hkUpCtrl.getHotkey()
   let hkd = hkDownCtrl.getHotkey()
@@ -1465,6 +1539,7 @@ proc applyHotkeysNow() =
   fy_cfg_set(g_cfg, "快捷按键", "贴图2", $g_set.hkPin[1])
   discard fy_cfg_save(g_cfg)
   let fails = registerHotkeys()
+  refreshHotkeyLabels()
   if fails > 0:
     modernShowSavedToast("热键冲突", isError = true)
   else:
@@ -1475,6 +1550,7 @@ proc commitAllPendingEdits() =
   applyTransSettings()
   applyNamingBudget()
   applyStorageSettings()
+  applySnipSaveDir()
   applyHotkeysNow()
 
 proc scheduleEditDebounce() =
@@ -1515,23 +1591,32 @@ proc buildSnipCfg(): SnipCfg =
     baiduAppId: if useBaidu: g_set.baiduAppId else: "",
     baiduKey: if useBaidu: g_set.baiduKey else: "",
     baiduUrl: if useBaidu: g_set.baiduUrl else: "",
-    cacheDir: g_set.cacheDir
+    cacheDir: g_set.cacheDir,
+    saveDir: g_set.snipSaveDir,
+    pinMods: g_set.hkPin[0],
+    pinVk: g_set.hkPin[1]
   )
 
 proc triggerCapture() =
-  startSnipCapture(g_hwndMain, buildSnipCfg(), proc (s: string) = copyText(s), directTranslate = false)
+  startSnipCapture(g_hwndMain, buildSnipCfg(), proc (s: string) = copyText(s),
+                   directTranslate = false, notifyCb = proc (msg: string) = flashTitle(msg))
 
 proc triggerPin() =
-  pastePinFromClipboard(g_hwndMain, buildSnipCfg(), proc (s: string) = copyText(s))
+  pastePinFromClipboard(g_hwndMain, buildSnipCfg(), proc (s: string) = copyText(s),
+                        notifyCb = proc (msg: string) = flashTitle(msg))
 
 proc triggerSnip() =
-  startSnipCapture(g_hwndMain, buildSnipCfg(), proc (s: string) = copyText(s), directTranslate = true)
+  startSnipCapture(g_hwndMain, buildSnipCfg(), proc (s: string) = copyText(s),
+                   directTranslate = true, notifyCb = proc (msg: string) = flashTitle(msg))
 
 proc showTrayMenu() =
   let menu = Menu()
-  menu.append(4, "截屏 (F1)")
-  menu.append(5, "贴图 (F3)")
-  menu.append(3, "截屏翻译（英→中）")
+  let capHk = hotkeyLabel(g_set.hkCapture)
+  let pinHk = hotkeyLabel(g_set.hkPin)
+  let snipHk = hotkeyLabel(g_set.hkSnip)
+  menu.append(4, "截屏" & (if capHk.len > 0: " (" & capHk & ")" else: ""))
+  menu.append(5, "贴图" & (if pinHk.len > 0: " (" & pinHk & ")" else: ""))
+  menu.append(3, "截屏翻译（英→中）" & (if snipHk.len > 0: " (" & snipHk & ")" else: ""))
   menu.appendSeparator()
   menu.append(1, "软件设置")
   menu.append(2, "退出程序")
@@ -1745,6 +1830,8 @@ proc main() =
       event.veto()
       frame.hide()
   frame.wEvent_HotKey do (event: wEvent):
+    if modernIsHotkeyFocused():
+      return
     case event.getHotkeyId()
     of HkToggle: toggleMain(true)
     of HkHistUp: histJump(-1)
@@ -1850,7 +1937,9 @@ proc main() =
   for dp in [pageAbbr, pageIgnore, pagePreferred]:
     modernRegisterPage(dp, @[(PadL, 8, ContW, 76)])
   modernRegisterPage(pageSnip, @[
-    (PadL, 14, ContW, 290)
+    (PadL, 12, ContW, 148),
+    (PadL, 168, ContW, 106),
+    (PadL, 282, ContW, 212)
   ])
   modernRegisterPage(pageControl, @[
     (PadL, 12, ContW, 436)
@@ -2046,30 +2135,65 @@ proc main() =
     "改英文＝覆盖内置映射，删行＝停用；可加全新词条，点击「应用修改」生效。",
     btnAddPref, btnSavePref, lblPrefStatus)
 
-  # ---------- 8: 截屏与贴图（Snipaste 一期 + 二期标注） ----------
-  secTitle(pageSnip, "截屏 (F1) 与贴图 (F3)", 28)
+  # ---------- 8: 截屏与贴图（快捷键 · 默认保存位置 · 标注说明） ----------
+  secTitle(pageSnip, "截屏与贴图快捷键", 22)
+  let snipHkSpecs = [
+    ("区域截屏（含工具栏）", 50),
+    ("贴图到屏幕", 84),
+    ("直接截屏翻译", 118)
+  ]
+  for i, hs in snipHkSpecs:
+    let lbl = StaticText(pageSnip, label=hs[0], pos=(cxIn, dpx(hs[1] + 4)), size=(dpx(166), dpx(22)))
+    modernMarkStatic(cast[HWND](lbl.getHandle()), inCard=true, role=trNormal)
+    lblSnipHkStatus[i] = StaticText(pageSnip, label="",
+                                    pos=(dpx(PadL + CardPadX + 388), dpx(hs[1] + 4)),
+                                    size=(dpx(120), dpx(22)))
+    modernMarkStatic(cast[HWND](lblSnipHkStatus[i].getHandle()), inCard=true, role=trHint)
+  hkSnipCapture2 = HotkeyCtrl(pageSnip, pos=(dpx(PadL + CardPadX + 172), dpx(50)), size=(dpx(206), dpx(28)))
+  hkSnipPin2 = HotkeyCtrl(pageSnip, pos=(dpx(PadL + CardPadX + 172), dpx(84)), size=(dpx(206), dpx(28)))
+  hkSnipTrans2 = HotkeyCtrl(pageSnip, pos=(dpx(PadL + CardPadX + 172), dpx(118)), size=(dpx(206), dpx(28)))
+  for hk in [hkSnipCapture2, hkSnipPin2, hkSnipTrans2]:
+    modernStyleHotkeyHwnd(cast[HWND](hk.getHandle()), inCard=true)
+
+  secTitle(pageSnip, "截图默认保存位置", 178)
+  let lblSaveDirTip = StaticText(pageSnip,
+    label="Ctrl+Shift+S 直接保存到此目录；Ctrl+S 弹出窗口自选位置；Ctrl+C 复制截图",
+    pos=(cxIn, dpx(206)), size=(wIn, dpx(22)))
+  modernMarkStatic(cast[HWND](lblSaveDirTip.getHandle()), inCard=true, role=trHint)
+  edtSnipSaveDir = TextCtrl(pageSnip, pos=(cxIn, dpx(234)), size=(dpx(InnerW - 196), dpx(28)))
+  modernStyleEdit(edtSnipSaveDir, inCard=true)
+  btnBrowseSnipDir = Button(pageSnip, label="选择目录",
+                            pos=(dpx(PadL + CardPadX + InnerW - 186), dpx(234)),
+                            size=(dpx(88), dpx(28)))
+  btnOpenSnipDir = Button(pageSnip, label="打开目录",
+                          pos=(dpx(PadL + CardPadX + InnerW - 90), dpx(234)),
+                          size=(dpx(90), dpx(28)))
+  modernStyleButton(btnBrowseSnipDir, mbNormal, inCard=true)
+  modernStyleButton(btnOpenSnipDir, mbNormal, inCard=true)
+
+  secTitle(pageSnip, "操作与标注说明", 292)
   let lblSnip1 = StaticText(pageSnip,
-    label="• F1 截屏：自动识窗、8向调框、放大镜取色（C 复制色值）",
-    pos=(cxIn, dpx(62)), size=(wIn, dpx(24)))
+    label="• 截屏选区：自动识窗、8向调框、放大镜取色（单按 C 复制色值）",
+    pos=(cxIn, dpx(320)), size=(wIn, dpx(22)))
   let lblSnip2 = StaticText(pageSnip,
-    label="• 标注：框/圆/线/箭头/画笔/荧光笔/序号/文字/马赛克/模糊",
-    pos=(cxIn, dpx(90)), size=(wIn, dpx(24)))
+    label="• 标注工具：框/圆/线/箭头/画笔/荧光笔/序号/文字/马赛克/模糊",
+    pos=(cxIn, dpx(344)), size=(wIn, dpx(22)))
   let lblSnip3 = StaticText(pageSnip,
-    label="• 属性栏：调色盘、滚轮粗细、Ctrl+Z/Y 撤销重做、保存/贴图",
-    pos=(cxIn, dpx(118)), size=(wIn, dpx(24)))
+    label="• 快捷操作：Ctrl+C 复制、Ctrl+S 另存为、Ctrl+Shift+S 存到默认目录",
+    pos=(cxIn, dpx(368)), size=(wIn, dpx(22)))
   let lblSnip4 = StaticText(pageSnip,
-    label="• F3 贴图：支持图文剪贴板贴图、多图置顶、滚轮缩放与透明度调节",
-    pos=(cxIn, dpx(146)), size=(wIn, dpx(24)))
+    label="• 屏幕贴图：支持图文贴图、多图置顶、滚轮缩放与透明度调节",
+    pos=(cxIn, dpx(392)), size=(wIn, dpx(22)))
   for ls in [lblSnip1, lblSnip2, lblSnip3, lblSnip4]:
     modernMarkStatic(cast[HWND](ls.getHandle()), inCard=true, role=trHint)
   btnTryCapture = Button(pageSnip, label="立即截屏 (F1)",
-                         pos=(cxIn, dpx(192)), size=(dpx(136), dpx(32)))
+                         pos=(cxIn, dpx(420)), size=(dpx(200), dpx(30)))
   btnTryPin = Button(pageSnip, label="剪贴板贴图 (F3)",
-                     pos=(dpx(PadL + CardPadX + 148), dpx(192)), size=(dpx(144), dpx(32)))
+                     pos=(dpx(PadL + CardPadX + 214), dpx(420)), size=(dpx(200), dpx(30)))
   btnTrySnip = Button(pageSnip, label="直接截屏翻译",
-                      pos=(cxIn, dpx(238)), size=(dpx(136), dpx(32)))
+                      pos=(cxIn, dpx(456)), size=(dpx(200), dpx(30)))
   btnClosePins = Button(pageSnip, label="关闭所有贴图",
-                        pos=(dpx(PadL + CardPadX + 148), dpx(238)), size=(dpx(144), dpx(32)))
+                        pos=(dpx(PadL + CardPadX + 214), dpx(456)), size=(dpx(200), dpx(30)))
   modernStyleButton(btnTryCapture, mbPrimary, inCard=true)
   modernStyleButton(btnTryPin, mbNormal, inCard=true)
   modernStyleButton(btnTrySnip, mbNormal, inCard=true)
@@ -2149,9 +2273,13 @@ proc main() =
       if idx == 5 and dlAbbr != nil: dlAbbr.render(g_uiScale)
       elif idx == 6 and dlIgnore != nil: dlIgnore.render(g_uiScale)
       elif idx == 7 and dlPreferred != nil: dlPreferred.render(g_uiScale)
+      elif idx == 8:
+        syncHotkeyStatusUi()
+        refreshHotkeyLabels()
       elif idx == 9: syncHotkeyStatusUi(),
     onMin = proc () = setFrame.minimize(),
     onClose = proc () =
+      modernClearSettingsFocus()
       commitAllPendingEdits()
       discard fy_cfg_save(g_cfg)
       setFrame.hide(),
@@ -2161,6 +2289,8 @@ proc main() =
         applyWinSizeInputs()
       elif h == cast[HWND](edtCache.getHandle()):
         applyStorageSettings()
+      elif h == cast[HWND](edtSnipSaveDir.getHandle()):
+        applySnipSaveDir()
       elif h == cast[HWND](edtMaxWords.getHandle()) or h == cast[HWND](edtMaxChars.getHandle()):
         applyNamingBudget()
       elif h == cast[HWND](edtAiUrl.getHandle()) or h == cast[HWND](edtAiKey.getHandle()) or
@@ -2171,7 +2301,10 @@ proc main() =
            h == cast[HWND](hkDownCtrl.getHandle()) or h == cast[HWND](hkCopyCtrl.getHandle()) or
            h == cast[HWND](hkSnipCtrl.getHandle()) or h == cast[HWND](hkCaptureCtrl.getHandle()) or
            h == cast[HWND](hkPinCtrl.getHandle()):
-        applyHotkeysNow()
+        applyHotkeysNow(false)
+      elif h == cast[HWND](hkSnipCapture2.getHandle()) or h == cast[HWND](hkSnipPin2.getHandle()) or
+           h == cast[HWND](hkSnipTrans2.getHandle()):
+        applyHotkeysNow(true)
   )
 
   # 悬停 Tooltip（Snipaste 风格：界面保持简洁，悬停查看详细说明）
@@ -2185,6 +2318,7 @@ proc main() =
   modernSetTooltip(cast[HWND](cmbUiScale.getHandle()), "独立于系统 DPI，整窗按所选百分比等比缩放")
   modernSetTooltip(cast[HWND](chkAnim.getHandle()), "关闭后切页、开关和悬停将立即响应，无过渡动画")
   modernSetTooltip(cast[HWND](edtCache.getHandle()), "存放查询历史（hist.dat）与运行日志（run.log）的目录")
+  modernSetTooltip(cast[HWND](edtSnipSaveDir.getHandle()), "按 Ctrl+Shift+S 时截图将直接保存到此目录")
 
   # 输入框 500ms 去抖定时器
   setFrame.connect(WM_TIMER) do (event: wEvent):
@@ -2192,13 +2326,16 @@ proc main() =
       discard KillTimer(cast[HWND](setFrame.getHandle()), DebounceTimerId)
       commitAllPendingEdits()
 
-  # 控制页热键框变更即刻注册（EN_CHANGE = 0x0300）
-  pageControl.connect(WM_COMMAND) do (event: wEvent):
-    let code = (int64(event.getwParam()) shr 16) and 0xFFFF
-    if code == 0x0300:
-      applyHotkeysNow()
+  # 热键框变更即刻注册并双向同步（使用 wEvent_HotkeyChanged）
+  for hk in [hkToggleCtrl, hkUpCtrl, hkDownCtrl, hkCopyCtrl, hkSnipCtrl, hkCaptureCtrl, hkPinCtrl]:
+    hk.wEvent_HotkeyChanged do ():
+      applyHotkeysNow(false)
+  for hk in [hkSnipCapture2, hkSnipPin2, hkSnipTrans2]:
+    hk.wEvent_HotkeyChanged do ():
+      applyHotkeysNow(true)
 
   setFrame.wEvent_Close do (event: wEvent):
+    modernClearSettingsFocus()
     commitAllPendingEdits()
     discard fy_cfg_save(g_cfg)
     event.veto()
@@ -2212,7 +2349,7 @@ proc main() =
   chkBaidu.wEvent_CheckBox do (): applyTransSettings()
   cmbUiScale.wEvent_ComboBox do (): applyUiScaleChange()
   cmbTheme.wEvent_ComboBox do (): applyThemeChange()
-  for edt in [edtWinW, edtWinH, edtCache, edtAiUrl, edtAiKey, edtAiModel,
+  for edt in [edtWinW, edtWinH, edtCache, edtSnipSaveDir, edtAiUrl, edtAiKey, edtAiModel,
               edtBaiduAppId, edtBaiduKey, edtBaiduUrl, edtMaxWords, edtMaxChars]:
     edt.wEvent_Text do (): scheduleEditDebounce()
 
@@ -2253,13 +2390,34 @@ proc main() =
     fy_cfg_set(g_cfg, "通用设置", "窗口高", $g_set.winH)
     discard fy_cfg_save(g_cfg)
     modernShowSavedToast("已恢复默认尺寸")
+  btnBrowseSnipDir.wEvent_Button do ():
+    var initDir = edtSnipSaveDir.getValue().strip()
+    if initDir.len == 0: initDir = g_set.snipSaveDir
+    try:
+      if initDir.len > 0 and not dirExists(initDir):
+        createDir(initDir)
+    except OSError:
+      initDir = g_appDir
+    let picked = DirDialog(setFrame, message="选择截图默认保存位置", defaultPath=initDir).display()
+    if picked.len > 0:
+      edtSnipSaveDir.setValue(picked)
+      applySnipSaveDir()
+  btnOpenSnipDir.wEvent_Button do ():
+    var dir = edtSnipSaveDir.getValue().strip()
+    if dir.len == 0: dir = g_set.snipSaveDir
+    try: createDir(dir)
+    except OSError: discard
+    discard ShellExecuteW(0, "open", dir.newWideCString(), nil, nil, SW_SHOWNORMAL)
   btnTryCapture.wEvent_Button do ():
+    modernClearSettingsFocus()
     setFrame.hide()
     triggerCapture()
   btnTryPin.wEvent_Button do ():
+    modernClearSettingsFocus()
     setFrame.hide()
     triggerPin()
   btnTrySnip.wEvent_Button do ():
+    modernClearSettingsFocus()
     setFrame.hide()
     triggerSnip()
   btnClosePins.wEvent_Button do ():
@@ -2281,15 +2439,18 @@ proc main() =
                           SW_SHOWNORMAL)
   btnResetHot.wEvent_Button do ():
     g_loadingSettings = true
-    hkToggleCtrl.setHotkey(origToWin(DefToggle[0]), DefToggle[1])
-    hkUpCtrl.setHotkey(origToWin(DefHistUp[0]), DefHistUp[1])
-    hkDownCtrl.setHotkey(origToWin(DefHistDown[0]), DefHistDown[1])
-    hkCopyCtrl.setHotkey(origToWin(DefCopy[0]), DefCopy[1])
-    hkSnipCtrl.setHotkey(origToWin(DefSnip[0]), DefSnip[1])
-    hkCaptureCtrl.setHotkey(origToWin(DefCapture[0]), DefCapture[1])
-    hkPinCtrl.setHotkey(origToWin(DefPin[0]), DefPin[1])
+    hkToggleCtrl.changeHotkey(int(origToWin(DefToggle[0])), DefToggle[1])
+    hkUpCtrl.changeHotkey(int(origToWin(DefHistUp[0])), DefHistUp[1])
+    hkDownCtrl.changeHotkey(int(origToWin(DefHistDown[0])), DefHistDown[1])
+    hkCopyCtrl.changeHotkey(int(origToWin(DefCopy[0])), DefCopy[1])
+    hkSnipCtrl.changeHotkey(int(origToWin(DefSnip[0])), DefSnip[1])
+    hkCaptureCtrl.changeHotkey(int(origToWin(DefCapture[0])), DefCapture[1])
+    hkPinCtrl.changeHotkey(int(origToWin(DefPin[0])), DefPin[1])
+    hkSnipCapture2.changeHotkey(int(origToWin(DefCapture[0])), DefCapture[1])
+    hkSnipPin2.changeHotkey(int(origToWin(DefPin[0])), DefPin[1])
+    hkSnipTrans2.changeHotkey(int(origToWin(DefSnip[0])), DefSnip[1])
     g_loadingSettings = false
-    applyHotkeysNow()
+    applyHotkeysNow(false)
 
   # 应用启动状态
   let hwnd = cast[HWND](frame.getHandle())
@@ -2297,6 +2458,7 @@ proc main() =
   if g_set.topmost:
     discard SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE or SWP_NOSIZE)
   registerHotkeys()
+  refreshHotkeyLabels()
 
   # 窗口位置：记住的上次位置有效则原位显示，否则屏幕居中
   let px = cfgInt("通用设置", "窗口X", -30000)
