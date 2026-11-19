@@ -9,9 +9,9 @@ import modern_settings
 const
   DictPadL* = SetPadL
   DictContW* = SetContW
-  DictSearchY* = 94
-  DictTop* = 130
-  DictRowH* = 33
+  DictSearchY* = 92
+  DictTop* = 128
+  DictRowH* = 31
   DictViewRows* = 10
 
 type
@@ -64,7 +64,7 @@ proc render*(dl: DictList, scale: float) =
   dl.scale = scale
   if dl.page.isNil: return
   var pw = int(float(dl.page.getSize().width) / scale)
-  if pw < 200: pw = SetWinW
+  if pw < 200: pw = SetPageW
 
   let total = dl.filtered.len
   let maxS = max(0, total - DictViewRows)
@@ -205,42 +205,42 @@ proc newDictList*(page: wPanel, mode: DictListMode, wheelTag: int,
 
   let h1 = StaticText(page, label=hint1Text,
                       pos=(dpx(DictPadL + 12, scale), dpx(14, scale)),
-                      size=(dpx(DictContW - 24, scale), dpx(24, scale)))
+                      size=(dpx(DictContW - 24, scale), dpx(22, scale)))
   let h2 = StaticText(page, label=hint2Text,
-                      pos=(dpx(DictPadL + 12, scale), dpx(38, scale)),
+                      pos=(dpx(DictPadL + 12, scale), dpx(36, scale)),
                       size=(dpx(DictContW - 24, scale), dpx(44, scale)))
   modernMarkStatic(cast[HWND](h1.getHandle()), inCard=true, role=trNormal)
   modernMarkStatic(cast[HWND](h2.getHandle()), inCard=true, role=trHint)
 
   dl.lblSearch = StaticText(page, label="搜索：",
                             pos=(dpx(DictPadL, scale), dpx(DictSearchY + 4, scale)),
-                            size=(dpx(62, scale), dpx(22, scale)))
+                            size=(dpx(54, scale), dpx(22, scale)))
   modernMarkStatic(cast[HWND](dl.lblSearch.getHandle()), inCard=false, role=trNormal)
-  dl.edtSearch = TextCtrl(page, pos=(dpx(DictPadL + 64, scale), dpx(DictSearchY, scale)),
-                          size=(dpx(DictContW - 64 - 72, scale), dpx(28, scale)))
+  dl.edtSearch = TextCtrl(page, pos=(dpx(DictPadL + 56, scale), dpx(DictSearchY, scale)),
+                          size=(dpx(DictContW - 56 - 72, scale), dpx(28, scale)))
   modernStyleEdit(dl.edtSearch, inCard=false)
   dl.btnClearSearch = Button(page, label="清除",
                              pos=(dpx(DictPadL + DictContW - 64, scale), dpx(DictSearchY, scale)),
                              size=(dpx(64, scale), dpx(28, scale)))
   modernStyleButton(dl.btnClearSearch, mbNormal)
 
-  dl.sb = ScrollBar(page, pos=(dpx(SetWinW - DictPadL - 18, scale), dpx(DictTop, scale)),
-                    size=(dpx(18, scale), dpx(DictViewRows * DictRowH - 8, scale)),
+  dl.sb = ScrollBar(page, pos=(dpx(SetPageW - DictPadL - 18, scale), dpx(DictTop, scale)),
+                    size=(dpx(18, scale), dpx(DictViewRows * DictRowH - 6, scale)),
                     style=wSbVertical)
   modernStyleDarkSystem(cast[HWND](dl.sb.getHandle()), "DarkMode_Explorer")
 
-  let by = SetPageH - 48
+  let by = SetPageH - 46
   btnAdd = Button(page, label="添加一行",
                   pos=(dpx(DictPadL, scale), dpx(by, scale)),
                   size=(dpx(96, scale), dpx(32, scale)))
   modernStyleButton(btnAdd, mbNormal)
   lblStatus = StaticText(page, label="",
                          pos=(dpx(DictPadL + 108, scale), dpx(by + 6, scale)),
-                         size=(dpx(320, scale), dpx(22, scale)))
+                         size=(dpx(316, scale), dpx(22, scale)))
   modernMarkStatic(cast[HWND](lblStatus.getHandle()), inCard=false, role=trHint)
   dl.lblStatus = lblStatus
-  btnSave = Button(page, label="保存",
-                   pos=(dpx(SetWinW - DictPadL - 96, scale), dpx(by, scale)),
+  btnSave = Button(page, label="应用修改",
+                   pos=(dpx(SetPageW - DictPadL - 96, scale), dpx(by, scale)),
                    size=(dpx(96, scale), dpx(32, scale)))
   modernStyleButton(btnSave, mbPrimary)
 
