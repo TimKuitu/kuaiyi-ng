@@ -131,15 +131,76 @@ typedef struct {
 typedef struct {
     float x, y, w, h;
     char *text;
+    int need_trans;
 } OcrLineBox;
 
 typedef struct {
     int x, y, w, h;
     int line_h;
     int n_lines;
+    int skip_translate;
     char *en;
     char *zh;
 } TextBlock;
+
+static int is_cjk_cp(unsigned int cp) {
+    return (cp >= 0x4E00u && cp <= 0x9FFFu) ||
+           (cp >= 0x3400u && cp <= 0x4DBFu) ||
+           (cp >= 0xF900u && cp <= 0xFAFFu) ||
+           (cp >= 0x20000u && cp <= 0x2A6DFu);
+}
+
+static int is_cjk_or_fullwidth_w(WCHAR c) {
+    return (c >= 0x4E00 && c <= 0x9FFF) ||
+           (c >= 0x3400 && c <= 0x4DBF) ||
+           (c >= 0xF900 && c <= 0xFAFF) ||
+           (c >= 0x3000 && c <= 0x303F) ||
+           (c >= 0xFF00 && c <= 0xFFEF);
+}
+
+/* 判断文本块是否需要英译中：
+ * - 无拉丁字母（纯中文/纯数字/纯符号）-> 跳过
+ * - 汉字为主（汉字等效宽度 >= 拉丁字母数）-> 跳过，原图保留
+ * - 孤立单字母（如关闭按钮 X、序号 A）-> 跳过
+ */
+static int should_translate_block(const char *utf8) {
+    if (!utf8 || !utf8[0]) return 0;
+    int cjk_cnt = 0;
+    int latin_cnt = 0;
+    const unsigned char *p = (const unsigned char *)utf8;
+    while (*p) {
+        unsigned int cp = 0;
+        if (*p < 0x80) {
+            cp = *p++;
+        } else if ((*p & 0xE0) == 0xC0 && p[1]) {
+            cp = ((unsigned int)(p[0] & 0x1F) << 6) | (unsigned int)(p[1] & 0x3F);
+            p += 2;
+        } else if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) {
+            cp = ((unsigned int)(p[0] & 0x0F) << 12) |
+                 ((unsigned int)(p[1] & 0x3F) << 6) |
+                 (unsigned int)(p[2] & 0x3F);
+            p += 3;
+        } else if ((*p & 0xF8) == 0xF0 && p[1] && p[2] && p[3]) {
+            cp = ((unsigned int)(p[0] & 0x07) << 18) |
+                 ((unsigned int)(p[1] & 0x3F) << 12) |
+                 ((unsigned int)(p[2] & 0x3F) << 6) |
+                 (unsigned int)(p[3] & 0x3F);
+            p += 4;
+        } else {
+            p++;
+            continue;
+        }
+        if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') ||
+            (cp >= 0x00C0u && cp <= 0x024Fu)) {
+            latin_cnt++;
+        } else if (is_cjk_cp(cp)) {
+            cjk_cnt++;
+        }
+    }
+    if (latin_cnt < 2) return 0;
+    if (cjk_cnt > 0 && cjk_cnt * 2 >= latin_cnt) return 0;
+    return 1;
+}
 
 static char *wide_to_utf8(PCWSTR ws, int wlen) {
     if (!ws || wlen == 0) return fy_strdup("");
@@ -221,7 +282,8 @@ static struct {
     PFN_WindowsCreateStringReference pWinStrRef;
     PFN_WindowsGetStringRawBuffer pWinStrBuf;
     PFN_WindowsDeleteString pWinStrDel;
-    void *ocrEngine;
+    void *ocrEngine; /* 主引擎：优先 en-US（英文识别精度高） */
+    void *zhEngine;  /* 辅引擎：可选 zh-Hans-CN/zh-CN（用于精准识别中文区域并跳过） */
     void *bufFactory;
     void *sbStatics;
 } g_ocr = {0};
@@ -238,8 +300,21 @@ static void ensure_ocr_cs(void) {
 static void reset_ocr_ctx_locked(void) {
     SAFE_REL(g_ocr.sbStatics);
     SAFE_REL(g_ocr.bufFactory);
+    SAFE_REL(g_ocr.zhEngine);
     SAFE_REL(g_ocr.ocrEngine);
     g_ocr.ready = 0;
+}
+
+static void *try_create_ocr_lang(void *ocrStatics, void *langFactory, const WCHAR *wtag, UINT32 wlen) {
+    void *lang = NULL, *eng = NULL;
+    FY_HSTRING_HEADER hh;
+    FY_HSTRING hs = NULL;
+    g_ocr.pWinStrRef(wtag, wlen, &hh, &hs);
+    if (SUCCEEDED((*(FY_ILanguageFactoryVtbl **)langFactory)->CreateLanguage(langFactory, hs, &lang)) && lang) {
+        (*(FY_IOcrEngineStaticsVtbl **)ocrStatics)->TryCreateFromLanguage(ocrStatics, lang, &eng);
+        SAFE_REL(lang);
+    }
+    return eng;
 }
 
 static int init_ocr_ctx_locked(char **out_err) {
@@ -265,7 +340,7 @@ static int init_ocr_ctx_locked(char **out_err) {
         g_ocr.pRoInit(1);
     }
 
-    void *ocrStatics = NULL, *langFactory = NULL, *lang = NULL;
+    void *ocrStatics = NULL, *langFactory = NULL;
     FY_HSTRING_HEADER hh;
     FY_HSTRING hs = NULL;
 
@@ -276,19 +351,36 @@ static int init_ocr_ctx_locked(char **out_err) {
     }
 
     g_ocr.pWinStrRef(L"Windows.Globalization.Language", 28, &hh, &hs);
+    const char *main_lang = "user-profile";
+    const char *zh_lang = "none";
     if (SUCCEEDED(g_ocr.pRoFactory(hs, &FY_IID_ILanguageFactory, &langFactory)) && langFactory) {
-        g_ocr.pWinStrRef(L"en-US", 5, &hh, &hs);
-        if (SUCCEEDED((*(FY_ILanguageFactoryVtbl **)langFactory)->CreateLanguage(langFactory, hs, &lang)) && lang) {
-            (*(FY_IOcrEngineStaticsVtbl **)ocrStatics)->TryCreateFromLanguage(ocrStatics, lang, &g_ocr.ocrEngine);
+        g_ocr.ocrEngine = try_create_ocr_lang(ocrStatics, langFactory, L"en-US", 5);
+        if (g_ocr.ocrEngine) main_lang = "en-US";
+
+        void *zh = try_create_ocr_lang(ocrStatics, langFactory, L"zh-Hans-CN", 10);
+        if (zh) {
+            zh_lang = "zh-Hans-CN";
+        } else {
+            zh = try_create_ocr_lang(ocrStatics, langFactory, L"zh-CN", 5);
+            if (zh) zh_lang = "zh-CN";
+        }
+
+        if (!g_ocr.ocrEngine && zh) {
+            g_ocr.ocrEngine = zh;
+            main_lang = zh_lang;
+            zh_lang = "same-as-main";
+        } else {
+            g_ocr.zhEngine = zh;
         }
     }
     if (!g_ocr.ocrEngine) {
         (*(FY_IOcrEngineStaticsVtbl **)ocrStatics)->TryCreateFromUserProfileLanguages(ocrStatics, &g_ocr.ocrEngine);
     }
     if (!g_ocr.ocrEngine) {
-        *out_err = fy_strdup("系统未安装英文 OCR 语言包，请在 Windows 设置中安装英语识别");
+        *out_err = fy_strdup("系统未安装 OCR 语言包，请在 Windows 设置中安装中文或英语识别");
         goto fail;
     }
+    fy_log_write("OCR", "已初始化 Windows OCR 引擎 (main=%s, zh_mask=%s)", main_lang, zh_lang);
 
     g_ocr.pWinStrRef(L"Windows.Storage.Streams.Buffer", 30, &hh, &hs);
     if (FAILED(g_ocr.pRoFactory(hs, &FY_IID_IBufferFactory, &g_ocr.bufFactory)) || !g_ocr.bufFactory) {
@@ -302,21 +394,224 @@ static int init_ocr_ctx_locked(char **out_err) {
         goto fail;
     }
 
-    SAFE_REL(lang);
     SAFE_REL(langFactory);
     SAFE_REL(ocrStatics);
     g_ocr.ready = 1;
     return 0;
 
 fail:
-    SAFE_REL(lang);
     SAFE_REL(langFactory);
     SAFE_REL(ocrStatics);
     reset_ocr_ctx_locked();
     return -1;
 }
 
-/* 调用 Windows.Media.Ocr 识别英文行及外接矩形 */
+static int has_any_cjk(const char *utf8) {
+    if (!utf8) return 0;
+    const unsigned char *p = (const unsigned char *)utf8;
+    while (*p) {
+        unsigned int cp = 0;
+        if (*p < 0x80) { cp = *p++; }
+        else if ((*p & 0xE0) == 0xC0 && p[1]) { cp = ((unsigned int)(p[0] & 0x1F) << 6) | (unsigned int)(p[1] & 0x3F); p += 2; }
+        else if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) { cp = ((unsigned int)(p[0] & 0x0F) << 12) | ((unsigned int)(p[1] & 0x3F) << 6) | (unsigned int)(p[2] & 0x3F); p += 3; }
+        else if ((*p & 0xF8) == 0xF0 && p[1] && p[2] && p[3]) { cp = ((unsigned int)(p[0] & 0x07) << 18) | ((unsigned int)(p[1] & 0x3F) << 12) | ((unsigned int)(p[2] & 0x3F) << 6) | (unsigned int)(p[3] & 0x3F); p += 4; }
+        else { p++; continue; }
+        if (is_cjk_cp(cp)) return 1;
+    }
+    return 0;
+}
+
+/* 对指定 OcrEngine 运行一次异步识别并提取行列表 */
+static int recognize_lines_with_engine(void *engine, void *sb, float inv_scale,
+                                       PFN_WindowsGetStringRawBuffer pWinStrBuf,
+                                       PFN_WindowsDeleteString pWinStrDel,
+                                       OcrLineBox **out_arr, int *out_n, char **out_err) {
+    *out_arr = NULL;
+    *out_n = 0;
+    void *asyncOp = NULL, *asyncInfo = NULL, *ocrRes = NULL, *lines = NULL;
+
+    if (FAILED((*(FY_IOcrEngineVtbl **)engine)->RecognizeAsync(engine, sb, &asyncOp)) || !asyncOp) {
+        if (out_err) *out_err = fy_strdup("OCR 识别启动失败");
+        goto done_err;
+    }
+    if (FAILED((*(FY_IInspectableVtbl **)asyncOp)->QueryInterface(asyncOp, &FY_IID_IAsyncInfo, &asyncInfo)) || !asyncInfo) {
+        if (out_err) *out_err = fy_strdup("OCR 状态查询失败");
+        goto done_err;
+    }
+    int status = 0;
+    for (int tries = 0; tries < 2000; tries++) {
+        (*(FY_IAsyncInfoVtbl **)asyncInfo)->get_Status(asyncInfo, &status);
+        if (status != 0) break;
+        Sleep(tries < 20 ? 1 : 5);
+    }
+    if (status != 1) {
+        if (out_err) *out_err = fy_strdup("OCR 识别超时或失败");
+        goto done_err;
+    }
+    if (FAILED((*(FY_IAsyncOperationVtbl **)asyncOp)->GetResults(asyncOp, &ocrRes)) || !ocrRes) {
+        if (out_err) *out_err = fy_strdup("获取 OCR 结果失败");
+        goto done_err;
+    }
+    if (FAILED((*(FY_IOcrResultVtbl **)ocrRes)->get_Lines(ocrRes, &lines)) || !lines) {
+        if (out_err) *out_err = fy_strdup("读取 OCR 行列表失败");
+        goto done_err;
+    }
+
+    UINT32 nLines = 0;
+    (*(FY_IVectorViewVtbl **)lines)->get_Size(lines, &nLines);
+    if (nLines == 0) goto done_ok;
+
+    OcrLineBox *arr = (OcrLineBox *)calloc(nLines, sizeof(OcrLineBox));
+    int valid = 0;
+    for (UINT32 i = 0; i < nLines; i++) {
+        void *line = NULL;
+        if (FAILED((*(FY_IVectorViewVtbl **)lines)->GetAt(lines, i, &line)) || !line) continue;
+
+        void *words = NULL;
+        float min_x = 1e9f, min_y = 1e9f, max_x = -1e9f, max_y = -1e9f;
+        WCHAR *wbuf = NULL;
+        size_t wbuf_len = 0, wbuf_cap = 0;
+        WCHAR prev_last = 0;
+        float prev_right = 0.0f, prev_h = 0.0f;
+        int has_prev = 0;
+
+        if (SUCCEEDED((*(FY_IOcrLineVtbl **)line)->get_Words(line, &words)) && words) {
+            UINT32 nWords = 0;
+            (*(FY_IVectorViewVtbl **)words)->get_Size(words, &nWords);
+            for (UINT32 j = 0; j < nWords; j++) {
+                void *word = NULL;
+                if (SUCCEEDED((*(FY_IVectorViewVtbl **)words)->GetAt(words, j, &word)) && word) {
+                    FY_WinRect wr = {0, 0, 0, 0};
+                    int got_rc = SUCCEEDED((*(FY_IOcrWordVtbl **)word)->get_BoundingRect(word, &wr));
+                    if (got_rc) {
+                        if (wr.X < min_x) min_x = wr.X;
+                        if (wr.Y < min_y) min_y = wr.Y;
+                        if (wr.X + wr.Width > max_x) max_x = wr.X + wr.Width;
+                        if (wr.Y + wr.Height > max_y) max_y = wr.Y + wr.Height;
+                    }
+                    FY_HSTRING wt = NULL;
+                    if (SUCCEEDED((*(FY_IOcrWordVtbl **)word)->get_Text(word, &wt)) && wt) {
+                        UINT32 wtl = 0;
+                        PCWSTR wts = pWinStrBuf(wt, &wtl);
+                        if (wts && wtl > 0) {
+                            while (wtl > 0 && (wts[0] == L' ' || wts[0] == L'\t')) { wts++; wtl--; }
+                            while (wtl > 0 && (wts[wtl - 1] == L' ' || wts[wtl - 1] == L'\t')) { wtl--; }
+                        }
+                        if (wts && wtl > 0) {
+                            int need_sp = 0;
+                            if (has_prev) {
+                                WCHAR cur_first = wts[0];
+                                int prev_cjk = is_cjk_or_fullwidth_w(prev_last);
+                                int cur_cjk  = is_cjk_or_fullwidth_w(cur_first);
+                                float gap = got_rc ? (wr.X - prev_right) : 0.0f;
+                                float ref_h = prev_h > 1.0f ? prev_h : (got_rc ? wr.Height : 14.0f);
+                                if (!prev_cjk && !cur_cjk) {
+                                    int tight_cur = (cur_first == L',' || cur_first == L'.' || cur_first == L';' ||
+                                                     cur_first == L':' || cur_first == L'!' || cur_first == L'?' ||
+                                                     cur_first == L')' || cur_first == L']' || cur_first == L'}' ||
+                                                     cur_first == L'\'');
+                                    int tight_prev = (prev_last == L'(' || prev_last == L'[' || prev_last == L'{' ||
+                                                      prev_last == L'/' || prev_last == L'-' || prev_last == L'\'');
+                                    /* 中文 OCR 引擎常把同一英文单词内相邻字母拆成多个 word，仅当水平间隙明显时才补空格 */
+                                    if (!got_rc) {
+                                        if (!tight_cur && !tight_prev) need_sp = 1;
+                                    } else if (gap >= ref_h * 0.14f && !((tight_cur || tight_prev) && gap < ref_h * 0.25f)) {
+                                        need_sp = 1;
+                                    }
+                                } else if (prev_cjk && cur_cjk) {
+                                    if (gap > ref_h * 0.70f) need_sp = 1;
+                                } else {
+                                    if (gap > ref_h * 0.25f) need_sp = 1;
+                                }
+                            }
+                            size_t need = wbuf_len + (size_t)need_sp + (size_t)wtl + 1;
+                            if (need > wbuf_cap) {
+                                size_t ncap = wbuf_cap ? wbuf_cap * 2 : 64;
+                                while (ncap < need) ncap *= 2;
+                                WCHAR *nbuf = (WCHAR *)realloc(wbuf, ncap * sizeof(WCHAR));
+                                if (nbuf) { wbuf = nbuf; wbuf_cap = ncap; }
+                            }
+                            if (wbuf && wbuf_cap >= need) {
+                                if (need_sp) wbuf[wbuf_len++] = L' ';
+                                memcpy(wbuf + wbuf_len, wts, (size_t)wtl * sizeof(WCHAR));
+                                wbuf_len += wtl;
+                                wbuf[wbuf_len] = 0;
+                                prev_last = wts[wtl - 1];
+                                if (got_rc) {
+                                    prev_right = wr.X + wr.Width;
+                                    prev_h = wr.Height;
+                                }
+                                has_prev = 1;
+                            }
+                        }
+                        pWinStrDel(wt);
+                    }
+                    SAFE_REL(word);
+                }
+            }
+            SAFE_REL(words);
+        }
+
+        char *utf8 = NULL;
+        if (wbuf && wbuf_len > 0) {
+            utf8 = wide_to_utf8(wbuf, (int)wbuf_len);
+        } else {
+            FY_HSTRING lt = NULL;
+            (*(FY_IOcrLineVtbl **)line)->get_Text(line, &lt);
+            UINT32 wlen = 0;
+            PCWSTR ws = lt ? pWinStrBuf(lt, &wlen) : NULL;
+            utf8 = wide_to_utf8(ws, (int)wlen);
+            if (lt) pWinStrDel(lt);
+        }
+        free(wbuf);
+        SAFE_REL(line);
+
+        if (utf8 && utf8[0] && max_x > min_x && max_y > min_y) {
+            arr[valid].x = min_x * inv_scale;
+            arr[valid].y = min_y * inv_scale;
+            arr[valid].w = (max_x - min_x) * inv_scale;
+            arr[valid].h = (max_y - min_y) * inv_scale;
+            arr[valid].text = utf8;
+            arr[valid].need_trans = should_translate_block(utf8);
+            valid++;
+        } else {
+            free(utf8);
+        }
+    }
+    *out_arr = arr;
+    *out_n = valid;
+
+done_ok:
+    SAFE_REL(lines);
+    SAFE_REL(ocrRes);
+    SAFE_REL(asyncInfo);
+    SAFE_REL(asyncOp);
+    return 0;
+
+done_err:
+    SAFE_REL(lines);
+    SAFE_REL(ocrRes);
+    SAFE_REL(asyncInfo);
+    SAFE_REL(asyncOp);
+    return -1;
+}
+
+/* 判断矩形 a 是否与中文区域 b 存在显著重叠（说明 a 实际落在了中文行上） */
+static int box_overlaps_zh(const OcrLineBox *a, const OcrLineBox *b) {
+    float x1 = a->x > b->x ? a->x : b->x;
+    float y1 = a->y > b->y ? a->y : b->y;
+    float x2 = (a->x + a->w) < (b->x + b->w) ? (a->x + a->w) : (b->x + b->w);
+    float y2 = (a->y + a->h) < (b->y + b->h) ? (a->y + a->h) : (b->y + b->h);
+    if (x2 <= x1 || y2 <= y1) return 0;
+    float inter_w = x2 - x1;
+    float inter_h = y2 - y1;
+    float min_h = a->h < b->h ? a->h : b->h;
+    if (min_h <= 0.0f || inter_h < min_h * 0.45f) return 0;
+    if (a->w > 0.0f && inter_w >= a->w * 0.35f) return 1;
+    return 0;
+}
+
+/* 调用 Windows.Media.Ocr 识别文本行及外接矩形（英文主引擎 + 中文辅引擎交叉过滤） */
 static int run_winrt_ocr(const void *bgra, int w, int h,
                          OcrLineBox **out_lines, int *out_count, char **out_err) {
     *out_lines = NULL;
@@ -326,6 +621,7 @@ static int run_winrt_ocr(const void *bgra, int w, int h,
     EnterCriticalSection(&g_ocr_cs);
     int init_rc = init_ocr_ctx_locked(out_err);
     void *ocrEngine = g_ocr.ocrEngine;
+    void *zhEngine = g_ocr.zhEngine;
     void *bufFactory = g_ocr.bufFactory;
     void *sbStatics = g_ocr.sbStatics;
     PFN_RoInitialize pRoInit = g_ocr.pRoInit;
@@ -334,6 +630,7 @@ static int run_winrt_ocr(const void *bgra, int w, int h,
     PFN_WindowsDeleteString pWinStrDel = g_ocr.pWinStrDel;
     if (init_rc == 0) {
         if (ocrEngine) (*(FY_IInspectableVtbl **)ocrEngine)->AddRef(ocrEngine);
+        if (zhEngine) (*(FY_IInspectableVtbl **)zhEngine)->AddRef(zhEngine);
         if (bufFactory) (*(FY_IInspectableVtbl **)bufFactory)->AddRef(bufFactory);
         if (sbStatics) (*(FY_IInspectableVtbl **)sbStatics)->AddRef(sbStatics);
     }
@@ -343,8 +640,7 @@ static int run_winrt_ocr(const void *bgra, int w, int h,
     HRESULT hr_init = pRoInit(1); /* RO_INIT_MULTITHREADED */
     int need_uninit = (hr_init == S_OK || hr_init == S_FALSE);
 
-    void *buf = NULL, *byteAccess = NULL;
-    void *sb = NULL, *asyncOp = NULL, *asyncInfo = NULL, *ocrRes = NULL, *lines = NULL;
+    void *buf = NULL, *byteAccess = NULL, *sb = NULL;
     void *scaled_buf = NULL;
 
     /* 2. 小图 2x 放大喂给 OCR，提升小字识别率 */
@@ -379,124 +675,86 @@ static int run_winrt_ocr(const void *bgra, int w, int h,
         goto cleanup;
     }
 
-    /* 4. 异步识别（前 20 次 1ms 轮询减少等待尾延迟） */
-    if (FAILED((*(FY_IOcrEngineVtbl **)ocrEngine)->RecognizeAsync(ocrEngine, sb, &asyncOp)) || !asyncOp) {
-        *out_err = fy_strdup("OCR 识别启动失败");
-        goto cleanup;
-    }
-    if (FAILED((*(FY_IInspectableVtbl **)asyncOp)->QueryInterface(asyncOp, &FY_IID_IAsyncInfo, &asyncInfo)) || !asyncInfo) {
-        *out_err = fy_strdup("OCR 状态查询失败");
-        goto cleanup;
-    }
-    int status = 0;
-    for (int tries = 0; tries < 2000; tries++) {
-        (*(FY_IAsyncInfoVtbl **)asyncInfo)->get_Status(asyncInfo, &status);
-        if (status != 0) break;
-        Sleep(tries < 20 ? 1 : 5);
-    }
-    if (status != 1) {
-        *out_err = fy_strdup("OCR 识别超时或失败");
-        goto cleanup;
-    }
-    if (FAILED((*(FY_IAsyncOperationVtbl **)asyncOp)->GetResults(asyncOp, &ocrRes)) || !ocrRes) {
-        *out_err = fy_strdup("获取 OCR 结果失败");
-        goto cleanup;
-    }
-
-    /* 5. 提取每行文本及外接矩形 */
-    if (FAILED((*(FY_IOcrResultVtbl **)ocrRes)->get_Lines(ocrRes, &lines)) || !lines) {
-        *out_err = fy_strdup("读取 OCR 行列表失败");
-        goto cleanup;
-    }
-    UINT32 nLines = 0;
-    (*(FY_IVectorViewVtbl **)lines)->get_Size(lines, &nLines);
-    if (nLines == 0) {
-        goto cleanup_ok;
-    }
-
-    OcrLineBox *arr = (OcrLineBox *)calloc(nLines, sizeof(OcrLineBox));
+    /* 4. 主引擎识别（en-US 保证英文完整准确） */
+    OcrLineBox *arr = NULL;
     int valid = 0;
-    for (UINT32 i = 0; i < nLines; i++) {
-        void *line = NULL;
-        if (FAILED((*(FY_IVectorViewVtbl **)lines)->GetAt(lines, i, &line)) || !line) continue;
+    if (recognize_lines_with_engine(ocrEngine, sb, inv_scale, pWinStrBuf, pWinStrDel,
+                                    &arr, &valid, out_err) != 0) {
+        goto cleanup;
+    }
 
-        FY_HSTRING lt = NULL;
-        (*(FY_IOcrLineVtbl **)line)->get_Text(line, &lt);
-        UINT32 wlen = 0;
-        PCWSTR ws = lt ? pWinStrBuf(lt, &wlen) : NULL;
-        char *utf8 = wide_to_utf8(ws, (int)wlen);
-        if (lt) pWinStrDel(lt);
-
-        void *words = NULL;
-        float min_x = 1e9f, min_y = 1e9f, max_x = -1e9f, max_y = -1e9f;
-        if (SUCCEEDED((*(FY_IOcrLineVtbl **)line)->get_Words(line, &words)) && words) {
-            UINT32 nWords = 0;
-            (*(FY_IVectorViewVtbl **)words)->get_Size(words, &nWords);
-            for (UINT32 j = 0; j < nWords; j++) {
-                void *word = NULL;
-                if (SUCCEEDED((*(FY_IVectorViewVtbl **)words)->GetAt(words, j, &word)) && word) {
-                    FY_WinRect wr;
-                    if (SUCCEEDED((*(FY_IOcrWordVtbl **)word)->get_BoundingRect(word, &wr))) {
-                        if (wr.X < min_x) min_x = wr.X;
-                        if (wr.Y < min_y) min_y = wr.Y;
-                        if (wr.X + wr.Width > max_x) max_x = wr.X + wr.Width;
-                        if (wr.Y + wr.Height > max_y) max_y = wr.Y + wr.Height;
+    /* 5. 若存在中文辅引擎，用中文引擎找出汉字为主的区域，屏蔽主引擎在中文上的误识 */
+    if (zhEngine) {
+        OcrLineBox *zh_arr = NULL;
+        int zh_n = 0;
+        if (recognize_lines_with_engine(zhEngine, sb, inv_scale, pWinStrBuf, pWinStrDel,
+                                        &zh_arr, &zh_n, NULL) == 0 && zh_n > 0) {
+            for (int i = 0; i < valid; i++) {
+                if (!arr[i].need_trans) continue;
+                for (int j = 0; j < zh_n; j++) {
+                    if (!zh_arr[j].need_trans && has_any_cjk(zh_arr[j].text) &&
+                        box_overlaps_zh(&arr[i], &zh_arr[j])) {
+                        arr[i].need_trans = 0;
+                        break;
                     }
-                    SAFE_REL(word);
                 }
             }
-            SAFE_REL(words);
-        }
-        SAFE_REL(line);
-
-        if (utf8 && utf8[0] && max_x > min_x && max_y > min_y) {
-            arr[valid].x = min_x * inv_scale;
-            arr[valid].y = min_y * inv_scale;
-            arr[valid].w = (max_x - min_x) * inv_scale;
-            arr[valid].h = (max_y - min_y) * inv_scale;
-            arr[valid].text = utf8;
-            valid++;
-        } else {
-            free(utf8);
+            /* 把未被主引擎覆盖的中文行作为占位块加入（skip_translate=1），供排版避让不压中文 */
+            int add_cnt = 0;
+            for (int j = 0; j < zh_n; j++) {
+                if (!zh_arr[j].need_trans && has_any_cjk(zh_arr[j].text)) add_cnt++;
+            }
+            if (add_cnt > 0) {
+                OcrLineBox *merged = (OcrLineBox *)realloc(arr, (size_t)(valid + add_cnt) * sizeof(OcrLineBox));
+                if (merged) {
+                    arr = merged;
+                    for (int j = 0; j < zh_n; j++) {
+                        if (!zh_arr[j].need_trans && has_any_cjk(zh_arr[j].text)) {
+                            arr[valid] = zh_arr[j];
+                            arr[valid].need_trans = 0;
+                            zh_arr[j].text = NULL;
+                            valid++;
+                        }
+                    }
+                }
+            }
+            for (int j = 0; j < zh_n; j++) free(zh_arr[j].text);
+            free(zh_arr);
         }
     }
+
     if (valid > 1) qsort(arr, (size_t)valid, sizeof(OcrLineBox), cmp_line_box);
     *out_lines = arr;
     *out_count = valid;
 
-cleanup_ok:
-    SAFE_REL(lines);
-    SAFE_REL(ocrRes);
-    SAFE_REL(asyncInfo);
-    SAFE_REL(asyncOp);
     SAFE_REL(sb);
     SAFE_REL(sbStatics);
     SAFE_REL(byteAccess);
     SAFE_REL(buf);
     SAFE_REL(bufFactory);
+    SAFE_REL(zhEngine);
     SAFE_REL(ocrEngine);
     free(scaled_buf);
     if (need_uninit && pRoUninit) pRoUninit();
     return 0;
 
 cleanup:
-    SAFE_REL(lines);
-    SAFE_REL(ocrRes);
-    SAFE_REL(asyncInfo);
-    SAFE_REL(asyncOp);
     SAFE_REL(sb);
     SAFE_REL(sbStatics);
     SAFE_REL(byteAccess);
     SAFE_REL(buf);
     SAFE_REL(bufFactory);
+    SAFE_REL(zhEngine);
     SAFE_REL(ocrEngine);
     free(scaled_buf);
     if (need_uninit && pRoUninit) pRoUninit();
     return -1;
 }
 
-/* 判断两行是否属于同一连续段落（左对齐接近、行高相近、行距紧凑） */
+/* 判断两行是否属于同一连续段落（同语言属性、左对齐接近、行高相近、行距紧凑） */
 static int should_merge_lines(const TextBlock *blk, const OcrLineBox *ln) {
+    /* 中文行与英文行不合并，避免中文把相邻英文拖入跳过或反之 */
+    if (blk->skip_translate != (!ln->need_trans)) return 0;
     int prev_bottom = blk->y + blk->h;
     int gap = (int)ln->y - prev_bottom;
     int ref_h = blk->line_h > (int)ln->h ? blk->line_h : (int)ln->h;
@@ -535,6 +793,7 @@ static TextBlock *group_lines(const OcrLineBox *lines, int n, int *out_n) {
                 memcpy(ns + old_len + 1, lines[i].text, add_len + 1);
                 b->en = ns;
             }
+            b->skip_translate = !should_translate_block(b->en);
         } else {
             TextBlock *b = &blks[nb++];
             b->x = (int)floorf(lines[i].x);
@@ -544,6 +803,7 @@ static TextBlock *group_lines(const OcrLineBox *lines, int n, int *out_n) {
             b->line_h = b->h > 0 ? b->h : 14;
             b->n_lines = 1;
             b->en = fy_strdup(lines[i].text);
+            b->skip_translate = !lines[i].need_trans;
         }
     }
     *out_n = nb;
@@ -967,8 +1227,13 @@ static void translate_blocks(TextBlock *blks, int nb,
 
     int *miss = (int *)malloc((size_t)nb * sizeof(int));
     if (!miss) return;
-    int m = 0;
+    int m = 0, active = 0, skipped = 0;
     for (int i = 0; i < nb; i++) {
+        if (blks[i].skip_translate) {
+            skipped++;
+            continue;
+        }
+        active++;
         char *cached = ocr_cache_lookup(blks[i].en);
         if (cached) {
             blks[i].zh = cached;
@@ -976,13 +1241,19 @@ static void translate_blocks(TextBlock *blks, int nb,
             miss[m++] = i;
         }
     }
-    if (m == 0) {
-        fy_log_write("OCR", "全部 %d 块命中本地记忆库，零网络请求", nb);
+    if (active == 0) {
+        fy_log_write("OCR", "识别到 %d 块均非英文（中文/数字/符号），已全部跳过", skipped);
         free(miss);
         return;
     }
-    if (m < nb) {
-        fy_log_write("OCR", "记忆库命中 %d/%d 块，待联网 %d 块", nb - m, nb, m);
+    if (m == 0) {
+        fy_log_write("OCR", "英文 %d 块全部命中本地记忆库（跳过非英文 %d 块），零网络请求", active, skipped);
+        free(miss);
+        return;
+    }
+    if (m < active || skipped > 0) {
+        fy_log_write("OCR", "英文 %d 块（记忆库命中 %d，待联网 %d），跳过非英文 %d 块",
+                     active, active - m, m, skipped);
     }
 
     const int flags = FY_CHAIN_NO_DICT | FY_CHAIN_PREFER_BAIDU;
@@ -1143,24 +1414,188 @@ static COLORREF sample_fg_color(const BYTE *bgra, int w, int h, int bx, int by, 
     return (bg_y > 135) ? RGB(22, 22, 22) : RGB(245, 245, 245);
 }
 
-/* 在 [min_fh, max_fh] 范围内寻找能完全放入 avail_w x avail_h 的最大字号 */
-static HFONT fit_font_to_rect(HDC hdc, const WCHAR *wz, int avail_w, int avail_h,
-                              int max_fh, int min_fh, UINT calc_flags) {
-    if (max_fh < min_fh) max_fh = min_fh;
-    for (int fh = max_fh; fh >= min_fh; fh--) {
-        HFONT f = CreateFontW(-fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                              0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
-        if (!f) continue;
-        HFONT old_f = (HFONT)SelectObject(hdc, f);
-        RECT calc = {0, 0, avail_w, 0};
-        DrawTextW(hdc, wz, -1, &calc, calc_flags | DT_CALCRECT | DT_NOPREFIX);
-        SelectObject(hdc, old_f);
-        if (calc.right <= avail_w && calc.bottom <= avail_h) {
-            return f;
-        }
-        DeleteObject(f);
+/* ---- 译文精准折行与字号自适应（按字形实高排版，避免 DrawText 留白压小字号） ---- */
+#define OCR_MAX_WRAP_LINES 64
+
+typedef struct {
+    const WCHAR *ptr;
+    int len;
+    int width;
+} WrapLine;
+
+static int is_latin_token_w(WCHAR c) {
+    return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') ||
+           (c >= L'0' && c <= L'9') || c == L'_' || c == L'.' || c == L'-';
+}
+
+/* 按像素宽度精确折行：汉字任意断行，英文/数字词尽量不从中间劈开 */
+static int wrap_wide_text(HDC hdc, const WCHAR *wz, int max_w, int allow_wrap,
+                          WrapLine *out_lines, int max_lines, int *out_max_w) {
+    *out_max_w = 0;
+    if (!wz || !wz[0] || max_w <= 0 || max_lines <= 0) return 0;
+
+    if (!allow_wrap) {
+        int len = (int)wcslen(wz);
+        SIZE sz = {0, 0};
+        GetTextExtentPoint32W(hdc, wz, len, &sz);
+        out_lines[0].ptr = wz;
+        out_lines[0].len = len;
+        out_lines[0].width = sz.cx;
+        *out_max_w = sz.cx;
+        return 1;
     }
-    return NULL;
+
+    int nl = 0;
+    const WCHAR *p = wz;
+    while (*p) {
+        if (*p == L'\r') { p++; continue; }
+        if (*p == L'\n') { p++; continue; }
+        while (*p == L' ' || *p == L'\t') p++;
+        if (!*p || *p == L'\r' || *p == L'\n') continue;
+
+        if (nl >= max_lines) return max_lines + 1;
+
+        const WCHAR *line_start = p;
+        int line_len = 0;
+        int line_w = 0;
+
+        while (*p && *p != L'\r' && *p != L'\n') {
+            /* 取下一个 token：连续空白、连续英文数字串、或单个汉字/标点 */
+            const WCHAR *tok_start = p;
+            int tok_len = 1;
+            if (*p == L' ' || *p == L'\t') {
+                while (p[tok_len] == L' ' || p[tok_len] == L'\t') tok_len++;
+            } else if (is_latin_token_w(*p)) {
+                while (is_latin_token_w(p[tok_len])) tok_len++;
+            }
+
+            int cand_len = (int)((tok_start + tok_len) - line_start);
+            SIZE sz = {0, 0};
+            GetTextExtentPoint32W(hdc, line_start, cand_len, &sz);
+            if (sz.cx <= max_w) {
+                line_len = cand_len;
+                line_w = sz.cx;
+                p = tok_start + tok_len;
+            } else if (line_len > 0) {
+                /* 本行已有内容，当前 token 留到下一行 */
+                break;
+            } else {
+                /* 单个长 token 超出整行宽度：按字符截断，至少放 1 个字符 */
+                int fit = 1;
+                SIZE csz = {0, 0};
+                GetTextExtentPoint32W(hdc, line_start, 1, &csz);
+                line_w = csz.cx;
+                for (int k = 2; k <= tok_len; k++) {
+                    GetTextExtentPoint32W(hdc, line_start, k, &csz);
+                    if (csz.cx > max_w) break;
+                    fit = k;
+                    line_w = csz.cx;
+                }
+                line_len = fit;
+                p = line_start + fit;
+                break;
+            }
+        }
+
+        /* 去掉行尾空白 */
+        while (line_len > 0 && (line_start[line_len - 1] == L' ' || line_start[line_len - 1] == L'\t')) {
+            line_len--;
+        }
+        if (line_len > 0) {
+            SIZE sz = {0, 0};
+            GetTextExtentPoint32W(hdc, line_start, line_len, &sz);
+            line_w = sz.cx;
+            out_lines[nl].ptr = line_start;
+            out_lines[nl].len = line_len;
+            out_lines[nl].width = line_w;
+            if (line_w > *out_max_w) *out_max_w = line_w;
+            nl++;
+        }
+    }
+    return nl;
+}
+
+static HFONT create_overlay_font(int fh, int n_width) {
+    return CreateFontW(-fh, n_width, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+                       0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
+}
+
+/* 计算字号 fh 在指定行距下的视觉总高度（汉字实高约 0.90*fh，多行步进 1.15*fh） */
+static int calc_visual_total_h(int fh, int n_lines, int *out_vis_h, int *out_step) {
+    int vis_h = (int)ceilf((float)fh * 0.90f);
+    if (vis_h < 5) vis_h = 5;
+    int step = (int)ceilf((float)fh * 1.15f);
+    if (step < vis_h + 1) step = vis_h + 1;
+    if (out_vis_h) *out_vis_h = vis_h;
+    if (out_step) *out_step = step;
+    return (n_lines <= 1) ? vis_h : ((n_lines - 1) * step + vis_h);
+}
+
+/* 判断给定字号 fh 是否能完整放入 avail_w x avail_h */
+static int test_font_fit(HDC hdc, const WCHAR *wz, int avail_w, int avail_h,
+                         int fh, int allow_wrap) {
+    HFONT f = create_overlay_font(fh, 0);
+    if (!f) return 0;
+    HFONT old_f = (HFONT)SelectObject(hdc, f);
+    WrapLine tmp[OCR_MAX_WRAP_LINES];
+    int max_lw = 0;
+    int nl = wrap_wide_text(hdc, wz, avail_w, allow_wrap, tmp, OCR_MAX_WRAP_LINES, &max_lw);
+    SelectObject(hdc, old_f);
+    DeleteObject(f);
+    if (nl <= 0 || nl > OCR_MAX_WRAP_LINES) return 0;
+    if (max_lw > avail_w) return 0;
+    int total_h = calc_visual_total_h(fh, nl, NULL, NULL);
+    return (total_h <= avail_h);
+}
+
+/* 在 [min_fh, max_fh] 内二分查找能完整放入的最大字号，找不到返回 0 */
+static int find_best_fh(HDC hdc, const WCHAR *wz, int avail_w, int avail_h,
+                        int min_fh, int max_fh, int allow_wrap) {
+    if (max_fh < min_fh) return 0;
+    int lo = min_fh, hi = max_fh, best = 0;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (test_font_fit(hdc, wz, avail_w, avail_h, mid, allow_wrap)) {
+            best = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return best;
+}
+
+/* 计算块 i 上下可安全借用的空白高度（不压到任何相邻文本块，含跳过的中文块） */
+static void compute_safe_vpad(const TextBlock *blks, int nb, int idx, int img_h,
+                              int orig_h, int *out_top, int *out_bot) {
+    const TextBlock *b = &blks[idx];
+    int gap_top = b->y;
+    int gap_bot = img_h - (b->y + b->h);
+    if (gap_top < 0) gap_top = 0;
+    if (gap_bot < 0) gap_bot = 0;
+
+    for (int j = 0; j < nb; j++) {
+        if (j == idx) continue;
+        const TextBlock *o = &blks[j];
+        /* 仅考虑水平方向有重叠的相邻块 */
+        if (o->x + o->w <= b->x - 2 || o->x >= b->x + b->w + 2) continue;
+        if (o->y + o->h <= b->y) {
+            int g = b->y - (o->y + o->h);
+            if (g < gap_top) gap_top = g;
+        } else if (o->y >= b->y + b->h) {
+            int g = o->y - (b->y + b->h);
+            if (g < gap_bot) gap_bot = g;
+        }
+    }
+
+    int pad_cap = (int)ceilf((float)orig_h * 0.28f);
+    if (pad_cap < 2) pad_cap = 2;
+    int pt = (gap_top > 2) ? ((gap_top - 1) / 2) : (gap_top > 0 ? 1 : 0);
+    int pb = (gap_bot > 2) ? ((gap_bot - 1) / 2) : (gap_bot > 0 ? 1 : 0);
+    if (pt > pad_cap) pt = pad_cap;
+    if (pb > pad_cap) pb = pad_cap;
+    *out_top = pt;
+    *out_bot = pb;
 }
 
 static void render_blocks(const void *bgra_in, void *bgra_out, int w, int h,
@@ -1191,19 +1626,8 @@ static void render_blocks(const void *bgra_in, void *bgra_out, int w, int h,
 
     for (int i = 0; i < nb; i++) {
         const TextBlock *b = &blks[i];
-        if (!b->zh || !b->zh[0]) continue;
-
-        COLORREF bg = sample_bg_color((const BYTE *)bgra_in, w, h, b->x, b->y, b->w, b->h);
-        COLORREF fg = sample_fg_color((const BYTE *)bgra_in, w, h, b->x, b->y, b->w, b->h, bg);
-
-        RECT fill_rc;
-        fill_rc.left   = b->x - 2; if (fill_rc.left < 0) fill_rc.left = 0;
-        fill_rc.top    = b->y - 1; if (fill_rc.top < 0) fill_rc.top = 0;
-        fill_rc.right  = b->x + b->w + 2; if (fill_rc.right > w) fill_rc.right = w;
-        fill_rc.bottom = b->y + b->h + 1; if (fill_rc.bottom > h) fill_rc.bottom = h;
-        HBRUSH br = CreateSolidBrush(bg);
-        FillRect(hdc, &fill_rc, br);
-        DeleteObject(br);
+        /* 中文/非英文块原图保留，不擦除不重画 */
+        if (b->skip_translate || !b->zh || !b->zh[0]) continue;
 
         int wlen = MultiByteToWideChar(CP_UTF8, 0, b->zh, -1, NULL, 0);
         if (wlen <= 1) continue;
@@ -1211,77 +1635,174 @@ static void render_blocks(const void *bgra_in, void *bgra_out, int w, int h,
         if (!wz) continue;
         MultiByteToWideChar(CP_UTF8, 0, b->zh, -1, wz, wlen);
 
-        SetTextColor(hdc, fg);
-        RECT draw_rc = fill_rc;
-        int avail_w = draw_rc.right - draw_rc.left;
-        int avail_h = draw_rc.bottom - draw_rc.top;
-        if (avail_w <= 0 || avail_h <= 0) {
+        int orig_h = (b->n_lines > 1 ? b->line_h : b->h);
+        if (orig_h < 8) orig_h = 8;
+
+        int pad_top = 0, pad_bot = 0;
+        compute_safe_vpad(blks, nb, i, h, orig_h, &pad_top, &pad_bot);
+
+        /* 宽度严格限制在原英文长度内，竖直方向可在安全空隙内适度扩展 */
+        RECT safe_rc;
+        safe_rc.left   = b->x;             if (safe_rc.left < 0) safe_rc.left = 0;
+        safe_rc.right  = b->x + b->w + 2;  if (safe_rc.right > w) safe_rc.right = w;
+        safe_rc.top    = b->y - pad_top;   if (safe_rc.top < 0) safe_rc.top = 0;
+        safe_rc.bottom = b->y + b->h + pad_bot; if (safe_rc.bottom > h) safe_rc.bottom = h;
+
+        int avail_w = safe_rc.right - safe_rc.left;
+        int avail_h = safe_rc.bottom - safe_rc.top;
+        if (avail_w <= 2 || avail_h <= 2) {
             free(wz);
             continue;
         }
-        int start_fh = (int)((b->n_lines > 1 ? b->line_h : b->h) * 0.92f);
-        if (start_fh < 6) start_fh = 6;
-        if (start_fh > 64) start_fh = 64;
 
-        HFONT hf = NULL;
+        /* 视觉等大基准字号 ≈ orig_h * 1.05，允许有空余时最多放大到 1.15 倍 */
+        int base_fh = (int)floorf((float)orig_h * 1.05f + 0.5f);
+        int max_fh  = (int)floorf((float)orig_h * 1.05f * 1.15f + 0.5f);
+        if (max_fh < 10) max_fh = 10;
+        if (max_fh > 72) max_fh = 72;
+        int min_fh = (orig_h < 10) ? 7 : 8;
+        if (min_fh > max_fh) min_fh = max_fh;
+
+        int best_fh = 0;
         int use_wrap = (b->n_lines > 1);
+
         if (!use_wrap) {
-            /* 单行块：优先在原框内单行自适应字号，降到 8px 仍放不下再尝试多行折行 */
-            int single_min = (avail_h >= 16) ? 8 : 6;
-            if (single_min > start_fh) single_min = start_fh;
-            hf = fit_font_to_rect(hdc, wz, avail_w, avail_h, start_fh, single_min, DT_SINGLELINE);
-            if (!hf) {
-                hf = fit_font_to_rect(hdc, wz, avail_w, avail_h, start_fh, 6,
-                                      DT_WORDBREAK | DT_EDITCONTROL);
-                if (hf) {
-                    use_wrap = 1;
-                } else if (single_min > 6) {
-                    hf = fit_font_to_rect(hdc, wz, avail_w, avail_h, single_min - 1, 6, DT_SINGLELINE);
-                }
+            int fh_single = find_best_fh(hdc, wz, avail_w, avail_h, min_fh, max_fh, 0);
+            int fh_wrap = 0;
+            /* 单行字号被迫压到明显小于原文时，尝试折行看能否换来更大字号 */
+            if (fh_single < (int)((float)base_fh * 0.85f) && avail_h >= min_fh * 2) {
+                fh_wrap = find_best_fh(hdc, wz, avail_w, avail_h, min_fh, max_fh, 1);
+            }
+            if (fh_wrap > fh_single) {
+                best_fh = fh_wrap;
+                use_wrap = 1;
+            } else {
+                best_fh = fh_single;
+                use_wrap = 0;
             }
         } else {
-            /* 多行块：折行后同时约束宽高，确保不超出原文本区域 */
-            hf = fit_font_to_rect(hdc, wz, avail_w, avail_h, start_fh, 6,
-                                  DT_WORDBREAK | DT_EDITCONTROL);
+            best_fh = find_best_fh(hdc, wz, avail_w, avail_h, min_fh, max_fh, 1);
         }
 
-        /* 兜底：6px 仍超宽时适度收窄字宽并加省略号，避免硬截断 */
-        UINT extra_fmt = 0;
-        if (!hf) {
-            int fallback_fh = 6;
-            int n_width = 0;
-            HFONT f6 = CreateFontW(-fallback_fh, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                                   0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
-            if (f6 && !use_wrap) {
-                HFONT old_f = (HFONT)SelectObject(hdc, f6);
-                RECT calc = {0, 0, avail_w, 0};
-                DrawTextW(hdc, wz, -1, &calc, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        int n_width = 0;
+        int need_ellipsis = 0;
+        if (best_fh == 0) {
+            /* 兜底：min_fh 仍放不下，压窄字宽（最低 0.70 倍）并在末行加省略号，严格不超宽 */
+            best_fh = min_fh;
+            HFONT ftmp = create_overlay_font(best_fh, 0);
+            if (ftmp) {
+                HFONT old_f = (HFONT)SelectObject(hdc, ftmp);
+                SIZE sz = {0, 0};
+                GetTextExtentPoint32W(hdc, wz, wlen - 1, &sz);
                 TEXTMETRICW tm;
-                if (calc.right > avail_w && GetTextMetricsW(hdc, &tm) && tm.tmAveCharWidth > 0) {
-                    float ratio = (float)avail_w / (float)calc.right;
-                    if (ratio < 0.72f) ratio = 0.72f;
-                    int nw = (int)(tm.tmAveCharWidth * ratio);
+                if (sz.cx > avail_w && GetTextMetricsW(hdc, &tm) && tm.tmAveCharWidth > 0) {
+                    float ratio = (float)avail_w / (float)sz.cx;
+                    if (ratio < 0.70f) ratio = 0.70f;
+                    int nw = (int)((float)tm.tmAveCharWidth * ratio);
                     if (nw >= 2 && nw < tm.tmAveCharWidth) n_width = nw;
                 }
                 SelectObject(hdc, old_f);
-                if (n_width > 0) {
-                    DeleteObject(f6);
-                    f6 = CreateFontW(-fallback_fh, n_width, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                                     0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei UI");
-                }
-                extra_fmt = DT_END_ELLIPSIS;
+                DeleteObject(ftmp);
             }
-            hf = f6;
+            need_ellipsis = 1;
         }
 
-        if (hf) {
-            HFONT old_f = (HFONT)SelectObject(hdc, hf);
-            UINT fmt = use_wrap ? (DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX)
-                                : (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | extra_fmt);
-            DrawTextW(hdc, wz, -1, &draw_rc, fmt);
-            SelectObject(hdc, old_f);
-            DeleteObject(hf);
+        HFONT hf = create_overlay_font(best_fh, n_width);
+        if (!hf) {
+            free(wz);
+            continue;
         }
+
+        HFONT old_f = (HFONT)SelectObject(hdc, hf);
+        WrapLine lines[OCR_MAX_WRAP_LINES];
+        int max_lw = 0;
+        int nl = wrap_wide_text(hdc, wz, avail_w, use_wrap, lines, OCR_MAX_WRAP_LINES, &max_lw);
+        if (nl > OCR_MAX_WRAP_LINES) nl = OCR_MAX_WRAP_LINES;
+
+        int vis_h = 0, line_step = 0;
+        int total_h = calc_visual_total_h(best_fh, nl > 0 ? nl : 1, &vis_h, &line_step);
+        /* 若兜底模式下行数仍超出 avail_h，截断到可见行数 */
+        if (nl > 1 && total_h > avail_h) {
+            int max_fit_lines = 1 + (avail_h > vis_h ? (avail_h - vis_h) / line_step : 0);
+            if (max_fit_lines < 1) max_fit_lines = 1;
+            if (nl > max_fit_lines) {
+                nl = max_fit_lines;
+                need_ellipsis = 1;
+                total_h = calc_visual_total_h(best_fh, nl, &vis_h, &line_step);
+            }
+        }
+
+        COLORREF bg = sample_bg_color((const BYTE *)bgra_in, w, h, b->x, b->y, b->w, b->h);
+        COLORREF fg = sample_fg_color((const BYTE *)bgra_in, w, h, b->x, b->y, b->w, b->h, bg);
+
+        /* 背景擦除框：完整盖住原英文，若放大或折行后文字更高则在 safe_rc 内同步扩展（留 2px 呼吸边不切字头） */
+        RECT fill_rc;
+        fill_rc.left   = b->x - 2; if (fill_rc.left < 0) fill_rc.left = 0;
+        fill_rc.right  = b->x + b->w + 2; if (fill_rc.right > w) fill_rc.right = w;
+        fill_rc.top    = b->y - 1; if (fill_rc.top < 0) fill_rc.top = 0;
+        fill_rc.bottom = b->y + b->h + 1; if (fill_rc.bottom > h) fill_rc.bottom = h;
+        int fill_h = fill_rc.bottom - fill_rc.top;
+        int need_h = total_h + 4;
+        if (need_h > fill_h) {
+            int center_y = (fill_rc.top + fill_rc.bottom) / 2;
+            int nt = center_y - need_h / 2;
+            int nb_y = nt + need_h;
+            if (nt < safe_rc.top) { nt = safe_rc.top; nb_y = nt + need_h; }
+            if (nb_y > safe_rc.bottom) { nb_y = safe_rc.bottom; nt = nb_y - need_h; }
+            if (nt < safe_rc.top) nt = safe_rc.top;
+            if (nt < fill_rc.top) fill_rc.top = nt;
+            if (nb_y > fill_rc.bottom) fill_rc.bottom = nb_y;
+            fill_h = fill_rc.bottom - fill_rc.top;
+        }
+
+        HBRUSH br = CreateSolidBrush(bg);
+        FillRect(hdc, &fill_rc, br);
+        DeleteObject(br);
+
+        SetTextColor(hdc, fg);
+        TEXTMETRICW tm;
+        int ink_offset = 0;
+        if (GetTextMetricsW(hdc, &tm)) {
+            /* 去掉约 2/3 的 tmInternalLeading，既让汉字墨迹居中又保留顶部防裁切余量 */
+            ink_offset = (tm.tmInternalLeading * 2) / 3;
+            if (ink_offset < 0) ink_offset = 0;
+        }
+
+        int ink_top = fill_rc.top + (fill_h - total_h) / 2;
+        RECT clip_rc = { safe_rc.left, fill_rc.top, safe_rc.right, fill_rc.bottom };
+
+        for (int r = 0; r < nl; r++) {
+            int draw_y = ink_top + r * line_step - ink_offset;
+            int is_last = (r == nl - 1);
+            if (is_last && (need_ellipsis || lines[r].width > avail_w)) {
+                /* 末行超宽时用省略号截断到 avail_w 以内 */
+                int ell_len = lines[r].len;
+                WCHAR *ebuf = (WCHAR *)malloc((size_t)(ell_len + 2) * sizeof(WCHAR));
+                if (ebuf) {
+                    int k = ell_len;
+                    while (k > 0) {
+                        memcpy(ebuf, lines[r].ptr, (size_t)k * sizeof(WCHAR));
+                        ebuf[k] = 0x2026; /* … */
+                        ebuf[k + 1] = 0;
+                        SIZE esz = {0, 0};
+                        GetTextExtentPoint32W(hdc, ebuf, k + 1, &esz);
+                        if (esz.cx <= avail_w) break;
+                        k--;
+                    }
+                    if (k > 0) {
+                        ExtTextOutW(hdc, safe_rc.left, draw_y, ETO_CLIPPED, &clip_rc, ebuf, k + 1, NULL);
+                    } else {
+                        ExtTextOutW(hdc, safe_rc.left, draw_y, ETO_CLIPPED, &clip_rc, lines[r].ptr, lines[r].len, NULL);
+                    }
+                    free(ebuf);
+                }
+            } else {
+                ExtTextOutW(hdc, safe_rc.left, draw_y, ETO_CLIPPED, &clip_rc, lines[r].ptr, lines[r].len, NULL);
+            }
+        }
+
+        SelectObject(hdc, old_f);
+        DeleteObject(hf);
         free(wz);
     }
 
@@ -1297,19 +1818,23 @@ static char *join_block_texts(const TextBlock *blks, int nb, int is_zh) {
     if (nb <= 0) return NULL;
     size_t cap = 0;
     for (int i = 0; i < nb; i++) {
+        if (blks[i].skip_translate) continue;
         const char *s = is_zh ? blks[i].zh : blks[i].en;
         cap += (s ? strlen(s) : 0) + 2;
     }
     char *out = (char *)malloc(cap + 1);
     if (!out) return NULL;
     char *p = out;
+    int first = 1;
     for (int i = 0; i < nb; i++) {
+        if (blks[i].skip_translate) continue;
         const char *s = is_zh ? blks[i].zh : blks[i].en;
         if (s && s[0]) {
+            if (!first) *p++ = '\n';
+            first = 0;
             size_t l = strlen(s);
             memcpy(p, s, l);
             p += l;
-            if (i + 1 < nb) *p++ = '\n';
         }
     }
     *p = '\0';
@@ -1346,7 +1871,7 @@ FySnipResult *fy_snip_translate(const void *bgra_in, int width, int height,
         return res;
     }
     if (n_lines == 0) {
-        res->err = fy_strdup("未识别到英文文本");
+        res->err = fy_strdup("未识别到文本");
         return res;
     }
 
@@ -1354,6 +1879,17 @@ FySnipResult *fy_snip_translate(const void *bgra_in, int width, int height,
     TextBlock *blks = group_lines(lines, n_lines, &nb);
     for (int i = 0; i < n_lines; i++) free(lines[i].text);
     free(lines);
+
+    int need_cnt = 0;
+    for (int i = 0; i < nb; i++) {
+        if (!blks[i].skip_translate) need_cnt++;
+    }
+    if (need_cnt == 0) {
+        for (int i = 0; i < nb; i++) free(blks[i].en);
+        free(blks);
+        res->err = fy_strdup("未检测到需要翻译的英文文本");
+        return res;
+    }
 
     translate_blocks(blks, nb, ai_url, ai_key, ai_model, baidu_appid, baidu_secret, baidu_url, cache_dir);
     render_blocks(bgra_in, res->bgra_out, width, height, blks, nb);
