@@ -17,7 +17,30 @@ RequestExecutionLevel admin
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 !insertmacro GetSize
+!insertmacro GetParameters
+
+Function .onInit
+  ; 若命令行已传 /D=（如程序内自动更新传入当前目录），则尊重命令行参数
+  ${GetParameters} $R0
+  StrCpy $R1 $R0 3
+  ${If} $R1 != "/D="
+    ; 32位安装包默认读 WOW6432Node，需切到 64位视图才能读到上次写入的 InstallDir
+    SetRegView 64
+    ReadRegStr $0 HKLM "Software\${APPNAME}" "InstallDir"
+    ${If} $0 == ""
+      ReadRegStr $0 HKCU "Software\${APPNAME}" "InstallDir"
+    ${EndIf}
+    ${If} $0 == ""
+      SetRegView 32
+      ReadRegStr $0 HKLM "Software\${APPNAME}" "InstallDir"
+    ${EndIf}
+    ${If} $0 != ""
+      StrCpy $INSTDIR $0
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
 
 !define MUI_ICON "res\kuaiyi.ico"
 !define MUI_UNICON "res\kuaiyi.ico"
@@ -51,6 +74,7 @@ Section "主程序（必需）" SecCore
   ; 注册表：记住安装目录 + 控制面板“卸载程序”条目
   SetRegView 64    ; 写 64 位视图（否则被重定向到 WOW6432Node）
   WriteRegStr HKLM "Software\${APPNAME}" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\${APPNAME}" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayName" "${APPNAME}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "Publisher" "${PUBLISHER}"
@@ -103,6 +127,7 @@ Section Uninstall
   ; 注册表清理
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
   DeleteRegKey HKLM "Software\${APPNAME}"
+  DeleteRegKey HKCU "Software\${APPNAME}"
 
   ; 若安装目录还有残留文件（用户自建），尝试删除空目录
   RMDir "$INSTDIR"

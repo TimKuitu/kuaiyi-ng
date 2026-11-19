@@ -827,8 +827,10 @@ proc onUpdateMessage(stage: int, lp: LPARAM) =
   of UpdStageDone:
     let info = cast[ptr UpdateInfo](lp)
     lblUpdateStatus.label = "下载完成，启动安装程序……"
+    # NSIS 规定 /D= 放最后且不加引号，确保自动更新直接定位到当前安装目录
+    let updParam = "/D=" & getAppDir()
     discard ShellExecuteW(0, "open", newWideCString($cast[cstring](addr info.path)),
-                          nil, nil, SW_SHOWNORMAL)
+                          newWideCString(updParam), nil, SW_SHOWNORMAL)
     dealloc(info)
   of UpdStageFail:
     let info = cast[ptr UpdateInfo](lp)
