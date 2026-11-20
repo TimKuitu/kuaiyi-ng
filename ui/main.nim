@@ -1858,6 +1858,8 @@ proc main() =
     onUpdateMessage(int event.getwParam(), event.getlParam())
   frame.connect(UINT(WmAppSnipDone)) do (event: wEvent):
     onSnipDone(int(event.getwParam()), cast[ptr FySnipResult](event.getlParam()))
+  frame.connect(UINT(WmAppPinTransDone)) do (event: wEvent):
+    onPinTransDone(event.getwParam(), event.getlParam())
   frame.connect(WM_SETTINGCHANGE) do (event: wEvent):
     if g_set.themeMode == 0:
       let wantDark = isSystemDarkTheme()

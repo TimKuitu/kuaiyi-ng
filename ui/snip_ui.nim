@@ -9,6 +9,7 @@ import fastcore
 
 const
   WmAppSnipDone* = WM_APP + 0x0202
+  WmAppPinTransDone* = WM_APP + 0x0203
   HkSnipEsc* = 99
   ToolbarH = 38
   MinWinW = 450
@@ -66,6 +67,12 @@ const
   PinMenuClose = 1009
   PinMenuCloseAll = 1010
   PinMenuQuickSave = 1011
+  PinMenuToggleTrans = 1012
+  PinMenuCopyTransText = 1013
+
+  PinWmMouseLeave = UINT(0x02A3)
+  PinTmeLeave = DWORD(0x00000002)
+  PinMfGrayed = UINT(0x00000003)   # MF_GRAYED | MF_DISABLED
 
   PinHudTimerId = UINT_PTR(0x5011)
   TextEditCtrlId = HMENU(0x5021)
@@ -119,11 +126,23 @@ type
   SnipJob = object
     seq: int
     hwndMain: HWND
+    pinHwnd: HWND
     bgra: pointer
     w, h: cint
     aiUrl, aiKey, aiModel: cstring
     baiduAppId, baiduKey, baiduUrl: cstring
     cacheDir: cstring
+
+  PinTransPayload = object
+    pinHwnd: HWND
+    seq: int
+    res: ptr FySnipResult
+
+  PinTrackMouseEvent = object
+    cbSize: DWORD
+    dwFlags: DWORD
+    hwndTrack: HWND
+    dwHoverTime: DWORD
 
   ToolBtn = object
     rect: RECT
@@ -167,6 +186,14 @@ type
     hwnd: HWND
     hbm: HBITMAP
     bits: pointer
+    hbmTrans: HBITMAP
+    bitsTrans: pointer
+    showTrans: bool
+    translating: bool
+    transSeq: int
+    zhText: string
+    mouseIn: bool
+    btnHover: bool
     origW, origH: cint
     dispW, dispH: cint
     zoomScale: float
@@ -235,6 +262,7 @@ proc SnipSetWindowSubclass(hWnd: HWND, pfn: TextEditSubProc, id: UINT_PTR,
                            dwRef: DWORD_PTR): WINBOOL {.stdcall, importc: "SetWindowSubclass", dynlib: "comctl32.dll".}
 proc SnipDefSubclassProc(hWnd: HWND, uMsg: UINT, wp: WPARAM,
                          lp: LPARAM): LRESULT {.stdcall, importc: "DefSubclassProc", dynlib: "comctl32.dll".}
+proc PinTrackMouse(lpEventTrack: ptr PinTrackMouseEvent): WINBOOL {.stdcall, importc: "TrackMouseEvent", dynlib: "user32.dll".}
 
 proc GdiplusStartup(token: ptr pointer, input: ptr SnipGdiplusStartupInput,
                     output: pointer): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
@@ -261,6 +289,12 @@ proc GdipDrawEllipse(graphics, pen: pointer, x, y, w, h: cfloat): cint {.stdcall
 proc GdipFillEllipse(graphics, brush: pointer, x, y, w, h: cfloat): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
 proc GdipFillPolygon(graphics, brush: pointer, points: ptr GpPointF, count, fillMode: cint): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
 proc GdipDrawPolygon(graphics, pen: pointer, points: ptr GpPointF, count: cint): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
+proc GdipCreatePath(fillMode: cint, path: ptr pointer): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
+proc GdipDeletePath(path: pointer): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
+proc GdipAddPathArc(path: pointer, x, y, w, h, startAngle, sweepAngle: cfloat): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
+proc GdipClosePathFigure(path: pointer): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
+proc GdipFillPath(graphics, brush, path: pointer): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
+proc GdipDrawPath(graphics, pen, path: pointer): cint {.stdcall, importc, dynlib: "gdiplus.dll".}
 
 # ---- 全局状态（仅 UI 线程读写） ----
 var
@@ -593,7 +627,52 @@ proc snipWorker(param: LPVOID): DWORD {.stdcall.} =
   PostMessageW(hwndMain, UINT(WmAppSnipDone), WPARAM(seq), cast[LPARAM](res))
   return 0
 
+proc snipPinWorker(param: LPVOID): DWORD {.stdcall.} =
+  let job = cast[ptr SnipJob](param)
+  let seq = job.seq
+  let hwndMain = job.hwndMain
+  let pinHwnd = job.pinHwnd
+  let res = fy_snip_translate(job.bgra, job.w, job.h,
+                              job.aiUrl, job.aiKey, job.aiModel,
+                              job.baiduAppId, job.baiduKey, job.baiduUrl,
+                              job.cacheDir)
+  c_free(job.bgra)
+  fy_free(job.aiUrl)
+  fy_free(job.aiKey)
+  fy_free(job.aiModel)
+  fy_free(job.baiduAppId)
+  fy_free(job.baiduKey)
+  fy_free(job.baiduUrl)
+  fy_free(job.cacheDir)
+  c_free(job)
+  let payload = cast[ptr PinTransPayload](c_malloc(csize_t(sizeof(PinTransPayload))))
+  if payload != nil:
+    payload.pinHwnd = pinHwnd
+    payload.seq = seq
+    payload.res = res
+    if PostMessageW(hwndMain, UINT(WmAppPinTransDone), WPARAM(0), cast[LPARAM](payload)) == 0:
+      c_free(payload)
+      if res != nil: fy_snip_result_free(res)
+  else:
+    if res != nil: fy_snip_result_free(res)
+  return 0
+
 # ---------------- 多贴图悬浮窗（F3） ----------------
+proc activePinBits(pw: PinWin): pointer {.inline.} =
+  if pw != nil and pw.showTrans and pw.bitsTrans != nil: pw.bitsTrans
+  elif pw != nil: pw.bits
+  else: nil
+
+proc activePinHbm(pw: PinWin): HBITMAP {.inline.} =
+  if pw != nil and pw.showTrans and pw.hbmTrans != 0: pw.hbmTrans
+  elif pw != nil: pw.hbm
+  else: 0
+
+proc pinTransBtnRect(pw: PinWin): RECT =
+  if pw != nil and pw.dispW >= 64 and pw.dispH >= 40:
+    return RECT(left: LONG(pw.dispW - 32), top: 6, right: LONG(pw.dispW - 6), bottom: 30)
+  result = RECT(left: 0, top: 0, right: 0, bottom: 0)
+
 proc closePinWindow(pw: PinWin) =
   if pw == nil: return
   let h = pw.hwnd
@@ -605,6 +684,10 @@ proc closePinWindow(pw: PinWin) =
     DeleteObject(pw.hbm)
     pw.hbm = 0
   pw.bits = nil
+  if pw.hbmTrans != 0:
+    DeleteObject(pw.hbmTrans)
+    pw.hbmTrans = 0
+  pw.bitsTrans = nil
 
 proc closeAllPins*() =
   var list: seq[PinWin] = @[]
@@ -665,14 +748,121 @@ proc applyPinAlpha(pw: PinWin, newAlpha: uint8) =
   discard SetTimer(pw.hwnd, PinHudTimerId, 850, nil)
   InvalidateRect(pw.hwnd, nil, FALSE)
 
+proc startPinTranslate(pw: PinWin) =
+  if pw == nil or pw.hwnd == 0 or pw.bits == nil or pw.origW <= 0 or pw.origH <= 0: return
+  if pw.translating: return
+  inc pw.transSeq
+  pw.translating = true
+  pw.hudMsg = "正在识别翻译…"
+  discard KillTimer(pw.hwnd, PinHudTimerId)
+  InvalidateRect(pw.hwnd, nil, FALSE)
+
+  let imgBytes = int(pw.origW) * int(pw.origH) * 4
+  let bgraCopy = c_malloc(csize_t(imgBytes))
+  if bgraCopy == nil:
+    pw.translating = false
+    pw.hudMsg = "内存不足"
+    discard SetTimer(pw.hwnd, PinHudTimerId, 1100, nil)
+    InvalidateRect(pw.hwnd, nil, FALSE)
+    return
+  copyMem(bgraCopy, pw.bits, imgBytes)
+  let pIn = cast[ptr UncheckedArray[uint8]](bgraCopy)
+  var k = 3
+  while k < imgBytes:
+    pIn[k] = 255'u8
+    k += 4
+
+  let job = cast[ptr SnipJob](c_malloc(csize_t(sizeof(SnipJob))))
+  if job == nil:
+    c_free(bgraCopy)
+    pw.translating = false
+    pw.hudMsg = "内存不足"
+    discard SetTimer(pw.hwnd, PinHudTimerId, 1100, nil)
+    InvalidateRect(pw.hwnd, nil, FALSE)
+    return
+  zeroMem(job, sizeof(SnipJob))
+  job.seq = pw.transSeq
+  job.hwndMain = g_hwndMain
+  job.pinHwnd = pw.hwnd
+  job.bgra = bgraCopy
+  job.w = pw.origW
+  job.h = pw.origH
+  job.aiUrl = fy_strdup(g_lastCfg.aiUrl.cstring)
+  job.aiKey = fy_strdup(g_lastCfg.aiKey.cstring)
+  job.aiModel = fy_strdup(g_lastCfg.aiModel.cstring)
+  job.baiduAppId = fy_strdup(g_lastCfg.baiduAppId.cstring)
+  job.baiduKey = fy_strdup(g_lastCfg.baiduKey.cstring)
+  job.baiduUrl = fy_strdup(g_lastCfg.baiduUrl.cstring)
+  job.cacheDir = fy_strdup(g_lastCfg.cacheDir.cstring)
+  let th = CreateThread(nil, 0, snipPinWorker, cast[LPVOID](job), 0, nil)
+  if th == 0:
+    c_free(job.bgra)
+    fy_free(job.aiUrl); fy_free(job.aiKey); fy_free(job.aiModel)
+    fy_free(job.baiduAppId); fy_free(job.baiduKey); fy_free(job.baiduUrl)
+    fy_free(job.cacheDir)
+    c_free(job)
+    pw.translating = false
+    pw.hudMsg = "启动翻译失败"
+    discard SetTimer(pw.hwnd, PinHudTimerId, 1100, nil)
+    InvalidateRect(pw.hwnd, nil, FALSE)
+  else:
+    discard CloseHandle(th)
+
+proc onPinTransDone*(wp: WPARAM, lp: LPARAM) =
+  if lp == 0: return
+  let payload = cast[ptr PinTransPayload](lp)
+  let res = payload.res
+  let pinHwnd = payload.pinHwnd
+  let seq = payload.seq
+  c_free(payload)
+  if res == nil: return
+  defer: fy_snip_result_free(res)
+
+  let pw = g_pins.getOrDefault(pinHwnd, nil)
+  if pw == nil or seq != pw.transSeq or pw.hwnd == 0: return
+  pw.translating = false
+  if res.ok != 0 and res.bgra_out != nil and res.width == pw.origW and res.height == pw.origH:
+    if pw.hbmTrans == 0:
+      let hdcScr = GetDC(0)
+      pw.hbmTrans = makeDib32(hdcScr, pw.origW, pw.origH, addr pw.bitsTrans)
+      ReleaseDC(0, hdcScr)
+    if pw.hbmTrans != 0 and pw.bitsTrans != nil:
+      let imgBytes = int(pw.origW) * int(pw.origH) * 4
+      copyMem(pw.bitsTrans, res.bgra_out, imgBytes)
+      let pOut = cast[ptr UncheckedArray[uint8]](pw.bitsTrans)
+      var k = 3
+      while k < imgBytes:
+        pOut[k] = 255'u8
+        k += 4
+      pw.zhText = if res.zh_text != nil: $res.zh_text else: ""
+      pw.showTrans = true
+      pw.hudMsg = "翻译完成 (T切原图)"
+    else:
+      pw.hudMsg = "创建译图失败"
+  else:
+    let errTxt = if res.err != nil: ($res.err).strip() else: ""
+    pw.hudMsg = if errTxt.len > 0: errTxt else: "未识别到英文文本"
+  discard SetTimer(pw.hwnd, PinHudTimerId, 1500, nil)
+  InvalidateRect(pw.hwnd, nil, FALSE)
+
 proc showPinContextMenu(pw: PinWin) =
   if pw == nil or pw.hwnd == 0: return
   let menu = CreatePopupMenu()
   if menu == 0: return
+  if pw.translating:
+    discard AppendMenuW(menu, MF_STRING or PinMfGrayed, UINT_PTR(0), newWideCString("正在识别翻译…"))
+  elif pw.hbmTrans == 0:
+    discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuTrans), newWideCString("翻译贴图 (T)"))
+  else:
+    discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuToggleTrans),
+                        newWideCString(if pw.showTrans: "显示原图 (T)" else: "显示译图 (T)"))
+    if pw.zhText.len > 0:
+      discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuCopyTransText), newWideCString("复制译文"))
+    discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuTrans), newWideCString("重新翻译贴图"))
+  discard AppendMenuW(menu, MF_SEPARATOR, 0, nil)
   discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuCopy), newWideCString("复制图片 (Ctrl+C)"))
   discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuQuickSave), newWideCString("快速保存到默认位置 (Ctrl+Shift+S)"))
   discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuSave), newWideCString("另存为 PNG... (Ctrl+S)"))
-  discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuTrans), newWideCString("翻译此贴图"))
   discard AppendMenuW(menu, MF_SEPARATOR, 0, nil)
   discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuResetZoom), newWideCString("重置缩放 (100%)"))
   discard AppendMenuW(menu, MF_STRING, UINT_PTR(PinMenuOp100), newWideCString("不透明度 100%"))
@@ -692,31 +882,34 @@ proc showPinContextMenu(pw: PinWin) =
 
   case cmd
   of PinMenuCopy:
-    if copyDibToClipboard(pw.hwnd, pw.bits, pw.origW, pw.origH):
+    if copyDibToClipboard(pw.hwnd, activePinBits(pw), pw.origW, pw.origH):
       pw.hudMsg = "已复制"
       discard SetTimer(pw.hwnd, PinHudTimerId, 850, nil)
       InvalidateRect(pw.hwnd, nil, FALSE)
   of PinMenuQuickSave:
     var savedPath = ""
-    if saveBitsAsPngDefault(pw.bits, pw.origW, pw.origH, savedPath):
+    if saveBitsAsPngDefault(activePinBits(pw), pw.origW, pw.origH, savedPath):
       pw.hudMsg = "已保存到默认位置"
     else:
       pw.hudMsg = "保存失败"
     discard SetTimer(pw.hwnd, PinHudTimerId, 1100, nil)
     InvalidateRect(pw.hwnd, nil, FALSE)
   of PinMenuSave:
-    discard saveBitsAsPngDialog(pw.hwnd, pw.bits, pw.origW, pw.origH)
+    discard saveBitsAsPngDialog(pw.hwnd, activePinBits(pw), pw.origW, pw.origH)
   of PinMenuTrans:
-    var wr: RECT
-    discard GetWindowRect(pw.hwnd, addr wr)
-    let w = pw.origW
-    let h = pw.origH
-    let sz = int(w) * int(h) * 4
-    let tmp = c_malloc(csize_t(sz))
-    if tmp != nil and pw.bits != nil:
-      copyMem(tmp, pw.bits, sz)
-      openResultWindow(cint(wr.left), cint(wr.top), w, h, tmp)
-      c_free(tmp)
+    startPinTranslate(pw)
+  of PinMenuToggleTrans:
+    if pw.hbmTrans != 0 and not pw.translating:
+      pw.showTrans = not pw.showTrans
+      pw.hudMsg = if pw.showTrans: "已切换译图" else: "已切换原图"
+      discard SetTimer(pw.hwnd, PinHudTimerId, 950, nil)
+      InvalidateRect(pw.hwnd, nil, FALSE)
+  of PinMenuCopyTransText:
+    if pw.zhText.len > 0 and g_copyTextCb != nil:
+      g_copyTextCb(pw.zhText)
+      pw.hudMsg = "已复制译文"
+      discard SetTimer(pw.hwnd, PinHudTimerId, 950, nil)
+      InvalidateRect(pw.hwnd, nil, FALSE)
   of PinMenuResetZoom:
     applyPinZoom(pw, 1.0, false)
   of PinMenuOp100:
@@ -734,6 +927,65 @@ proc showPinContextMenu(pw: PinWin) =
     closeAllPins()
   else: discard
 
+proc drawPinTransBtn(hdcBuf: HDC, pw: PinWin, rc: RECT) =
+  let x = cfloat(rc.left)
+  let y = cfloat(rc.top)
+  let w = cfloat(rc.right - rc.left)
+  let h = cfloat(rc.bottom - rc.top)
+  let r = 5.0'f32
+
+  let bgCol = if pw.btnHover: argb(59, 130, 246, 240'u8)
+              elif pw.showTrans: argb(37, 99, 235, 220'u8)
+              else: argb(24, 28, 36, 205'u8)
+  let bdCol = if pw.btnHover or pw.showTrans: argb(147, 197, 253, 225'u8)
+              else: argb(148, 163, 184, 170'u8)
+
+  ensureGdiplus()
+  var drawnGp = false
+  if g_gpReady:
+    var g: pointer = nil
+    if GdipCreateFromHDC(hdcBuf, addr g) == 0 and g != nil:
+      discard GdipSetSmoothingMode(g, SmoothingAntiAlias)
+      var path: pointer = nil
+      if GdipCreatePath(0, addr path) == 0 and path != nil:
+        let d = min(r * 2.0'f32, min(w, h))
+        discard GdipAddPathArc(path, x, y, d, d, 180.0'f32, 90.0'f32)
+        discard GdipAddPathArc(path, x + w - d, y, d, d, 270.0'f32, 90.0'f32)
+        discard GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0'f32, 90.0'f32)
+        discard GdipAddPathArc(path, x, y + h - d, d, d, 90.0'f32, 90.0'f32)
+        discard GdipClosePathFigure(path)
+        var br: pointer = nil
+        if GdipCreateSolidFill(bgCol, addr br) == 0 and br != nil:
+          discard GdipFillPath(g, br, path)
+          discard GdipDeleteBrush(br)
+        var pen: pointer = nil
+        if GdipCreatePen1(bdCol, 1.0'f32, 2, addr pen) == 0 and pen != nil:
+          discard GdipDrawPath(g, pen, path)
+          discard GdipDeletePen(pen)
+        discard GdipDeletePath(path)
+        drawnGp = true
+      discard GdipDeleteGraphics(g)
+
+  if not drawnGp:
+    var rFill = rc
+    let br = CreateSolidBrush(if pw.btnHover or pw.showTrans: RGB(37, 99, 235) else: RGB(28, 32, 42))
+    FillRect(hdcBuf, addr rFill, br)
+    DeleteObject(br)
+
+  let txt = if pw.translating: "…"
+            elif pw.hbmTrans != 0 and pw.showTrans: "原"
+            else: "译"
+  let hf = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+                       0, 0, CLEARTYPE_QUALITY, 0, newWideCString("Microsoft YaHei UI"))
+  let oldF = SelectObject(hdcBuf, hf)
+  SetBkMode(hdcBuf, TRANSPARENT)
+  SetTextColor(hdcBuf, RGB(244, 248, 255))
+  var tr = rc
+  DrawTextW(hdcBuf, newWideCString(txt), -1, addr tr,
+            DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX)
+  SelectObject(hdcBuf, oldF)
+  DeleteObject(hf)
+
 proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcall.} =
   let pw = g_pins.getOrDefault(hwnd, nil)
   if pw == nil:
@@ -747,9 +999,10 @@ proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcal
     let hbmBuf = CreateCompatibleBitmap(hdc, pw.dispW, pw.dispH)
     let oldBuf = SelectObject(hdcBuf, hbmBuf)
 
-    if pw.hbm != 0:
+    let srcHbm = activePinHbm(pw)
+    if srcHbm != 0:
       let hdcSrc = CreateCompatibleDC(hdc)
-      let oldSrc = SelectObject(hdcSrc, pw.hbm)
+      let oldSrc = SelectObject(hdcSrc, srcHbm)
       if pw.dispW == pw.origW and pw.dispH == pw.origH:
         BitBlt(hdcBuf, 0, 0, pw.dispW, pw.dispH, hdcSrc, 0, 0, SRCCOPY)
       else:
@@ -768,6 +1021,9 @@ proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcal
       SelectObject(hdcBuf, oldP)
       DeleteObject(pen)
 
+    let btnRc = pinTransBtnRect(pw)
+    let showBtn = (pw.mouseIn or pw.translating) and btnRc.right > btnRc.left
+
     if pw.hudMsg.len > 0:
       let hf = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
                            0, 0, CLEARTYPE_QUALITY, 0, newWideCString("Microsoft YaHei UI"))
@@ -775,7 +1031,8 @@ proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcal
       let wHud = newWideCString(pw.hudMsg)
       var calcRc = RECT(left: 0, top: 0, right: 0, bottom: 0)
       discard DrawTextW(hdcBuf, cast[LPCWSTR](wHud), -1, addr calcRc, DT_CALCRECT or DT_SINGLELINE or DT_NOPREFIX)
-      let badgeW = min(int(pw.dispW) - 12, max(84, int(calcRc.right - calcRc.left) + 20))
+      let maxHudW = if showBtn: int(pw.dispW) - 42 else: int(pw.dispW) - 12
+      let badgeW = min(maxHudW, max(72, int(calcRc.right - calcRc.left) + 20))
       var badge = RECT(left: 6, top: 6, right: LONG(6 + badgeW), bottom: 28)
       if badge.right > badge.left + 30:
         let br = CreateSolidBrush(RGB(20, 24, 32))
@@ -787,6 +1044,9 @@ proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcal
                   DT_CENTER or DT_VCENTER or DT_SINGLELINE or DT_NOPREFIX)
       SelectObject(hdcBuf, oldF)
       DeleteObject(hf)
+
+    if showBtn:
+      drawPinTransBtn(hdcBuf, pw, btnRc)
 
     BitBlt(hdc, 0, 0, pw.dispW, pw.dispH, hdcBuf, 0, 0, SRCCOPY)
     SelectObject(hdcBuf, oldBuf)
@@ -802,12 +1062,72 @@ proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcal
       InvalidateRect(hwnd, nil, FALSE)
     return 0
 
+  of WM_MOUSEMOVE:
+    let mx = int(cast[int16](lp and 0xFFFF))
+    let my = int(cast[int16]((lp shr 16) and 0xFFFF))
+    var needRedraw = false
+    if not pw.mouseIn:
+      var tme: PinTrackMouseEvent
+      tme.cbSize = DWORD(sizeof(PinTrackMouseEvent))
+      tme.dwFlags = PinTmeLeave
+      tme.hwndTrack = hwnd
+      discard PinTrackMouse(addr tme)
+      pw.mouseIn = true
+      needRedraw = true
+    let brc = pinTransBtnRect(pw)
+    let nh = (brc.right > brc.left) and ptInRect(brc, mx, my)
+    if nh != pw.btnHover:
+      pw.btnHover = nh
+      needRedraw = true
+    if needRedraw:
+      InvalidateRect(hwnd, nil, FALSE)
+    return 0
+
+  of PinWmMouseLeave:
+    if pw.mouseIn or pw.btnHover:
+      pw.mouseIn = false
+      pw.btnHover = false
+      InvalidateRect(hwnd, nil, FALSE)
+    return 0
+
+  of WM_SETCURSOR:
+    if (lp and 0xFFFF) == HTCLIENT and pw.btnHover:
+      SetCursor(LoadCursorW(0, IDC_HAND))
+      return 1
+    return DefWindowProcW(hwnd, msg, wp, lp)
+
   of WM_LBUTTONDOWN:
+    let mx = int(cast[int16](lp and 0xFFFF))
+    let my = int(cast[int16]((lp shr 16) and 0xFFFF))
+    let brc = pinTransBtnRect(pw)
+    if (pw.mouseIn or pw.translating) and brc.right > brc.left and ptInRect(brc, mx, my):
+      if not pw.translating:
+        if pw.hbmTrans != 0:
+          pw.showTrans = not pw.showTrans
+          pw.hudMsg = if pw.showTrans: "已切换译图" else: "已切换原图"
+          discard SetTimer(hwnd, PinHudTimerId, 950, nil)
+          InvalidateRect(hwnd, nil, FALSE)
+        else:
+          startPinTranslate(pw)
+      return 0
     ReleaseCapture()
     SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
     return 0
 
   of WM_LBUTTONDBLCLK:
+    let mx = int(cast[int16](lp and 0xFFFF))
+    let my = int(cast[int16]((lp shr 16) and 0xFFFF))
+    let brc = pinTransBtnRect(pw)
+    if brc.right > brc.left and ptInRect(brc, mx, my):
+      if not pw.translating:
+        if pw.hbmTrans != 0:
+          pw.showTrans = not pw.showTrans
+          pw.hudMsg = if pw.showTrans: "已切换译图" else: "已切换原图"
+          discard SetTimer(hwnd, PinHudTimerId, 950, nil)
+          InvalidateRect(hwnd, nil, FALSE)
+        else:
+          startPinTranslate(pw)
+      return 0
     closePinWindow(pw)
     return 0
 
@@ -830,11 +1150,22 @@ proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcal
   of WM_KEYDOWN:
     let ctrlDown = (GetKeyState(VK_CONTROL) and 0x8000'i16) != 0
     let shiftDown = (GetKeyState(VK_SHIFT) and 0x8000'i16) != 0
+    let altDown = (GetKeyState(VK_MENU) and 0x8000'i16) != 0
     if wp == VK_ESCAPE or wp == VK_DELETE:
       closePinWindow(pw)
       return 0
+    elif wp == WPARAM('T') and not ctrlDown and not altDown:
+      if not pw.translating:
+        if pw.hbmTrans != 0:
+          pw.showTrans = not pw.showTrans
+          pw.hudMsg = if pw.showTrans: "已切换译图" else: "已切换原图"
+          discard SetTimer(hwnd, PinHudTimerId, 950, nil)
+          InvalidateRect(hwnd, nil, FALSE)
+        else:
+          startPinTranslate(pw)
+      return 0
     elif ctrlDown and wp == WPARAM('C'):
-      if copyDibToClipboard(hwnd, pw.bits, pw.origW, pw.origH):
+      if copyDibToClipboard(hwnd, activePinBits(pw), pw.origW, pw.origH):
         pw.hudMsg = "已复制"
         discard SetTimer(hwnd, PinHudTimerId, 850, nil)
         InvalidateRect(hwnd, nil, FALSE)
@@ -842,14 +1173,14 @@ proc pinWndProc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM): LRESULT {.stdcal
     elif ctrlDown and wp == WPARAM('S'):
       if shiftDown:
         var savedPath = ""
-        if saveBitsAsPngDefault(pw.bits, pw.origW, pw.origH, savedPath):
+        if saveBitsAsPngDefault(activePinBits(pw), pw.origW, pw.origH, savedPath):
           pw.hudMsg = "已保存到默认位置"
         else:
           pw.hudMsg = "保存失败"
         discard SetTimer(hwnd, PinHudTimerId, 1100, nil)
         InvalidateRect(hwnd, nil, FALSE)
       else:
-        discard saveBitsAsPngDialog(hwnd, pw.bits, pw.origW, pw.origH)
+        discard saveBitsAsPngDialog(hwnd, activePinBits(pw), pw.origW, pw.origH)
       return 0
     elif wp == WPARAM('0') or wp == WPARAM('1'):
       applyPinZoom(pw, 1.0, false)
@@ -969,6 +1300,13 @@ proc createTextPinAtCursor(txt: string) =
               DT_LEFT or DT_TOP or DT_WORDBREAK or DT_NOPREFIX)
     GdiFlush()
     SelectObject(hdcMem, oldBm)
+
+    let imgBytes = int(w) * int(h) * 4
+    let pOut = cast[ptr UncheckedArray[uint8]](bits)
+    var k = 3
+    while k < imgBytes:
+      pOut[k] = 255'u8
+      k += 4
 
     var pt: POINT
     discard GetCursorPos(addr pt)
@@ -2547,6 +2885,12 @@ proc pastePinFromClipboard*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: strin
             GlobalUnlock(hMem)
             CloseClipboard()
             DeleteDC(hdcMem)
+            let imgBytes = int(w) * int(h) * 4
+            let pOut = cast[ptr UncheckedArray[uint8]](outBits)
+            var k = 3
+            while k < imgBytes:
+              pOut[k] = 255'u8
+              k += 4
             var pt: POINT
             discard GetCursorPos(addr pt)
             discard createPinWindow(cint(pt.x - int(w) div 2), cint(pt.y - int(h) div 2), w, h, outBits)
