@@ -2,9 +2,9 @@
 
 use crate::core::log::log_write;
 use crate::core::ocr::{snip_translate, SnipResult};
-use crate::core::str_util::utf8_to_wide;
+use crate::core::str_util::{utf8_to_wide, wide_to_utf8};
 use crate::ui::win32_ui::{
-    argb, ensure_gdiplus, enum_display_monitor_rects, get_clipboard_bgra, get_clipboard_text,
+    argb, ensure_gdiplus, enum_display_monitors_info, get_clipboard_bgra, get_clipboard_text,
     get_window_text, gp_fill_round_rect, gp_round_card, lparam_xy, rgb, save_bgra_as_png,
     save_file_dialog_png, set_clipboard_bgra, set_clipboard_text, wheel_delta,
     work_area_from_point, AppendMenuW, BeginPaint, BitBlt, CreateCompatibleBitmap,
@@ -14,29 +14,29 @@ use crate::ui::win32_ui::{
     GdiFlush, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush,
     GdipDeleteGraphics, GdipDeletePen, GdipDrawEllipse, GdipDrawLine, GdipDrawLines,
     GdipDrawRectangle, GdipFillEllipse, GdipFillRectangle, GdipSetPenEndCap, GdipSetPenLineJoin,
-    GdipSetPenStartCap, GdipSetSmoothingMode, GetAsyncKeyState, GetClientRect, GetCurrentProcessId,
-    GetCursorPos, GetDC, GetModuleHandleW, GetStockObject, GetSystemMetrics, GetWindowRect,
-    GetWindowThreadProcessId, GpPointF, InvalidateRect, IsIconic, IsWindow, IsWindowVisible,
-    LoadCursorW, PostMessageW, RegisterClassExW, ReleaseCapture, ReleaseDC, ScreenToClient,
-    SelectClipRgn, SelectObject, SetBkMode, SetCapture, SetCursor, SetFocus,
-    SetLayeredWindowAttributes, SetStretchBltMode, SetTextColor, SetWindowPos, SetWindowSubclass,
-    ShowWindow, StretchBlt, TrackPopupMenu, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
-    CLEARTYPE_QUALITY, COLORONCOLOR, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, DEFAULT_CHARSET,
-    DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
-    DT_TOP, DT_VCENTER, DT_WORDBREAK, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWORD_PTR,
-    ES_AUTOHSCROLL, ES_MULTILINE, ES_WANTRETURN, FW_BOLD, FW_MEDIUM, FW_NORMAL, GP_LINE_CAP_ROUND,
-    GP_LINE_JOIN_ROUND, GP_OK, GP_SMOOTHING_ANTIALIAS, GP_UNIT_PIXEL, HALFTONE, HBITMAP, HDC,
-    HFONT, HGDIOBJ, HWND, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW,
-    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LPARAM, LRESULT, LWA_ALPHA, MA_NOACTIVATE, MF_CHECKED,
-    MF_SEPARATOR, MF_STRING, MINMAXINFO, NULL_BRUSH, PAINTSTRUCT, POINT, PS_DASH, PS_SOLID, RECT,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SRCCOPY,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW, TPM_NONOTIFY, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TRANSPARENT, UINT, UINT_PTR, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT,
-    WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SETCURSOR, WNDCLASSEXW, WPARAM, WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    GdipSetPenStartCap, GdipSetSmoothingMode, GetAsyncKeyState, GetClassNameW, GetClientRect,
+    GetCurrentProcessId, GetCursorPos, GetDC, GetModuleHandleW, GetStockObject, GetSystemMetrics,
+    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, GpPointF, InvalidateRect, IsIconic,
+    IsWindow, IsWindowVisible, LoadCursorW, PostMessageW, RegisterClassExW, ReleaseCapture,
+    ReleaseDC, ScreenToClient, SelectClipRgn, SelectObject, SetBkMode, SetCapture, SetCursor,
+    SetFocus, SetLayeredWindowAttributes, SetStretchBltMode, SetTextColor, SetWindowPos,
+    SetWindowSubclass, ShowWindow, StretchBlt, TrackPopupMenu, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, CAPTUREBLT, CLEARTYPE_QUALITY, COLORONCOLOR, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
+    DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+    DT_SINGLELINE, DT_TOP, DT_VCENTER, DT_WORDBREAK, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    DWORD_PTR, ES_AUTOHSCROLL, ES_MULTILINE, ES_WANTRETURN, FW_BOLD, FW_MEDIUM, FW_NORMAL,
+    GP_LINE_CAP_ROUND, GP_LINE_JOIN_ROUND, GP_OK, GP_SMOOTHING_ANTIALIAS, GP_UNIT_PIXEL,
+    GWL_EXSTYLE, HALFTONE, HBITMAP, HDC, HFONT, HGDIOBJ, HWND, HWND_TOPMOST, IDC_ARROW, IDC_CROSS,
+    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LPARAM, LRESULT, LWA_ALPHA,
+    MA_NOACTIVATE, MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, NULL_BRUSH, PAINTSTRUCT, POINT,
+    PS_DASH, PS_SOLID, RECT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SRCCOPY, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TRANSPARENT, UINT, UINT_PTR, VK_CONTROL,
+    VK_ESCAPE, VK_RETURN, VK_SHIFT, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_DESTROY,
+    WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WPARAM, WS_CHILD, WS_CLIPCHILDREN,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
 };
 use crate::ui::{WM_APP_PIN_DONE, WM_APP_SNIP_DONE};
 use std::cell::RefCell;
@@ -691,9 +691,10 @@ struct VirtualScreenCapture {
     vh: i32,
     bgra: Vec<u8>,
     mon_rects: Vec<RECT>,
+    work_rects: Vec<RECT>,
 }
 
-/// 逐屏抓取虚拟桌面 32-bit top-down BGRA，同时返回以 `(vx, vy)` 为原点的局部显示器边界列表
+/// 逐屏抓取虚拟桌面 32-bit top-down BGRA，同时返回以 `(vx, vy)` 为原点的局部显示器与工作区边界列表
 fn capture_virtual_screen_with_monitors() -> Option<VirtualScreenCapture> {
     unsafe {
         let fallback = (
@@ -702,7 +703,8 @@ fn capture_virtual_screen_with_monitors() -> Option<VirtualScreenCapture> {
             GetSystemMetrics(SM_CXVIRTUALSCREEN),
             GetSystemMetrics(SM_CYVIRTUALSCREEN),
         );
-        let mons = enum_display_monitor_rects();
+        let mon_infos = enum_display_monitors_info();
+        let mons: Vec<RECT> = mon_infos.iter().map(|m| m.monitor).collect();
         let (vx, vy, vw, vh) = compute_virtual_bounds(&mons, fallback);
         if vw <= 0 || vh <= 0 {
             return None;
@@ -769,13 +771,22 @@ fn capture_virtual_screen_with_monitors() -> Option<VirtualScreenCapture> {
         DeleteDC(hdc_mem);
         ReleaseDC(null_mut(), hdc_scr);
 
-        let local_mons = mons
-            .into_iter()
-            .map(|rc| RECT {
-                left: rc.left - vx,
-                top: rc.top - vy,
-                right: rc.right - vx,
-                bottom: rc.bottom - vy,
+        let local_mons = mon_infos
+            .iter()
+            .map(|m| RECT {
+                left: m.monitor.left - vx,
+                top: m.monitor.top - vy,
+                right: m.monitor.right - vx,
+                bottom: m.monitor.bottom - vy,
+            })
+            .collect();
+        let local_works = mon_infos
+            .iter()
+            .map(|m| RECT {
+                left: m.work.left - vx,
+                top: m.work.top - vy,
+                right: m.work.right - vx,
+                bottom: m.work.bottom - vy,
             })
             .collect();
         Some(VirtualScreenCapture {
@@ -785,6 +796,7 @@ fn capture_virtual_screen_with_monitors() -> Option<VirtualScreenCapture> {
             vh,
             bgra: out,
             mon_rects: local_mons,
+            work_rects: local_works,
         })
     }
 }
@@ -1530,6 +1542,7 @@ struct OverlayState {
     vw: i32,
     vh: i32,
     mon_rects: Vec<RECT>,
+    work_rects: Vec<RECT>,
     orig_bgra: Vec<u8>,
     gdi: OverlayGdiCache,
     filter_caches: Vec<FilterLayerCache>,
@@ -1673,11 +1686,118 @@ unsafe fn ensure_snip_classes() {
 
 // ---- 顶层窗口自动识别 ----
 
-unsafe fn enum_visible_windows(vx: i32, vy: i32) -> Vec<RECT> {
+/// 判断窗口类是否属于任务栏、桌面外壳或系统隐形覆盖层，应从自动窗口框选中排除
+pub fn should_skip_auto_window_class(cls: &str) -> bool {
+    matches!(
+        cls,
+        "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "Progman"
+            | "WorkerW"
+            | "Windows.UI.Core.CoreWindow"
+            | "EdgeUiInputTopWndClass"
+            | "EdgeUiInputWndClass"
+            | "ForegroundStaging"
+            | "ApplicationManager_DesktopShellWindow"
+            | "DummyDwmListenerWindow"
+            | "MultitaskingViewFrame"
+            | "NotifyIconOverflowWindow"
+    )
+}
+
+/// 将外部可见窗口局部坐标按所属屏幕工作区裁切，排除底部任务栏与最大化边框外溢
+pub fn clip_auto_window_rect(
+    local_rc: RECT,
+    mon_rects: &[RECT],
+    work_rects: &[RECT],
+) -> Option<RECT> {
+    let rw = local_rc.right - local_rc.left;
+    let rh = local_rc.bottom - local_rc.top;
+    if rw <= 12 || rh <= 12 {
+        return None;
+    }
+    if mon_rects.is_empty() || mon_rects.len() != work_rects.len() {
+        return Some(local_rc);
+    }
+
+    let win_area = (rw as i64) * (rh as i64);
+    let mut best_inter = 0i64;
+    let mut best_work = RECT::default();
+    let mut union_work = RECT::default();
+    let mut has_union = false;
+
+    for (&mon, &work) in mon_rects.iter().zip(work_rects.iter()) {
+        let inter = intersect_rects(local_rc, mon);
+        if inter.right <= inter.left || inter.bottom <= inter.top {
+            continue;
+        }
+        let area = ((inter.right - inter.left) as i64) * ((inter.bottom - inter.top) as i64);
+        if area > best_inter {
+            best_inter = area;
+            best_work = work;
+        }
+        if !has_union {
+            union_work = work;
+            has_union = true;
+        } else {
+            union_work.left = union_work.left.min(work.left);
+            union_work.top = union_work.top.min(work.top);
+            union_work.right = union_work.right.max(work.right);
+            union_work.bottom = union_work.bottom.max(work.bottom);
+        }
+    }
+
+    if best_inter <= 0 {
+        return None;
+    }
+
+    let clipped = if (best_inter as i128) * 100 >= (win_area as i128) * 80 {
+        intersect_rects(local_rc, best_work)
+    } else {
+        intersect_rects(local_rc, union_work)
+    };
+    if clipped.right - clipped.left > 12 && clipped.bottom - clipped.top > 12 {
+        Some(clipped)
+    } else {
+        None
+    }
+}
+
+/// 按 Z-order 与所在显示器工作区选取鼠标悬停的自动识别框（鼠标在任务栏上不高亮，空白桌面回退工作区）
+pub fn pick_hover_window_rect(win_rects: &[RECT], work_rects: &[RECT], x: i32, y: i32) -> RECT {
+    let cur_work = work_rects.iter().copied().find(|&r| pt_in_rect(r, x, y));
+    if !work_rects.is_empty() && cur_work.is_none() {
+        return RECT::default();
+    }
+    for &wrc in win_rects {
+        if pt_in_rect(wrc, x, y) {
+            let mut out = wrc;
+            if let Some(wk) = cur_work {
+                out.top = out.top.max(wk.top);
+                out.bottom = out.bottom.min(wk.bottom);
+            }
+            if out.right > out.left && out.bottom > out.top {
+                return out;
+            }
+        }
+    }
+    cur_work.unwrap_or_default()
+}
+
+unsafe fn enum_visible_windows(
+    vx: i32,
+    vy: i32,
+    mon_rects: &[RECT],
+    work_rects: &[RECT],
+) -> Vec<RECT> {
     struct Ctx {
         own_pid: u32,
         vx: i32,
         vy: i32,
+        mon_ptr: *const RECT,
+        mon_len: usize,
+        work_ptr: *const RECT,
+        work_len: usize,
         list: Vec<RECT>,
     }
     unsafe extern "system" fn enum_cb(hwnd: HWND, lp: LPARAM) -> i32 {
@@ -1688,6 +1808,10 @@ unsafe fn enum_visible_windows(vx: i32, vy: i32) -> Vec<RECT> {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);
         if pid == ctx.own_pid {
+            return 1;
+        }
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        if (ex_style & WS_EX_TRANSPARENT) != 0 {
             return 1;
         }
         let mut cloaked: u32 = 0;
@@ -1701,6 +1825,14 @@ unsafe fn enum_visible_windows(vx: i32, vy: i32) -> Vec<RECT> {
         {
             return 1;
         }
+        let mut cls_buf = [0u16; 128];
+        let cls_len = GetClassNameW(hwnd, cls_buf.as_mut_ptr(), cls_buf.len() as i32);
+        if cls_len > 0 {
+            let cls = wide_to_utf8(&cls_buf[..cls_len as usize]);
+            if should_skip_auto_window_class(&cls) {
+                return 1;
+            }
+        }
         let mut rc = RECT::default();
         if DwmGetWindowAttribute(
             hwnd,
@@ -1712,15 +1844,16 @@ unsafe fn enum_visible_windows(vx: i32, vy: i32) -> Vec<RECT> {
         {
             return 1;
         }
-        let w = rc.right - rc.left;
-        let h = rc.bottom - rc.top;
-        if w > 12 && h > 12 {
-            ctx.list.push(RECT {
-                left: rc.left - ctx.vx,
-                top: rc.top - ctx.vy,
-                right: rc.right - ctx.vx,
-                bottom: rc.bottom - ctx.vy,
-            });
+        let local_rc = RECT {
+            left: rc.left - ctx.vx,
+            top: rc.top - ctx.vy,
+            right: rc.right - ctx.vx,
+            bottom: rc.bottom - ctx.vy,
+        };
+        let mons = std::slice::from_raw_parts(ctx.mon_ptr, ctx.mon_len);
+        let works = std::slice::from_raw_parts(ctx.work_ptr, ctx.work_len);
+        if let Some(clipped) = clip_auto_window_rect(local_rc, mons, works) {
+            ctx.list.push(clipped);
         }
         1
     }
@@ -1728,6 +1861,10 @@ unsafe fn enum_visible_windows(vx: i32, vy: i32) -> Vec<RECT> {
         own_pid: GetCurrentProcessId(),
         vx,
         vy,
+        mon_ptr: mon_rects.as_ptr(),
+        mon_len: mon_rects.len(),
+        work_ptr: work_rects.as_ptr(),
+        work_len: work_rects.len(),
         list: Vec::new(),
     };
     EnumWindows(enum_cb, (&mut ctx as *mut Ctx) as LPARAM);
@@ -2037,6 +2174,7 @@ fn start_overlay(trans_mode: bool) {
         vh,
         bgra,
         mon_rects,
+        work_rects,
     }) = capture_virtual_screen_with_monitors()
     else {
         return;
@@ -2046,7 +2184,7 @@ fn start_overlay(trans_mode: bool) {
         &format!("虚拟桌面 ({vx},{vy}) {vw}x{vh} 屏幕数={}", mon_rects.len()),
     );
     unsafe { ensure_snip_classes() };
-    let win_rects = unsafe { enum_visible_windows(vx, vy) };
+    let win_rects = unsafe { enum_visible_windows(vx, vy, &mon_rects, &work_rects) };
 
     let mut cur = POINT::default();
     unsafe { GetCursorPos(&mut cur) };
@@ -2054,6 +2192,8 @@ fn start_overlay(trans_mode: bool) {
         x: (cur.x - vx).clamp(0, (vw - 1).max(0)),
         y: (cur.y - vy).clamp(0, (vh - 1).max(0)),
     };
+    let init_hover_win =
+        pick_hover_window_rect(&win_rects, &work_rects, init_mouse.x, init_mouse.y);
 
     let mut gdi = OverlayGdiCache::default();
     if !unsafe { gdi.init(vw, vh, &bgra) } {
@@ -2070,10 +2210,12 @@ fn start_overlay(trans_mode: bool) {
             vw,
             vh,
             mon_rects,
+            work_rects,
             orig_bgra: bgra,
             gdi,
             filter_caches: Vec::new(),
             win_rects,
+            hover_win_rc: init_hover_win,
             cur_tool: AnnotTool::None,
             cur_size_idx: 1,
             cur_color_idx: 0,
@@ -3320,19 +3462,7 @@ unsafe extern "system" fn overlay_wnd_proc(
                 }
 
                 if !ov.has_sel {
-                    let mut best = RECT::default();
-                    let mut best_area = i64::MAX;
-                    for &wrc in &ov.win_rects {
-                        if pt_in_rect(wrc, x, y) {
-                            let area =
-                                ((wrc.right - wrc.left) as i64) * ((wrc.bottom - wrc.top) as i64);
-                            if area < best_area {
-                                best_area = area;
-                                best = wrc;
-                            }
-                        }
-                    }
-                    ov.hover_win_rc = best;
+                    ov.hover_win_rc = pick_hover_window_rect(&ov.win_rects, &ov.work_rects, x, y);
                     prev_pt.x != x || prev_pt.y != y
                 } else {
                     let prev_hover_btn = ov.hover_btn;
@@ -5052,5 +5182,106 @@ mod tests {
         layout_overlay_toolbar(&mut ov);
         assert!(ov.bar_rc.bottom <= 1440);
         assert!(ov.bar_rc.left >= 0 && ov.bar_rc.right <= 2560);
+    }
+
+    #[test]
+    fn test_auto_window_pick_excludes_taskbar_and_follows_zorder() {
+        // 1. 屏蔽任务栏与桌面外壳类，保留常规应用窗口类
+        assert!(should_skip_auto_window_class("Shell_TrayWnd"));
+        assert!(should_skip_auto_window_class("Shell_SecondaryTrayWnd"));
+        assert!(should_skip_auto_window_class("Progman"));
+        assert!(should_skip_auto_window_class("WorkerW"));
+        assert!(should_skip_auto_window_class("Windows.UI.Core.CoreWindow"));
+        assert!(!should_skip_auto_window_class("Chrome_WidgetWin_1"));
+        assert!(!should_skip_auto_window_class("CabinetWClass"));
+
+        let mons = [
+            RECT {
+                left: 0,
+                top: 0,
+                right: 2560,
+                bottom: 1440,
+            },
+            RECT {
+                left: 2560,
+                top: 0,
+                right: 5120,
+                bottom: 1600,
+            },
+        ];
+        let works = [
+            RECT {
+                left: 0,
+                top: 0,
+                right: 2560,
+                bottom: 1392,
+            },
+            RECT {
+                left: 2560,
+                top: 0,
+                right: 5120,
+                bottom: 1528,
+            },
+        ];
+
+        // 2. 副屏最大化或外溢到任务栏区间的窗口应严格裁切到 work_rects[1]
+        let maximized_sec = RECT {
+            left: 2552,
+            top: -8,
+            right: 5128,
+            bottom: 1600,
+        };
+        let clipped = clip_auto_window_rect(maximized_sec, &mons, &works).unwrap();
+        assert_eq!(
+            (clipped.left, clipped.top, clipped.right, clipped.bottom),
+            (2560, 0, 5120, 1528)
+        );
+
+        // 3. Z-order 优先：前置大窗口覆盖在后置小窗口上方时，鼠标落在重叠区应命中前窗
+        let win_front = RECT {
+            left: 2700,
+            top: 100,
+            right: 3600,
+            bottom: 900,
+        };
+        let win_back_small = RECT {
+            left: 2800,
+            top: 200,
+            right: 3100,
+            bottom: 500,
+        };
+        let z_list = [win_front, win_back_small];
+        let hit_overlap = pick_hover_window_rect(&z_list, &works, 2900, 300);
+        assert_eq!(
+            (
+                hit_overlap.left,
+                hit_overlap.top,
+                hit_overlap.right,
+                hit_overlap.bottom
+            ),
+            (2700, 100, 3600, 900)
+        );
+
+        // 4. 副屏空白桌面命中 work_rects[1]（底部不含 72px 任务栏），副屏任务栏区不产生高亮框
+        let hit_desktop = pick_hover_window_rect(&z_list, &works, 4500, 800);
+        assert_eq!(
+            (
+                hit_desktop.left,
+                hit_desktop.top,
+                hit_desktop.right,
+                hit_desktop.bottom
+            ),
+            (2560, 0, 5120, 1528)
+        );
+        let hit_taskbar = pick_hover_window_rect(&z_list, &works, 3000, 1560);
+        assert_eq!(
+            (
+                hit_taskbar.left,
+                hit_taskbar.top,
+                hit_taskbar.right,
+                hit_taskbar.bottom
+            ),
+            (0, 0, 0, 0)
+        );
     }
 }

@@ -1745,15 +1745,22 @@ pub fn work_area_from_point(pt: POINT) -> RECT {
     primary_work_area()
 }
 
-/// 枚举所有在线物理显示器的桌面坐标矩形
-pub fn enum_display_monitor_rects() -> Vec<RECT> {
+/// 单块在线显示器的完整物理边界与排除任务栏后的工作区边界
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MonitorBounds {
+    pub monitor: RECT,
+    pub work: RECT,
+}
+
+/// 枚举所有在线物理显示器的完整矩形与工作区矩形（`rcMonitor` 与 `rcWork`）
+pub fn enum_display_monitors_info() -> Vec<MonitorBounds> {
     unsafe extern "system" fn cb(
         hmon: HMONITOR,
         _hdc: HDC,
         _lprc: *mut RECT,
         data: LPARAM,
     ) -> BOOL {
-        let list = &mut *(data as *mut Vec<RECT>);
+        let list = &mut *(data as *mut Vec<MonitorBounds>);
         let mut mi = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as DWORD,
             ..Default::default()
@@ -1762,21 +1769,37 @@ pub fn enum_display_monitor_rects() -> Vec<RECT> {
             && mi.rcMonitor.right > mi.rcMonitor.left
             && mi.rcMonitor.bottom > mi.rcMonitor.top
         {
-            list.push(mi.rcMonitor);
+            let work = if mi.rcWork.right > mi.rcWork.left && mi.rcWork.bottom > mi.rcWork.top {
+                mi.rcWork
+            } else {
+                mi.rcMonitor
+            };
+            list.push(MonitorBounds {
+                monitor: mi.rcMonitor,
+                work,
+            });
         }
         1
     }
-    let mut rects = Vec::new();
-    // SAFETY: cb 写入栈上的 rects，不越界不逃逸
+    let mut list = Vec::new();
+    // SAFETY: cb 写入栈上的 list，不越界不逃逸
     unsafe {
         EnumDisplayMonitors(
             null_mut(),
             null(),
             cb,
-            (&mut rects as *mut Vec<RECT>) as LPARAM,
+            (&mut list as *mut Vec<MonitorBounds>) as LPARAM,
         );
     }
-    rects
+    list
+}
+
+/// 枚举所有在线物理显示器的桌面坐标矩形
+pub fn enum_display_monitor_rects() -> Vec<RECT> {
+    enum_display_monitors_info()
+        .into_iter()
+        .map(|m| m.monitor)
+        .collect()
 }
 
 /// 写入 UTF-8 文本到系统剪贴板
