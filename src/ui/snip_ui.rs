@@ -4,23 +4,23 @@ use crate::core::log::log_write;
 use crate::core::ocr::{snip_translate, SnipResult};
 use crate::core::str_util::utf8_to_wide;
 use crate::ui::win32_ui::{
-    argb, ensure_gdiplus, get_clipboard_bgra, get_clipboard_text, get_window_text,
-    gp_fill_round_rect, gp_round_card, lparam_xy, rgb, save_bgra_as_png, save_file_dialog_png,
-    set_clipboard_bgra, set_clipboard_text, wheel_delta, AppendMenuW, BeginPaint, BitBlt,
-    CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen,
-    CreatePopupMenu, CreateRectRgn, CreateSolidBrush, CreateWindowExW, DefSubclassProc,
-    DefWindowProcW, DeleteDC, DeleteObject, DestroyMenu, DestroyWindow, DrawTextW,
-    DwmGetWindowAttribute, EndPaint, EnumWindows, FillRect, GdiFlush, GdipCreateFromHDC,
-    GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePen,
-    GdipDrawEllipse, GdipDrawLine, GdipDrawLines, GdipDrawRectangle, GdipFillEllipse,
-    GdipFillRectangle, GdipSetPenEndCap, GdipSetPenLineJoin, GdipSetPenStartCap,
-    GdipSetSmoothingMode, GetAsyncKeyState, GetClientRect, GetCurrentProcessId, GetCursorPos,
-    GetDC, GetModuleHandleW, GetStockObject, GetSystemMetrics, GetWindowRect,
+    argb, ensure_gdiplus, enum_display_monitor_rects, get_clipboard_bgra, get_clipboard_text,
+    get_window_text, gp_fill_round_rect, gp_round_card, lparam_xy, rgb, save_bgra_as_png,
+    save_file_dialog_png, set_clipboard_bgra, set_clipboard_text, wheel_delta,
+    work_area_from_point, AppendMenuW, BeginPaint, BitBlt, CreateCompatibleBitmap,
+    CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen, CreatePopupMenu, CreateRectRgn,
+    CreateSolidBrush, CreateWindowExW, DefSubclassProc, DefWindowProcW, DeleteDC, DeleteObject,
+    DestroyMenu, DestroyWindow, DrawTextW, DwmGetWindowAttribute, EndPaint, EnumWindows, FillRect,
+    GdiFlush, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush,
+    GdipDeleteGraphics, GdipDeletePen, GdipDrawEllipse, GdipDrawLine, GdipDrawLines,
+    GdipDrawRectangle, GdipFillEllipse, GdipFillRectangle, GdipSetPenEndCap, GdipSetPenLineJoin,
+    GdipSetPenStartCap, GdipSetSmoothingMode, GetAsyncKeyState, GetClientRect, GetCurrentProcessId,
+    GetCursorPos, GetDC, GetModuleHandleW, GetStockObject, GetSystemMetrics, GetWindowRect,
     GetWindowThreadProcessId, GpPointF, InvalidateRect, IsIconic, IsWindow, IsWindowVisible,
     LoadCursorW, PostMessageW, RegisterClassExW, ReleaseCapture, ReleaseDC, ScreenToClient,
     SelectClipRgn, SelectObject, SetBkMode, SetCapture, SetCursor, SetFocus,
     SetLayeredWindowAttributes, SetStretchBltMode, SetTextColor, SetWindowPos, SetWindowSubclass,
-    ShowWindow, StretchBlt, TrackPopupMenu, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    ShowWindow, StretchBlt, TrackPopupMenu, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
     CLEARTYPE_QUALITY, COLORONCOLOR, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, DEFAULT_CHARSET,
     DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
     DT_TOP, DT_VCENTER, DT_WORDBREAK, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWORD_PTR,
@@ -28,14 +28,15 @@ use crate::ui::win32_ui::{
     GP_LINE_JOIN_ROUND, GP_OK, GP_SMOOTHING_ANTIALIAS, GP_UNIT_PIXEL, HALFTONE, HBITMAP, HDC,
     HFONT, HGDIOBJ, HWND, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW,
     IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LPARAM, LRESULT, LWA_ALPHA, MA_NOACTIVATE, MF_CHECKED,
-    MF_SEPARATOR, MF_STRING, NULL_BRUSH, PAINTSTRUCT, POINT, PS_DASH, PS_SOLID, RECT,
+    MF_SEPARATOR, MF_STRING, MINMAXINFO, NULL_BRUSH, PAINTSTRUCT, POINT, PS_DASH, PS_SOLID, RECT,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SRCCOPY,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    TRANSPARENT, UINT, UINT_PTR, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT, WM_CAPTURECHANGED,
-    WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WPARAM, WS_CHILD, WS_CLIPCHILDREN,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW, TPM_NONOTIFY, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, TRANSPARENT, UINT, UINT_PTR, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT,
+    WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SETCURSOR, WNDCLASSEXW, WPARAM, WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 use crate::ui::{WM_APP_PIN_DONE, WM_APP_SNIP_DONE};
 use std::cell::RefCell;
@@ -616,13 +617,93 @@ pub fn apply_brush_stroke_from_layer(
     }
 }
 
-/// 在全屏桌面上截取 32-bit top-down BGRA，返回 `(vx, vy, vw, vh, bgra)`
-pub fn capture_virtual_screen_bgra() -> Option<(i32, i32, i32, i32, Vec<u8>)> {
+/// 根据在线物理显示器矩形计算最小虚拟桌面外接边界 `(vx, vy, vw, vh)`
+pub fn compute_virtual_bounds(
+    monitors: &[RECT],
+    fallback: (i32, i32, i32, i32),
+) -> (i32, i32, i32, i32) {
+    let mut min_x = i32::MAX;
+    let mut min_y = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut max_y = i32::MIN;
+    let mut any = false;
+    for &rc in monitors {
+        if rc.right > rc.left && rc.bottom > rc.top {
+            min_x = min_x.min(rc.left);
+            min_y = min_y.min(rc.top);
+            max_x = max_x.max(rc.right);
+            max_y = max_y.max(rc.bottom);
+            any = true;
+        }
+    }
+    if any {
+        (min_x, min_y, max_x - min_x, max_y - min_y)
+    } else {
+        fallback
+    }
+}
+
+/// 返回包含指定局部坐标 `(x, y)` 或距离最近的显示器局部边界（避免悬浮控件落入异形多屏死角）
+pub fn monitor_bounds_for_point(mon_rects: &[RECT], vw: i32, vh: i32, x: i32, y: i32) -> RECT {
+    for &rc in mon_rects {
+        if pt_in_rect(rc, x, y) {
+            return rc;
+        }
+    }
+    let mut best: Option<RECT> = None;
+    let mut best_d2 = i64::MAX;
+    for &rc in mon_rects {
+        if rc.right <= rc.left || rc.bottom <= rc.top {
+            continue;
+        }
+        let dx = if x < rc.left {
+            (rc.left - x) as i64
+        } else if x >= rc.right {
+            (x - (rc.right - 1)) as i64
+        } else {
+            0
+        };
+        let dy = if y < rc.top {
+            (rc.top - y) as i64
+        } else if y >= rc.bottom {
+            (y - (rc.bottom - 1)) as i64
+        } else {
+            0
+        };
+        let d2 = dx * dx + dy * dy;
+        if d2 < best_d2 {
+            best_d2 = d2;
+            best = Some(rc);
+        }
+    }
+    best.unwrap_or(RECT {
+        left: 0,
+        top: 0,
+        right: vw.max(1),
+        bottom: vh.max(1),
+    })
+}
+
+struct VirtualScreenCapture {
+    vx: i32,
+    vy: i32,
+    vw: i32,
+    vh: i32,
+    bgra: Vec<u8>,
+    mon_rects: Vec<RECT>,
+}
+
+/// 逐屏抓取虚拟桌面 32-bit top-down BGRA，同时返回以 `(vx, vy)` 为原点的局部显示器边界列表
+fn capture_virtual_screen_with_monitors() -> Option<VirtualScreenCapture> {
     unsafe {
-        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        let fallback = (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        );
+        let mons = enum_display_monitor_rects();
+        let (vx, vy, vw, vh) = compute_virtual_bounds(&mons, fallback);
         if vw <= 0 || vh <= 0 {
             return None;
         }
@@ -651,11 +732,32 @@ pub fn capture_virtual_screen_bgra() -> Option<(i32, i32, i32, i32, Vec<u8>)> {
             ReleaseDC(null_mut(), hdc_scr);
             return None;
         }
+        let len = (vw as usize) * (vh as usize) * 4;
+        std::ptr::write_bytes(bits, 0, len);
         let old = SelectObject(hdc_mem, hbm);
-        BitBlt(hdc_mem, 0, 0, vw, vh, hdc_scr, vx, vy, SRCCOPY);
+        if !mons.is_empty() {
+            for &rc in &mons {
+                let mw = rc.right - rc.left;
+                let mh = rc.bottom - rc.top;
+                if mw > 0 && mh > 0 {
+                    BitBlt(
+                        hdc_mem,
+                        rc.left - vx,
+                        rc.top - vy,
+                        mw,
+                        mh,
+                        hdc_scr,
+                        rc.left,
+                        rc.top,
+                        SRCCOPY | CAPTUREBLT,
+                    );
+                }
+            }
+        } else {
+            BitBlt(hdc_mem, 0, 0, vw, vh, hdc_scr, vx, vy, SRCCOPY | CAPTUREBLT);
+        }
         GdiFlush();
 
-        let len = (vw as usize) * (vh as usize) * 4;
         let mut out = vec![0u8; len];
         copy_nonoverlapping(bits.cast::<u8>(), out.as_mut_ptr(), len);
         for px in out.as_chunks_mut::<4>().0 {
@@ -666,8 +768,30 @@ pub fn capture_virtual_screen_bgra() -> Option<(i32, i32, i32, i32, Vec<u8>)> {
         DeleteObject(hbm);
         DeleteDC(hdc_mem);
         ReleaseDC(null_mut(), hdc_scr);
-        Some((vx, vy, vw, vh, out))
+
+        let local_mons = mons
+            .into_iter()
+            .map(|rc| RECT {
+                left: rc.left - vx,
+                top: rc.top - vy,
+                right: rc.right - vx,
+                bottom: rc.bottom - vy,
+            })
+            .collect();
+        Some(VirtualScreenCapture {
+            vx,
+            vy,
+            vw,
+            vh,
+            bgra: out,
+            mon_rects: local_mons,
+        })
     }
+}
+
+/// 在全屏桌面上截取 32-bit top-down BGRA，返回 `(vx, vy, vw, vh, bgra)`
+pub fn capture_virtual_screen_bgra() -> Option<(i32, i32, i32, i32, Vec<u8>)> {
+    capture_virtual_screen_with_monitors().map(|c| (c.vx, c.vy, c.vw, c.vh, c.bgra))
 }
 
 /// 创建未填充像素的 32-bit top-down DIB 位图
@@ -1399,8 +1523,13 @@ struct OverlayState {
     hwnd: HWND,
     active: bool,
     trans_mode: bool, // true = 截屏直接翻译模式，false = 全能工具栏截屏模式
+    #[allow(dead_code)]
+    vx: i32,
+    #[allow(dead_code)]
+    vy: i32,
     vw: i32,
     vh: i32,
+    mon_rects: Vec<RECT>,
     orig_bgra: Vec<u8>,
     gdi: OverlayGdiCache,
     filter_caches: Vec<FilterLayerCache>,
@@ -1661,10 +1790,15 @@ fn layout_overlay_toolbar(ov: &mut OverlayState) {
     let bar_h = 34;
     let has_sub = ov.cur_tool != AnnotTool::None;
     let extra_h = if has_sub { 38 } else { 0 };
-    let bx = (sel.right - total_w).clamp(8, (ov.vw - total_w - 8).max(8));
+    let mon_x = ((sel.left + sel.right) / 2).clamp(0, (ov.vw - 1).max(0));
+    let mon_y = (sel.bottom - 1).clamp(sel.top.clamp(0, (ov.vh - 1).max(0)), (ov.vh - 1).max(0));
+    let mon = monitor_bounds_for_point(&ov.mon_rects, ov.vw, ov.vh, mon_x, mon_y);
+    let min_x = mon.left + 8;
+    let max_x = (mon.right - total_w - 8).max(min_x);
+    let bx = (sel.right - total_w).clamp(min_x, max_x);
     let mut by = sel.bottom + 8;
-    if by + bar_h + extra_h > ov.vh - 6 {
-        by = (sel.top - bar_h - 8 - extra_h).max(6);
+    if by + bar_h + extra_h > mon.bottom - 6 {
+        by = (sel.top - bar_h - 8 - extra_h).max(mon.top + 6);
     }
     ov.bar_rc = RECT {
         left: bx,
@@ -1694,7 +1828,8 @@ fn layout_overlay_toolbar(ov: &mut OverlayState) {
 
     if has_sub {
         let sub_w = 344;
-        let sx = bx.clamp(8, (ov.vw - sub_w - 8).max(8));
+        let sub_max_x = (mon.right - sub_w - 8).max(min_x);
+        let sx = bx.clamp(min_x, sub_max_x);
         let sy = by + bar_h + 4;
         ov.sub_bar_rc = RECT {
             left: sx,
@@ -1895,11 +2030,30 @@ fn start_overlay(trans_mode: bool) {
     if active {
         return;
     }
-    let Some((vx, vy, vw, vh, bgra)) = capture_virtual_screen_bgra() else {
+    let Some(VirtualScreenCapture {
+        vx,
+        vy,
+        vw,
+        vh,
+        bgra,
+        mon_rects,
+    }) = capture_virtual_screen_with_monitors()
+    else {
         return;
     };
+    log_write(
+        "截屏",
+        &format!("虚拟桌面 ({vx},{vy}) {vw}x{vh} 屏幕数={}", mon_rects.len()),
+    );
     unsafe { ensure_snip_classes() };
     let win_rects = unsafe { enum_visible_windows(vx, vy) };
+
+    let mut cur = POINT::default();
+    unsafe { GetCursorPos(&mut cur) };
+    let init_mouse = POINT {
+        x: (cur.x - vx).clamp(0, (vw - 1).max(0)),
+        y: (cur.y - vy).clamp(0, (vh - 1).max(0)),
+    };
 
     let mut gdi = OverlayGdiCache::default();
     if !unsafe { gdi.init(vw, vh, &bgra) } {
@@ -1911,8 +2065,11 @@ fn start_overlay(trans_mode: bool) {
         mgr.overlay = OverlayState {
             active: true,
             trans_mode,
+            vx,
+            vy,
             vw,
             vh,
+            mon_rects,
             orig_bgra: bgra,
             gdi,
             filter_caches: Vec::new(),
@@ -1923,6 +2080,7 @@ fn start_overlay(trans_mode: bool) {
             next_num: 1,
             hover_btn: 0,
             sub_hover: 0,
+            mouse_pt: init_mouse,
             ..Default::default()
         };
     });
@@ -1950,6 +2108,7 @@ fn start_overlay(trans_mode: bool) {
             return;
         }
         SNIP_MGR.with(|m| m.borrow_mut().overlay.hwnd = hwnd);
+        SetWindowPos(hwnd, HWND_TOPMOST, vx, vy, vw, vh, SWP_SHOWWINDOW);
         ShowWindow(hwnd, SW_SHOW);
         crate::ui::win32_ui::SetForegroundWindow(hwnd);
         SetFocus(hwnd);
@@ -2363,16 +2522,17 @@ unsafe fn draw_overlay_magnifier(
     const INFO_H: i32 = 60;
     const BOX_H: i32 = MAG_H + INFO_H;
 
+    let mon = monitor_bounds_for_point(&ov.mon_rects, ov.vw, ov.vh, mx, my);
     let mut bx = mx + 18;
     let mut by = my + 22;
-    if bx + BOX_W > ov.vw - 6 {
+    if bx + BOX_W > mon.right - 6 {
         bx = mx - BOX_W - 18;
     }
-    if by + BOX_H > ov.vh - 6 {
+    if by + BOX_H > mon.bottom - 6 {
         by = my - BOX_H - 18;
     }
-    bx = bx.clamp(4, (ov.vw - BOX_W - 4).max(4));
-    by = by.clamp(4, (ov.vh - BOX_H - 4).max(4));
+    bx = bx.clamp(mon.left + 4, (mon.right - BOX_W - 4).max(mon.left + 4));
+    by = by.clamp(mon.top + 4, (mon.bottom - BOX_H - 4).max(mon.top + 4));
 
     let full_rc = RECT {
         left: bx,
@@ -2655,17 +2815,32 @@ unsafe fn paint_overlay(hwnd: HWND) {
                 DeleteObject(br_w);
             }
 
-            // 左上角尺寸提示徽标
+            // 左上角尺寸提示徽标（按当前所在显示器边界夹紧）
             let sz_txt = format!("{} × {}", sel.right - sel.left, sel.bottom - sel.top);
-            let tag_y = if sel.top >= 26 {
+            let badge_mon = monitor_bounds_for_point(
+                &ov.mon_rects,
+                ov.vw,
+                ov.vh,
+                sel.left.clamp(0, (ov.vw - 1).max(0)),
+                sel.top.clamp(0, (ov.vh - 1).max(0)),
+            );
+            let tag_y = if sel.top - badge_mon.top >= 26 {
                 sel.top - 24
             } else {
                 sel.top + 4
-            };
+            }
+            .clamp(
+                badge_mon.top + 4,
+                (badge_mon.bottom - 24).max(badge_mon.top + 4),
+            );
+            let tag_x = sel.left.clamp(
+                badge_mon.left + 4,
+                (badge_mon.right - 110).max(badge_mon.left + 4),
+            );
             let mut tr = RECT {
-                left: sel.left.clamp(4, (ov.vw - 110).max(4)),
+                left: tag_x,
                 top: tag_y,
-                right: (sel.left + 104).min(ov.vw - 4),
+                right: (tag_x + 104).min(badge_mon.right - 4),
                 bottom: tag_y + 20,
             };
             let br_t = CreateSolidBrush(rgb(20, 24, 32));
@@ -2907,9 +3082,18 @@ unsafe fn paint_overlay(hwnd: HWND) {
                     DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX,
                 );
                 let tw = (cr.right - cr.left + 16).clamp(54, 340);
-                let tx =
-                    ((hover_rc.left + hover_rc.right - tw) / 2).clamp(4, (ov.vw - tw - 4).max(4));
-                let ty = if ov.bar_rc.top >= 26 {
+                let tip_mon = monitor_bounds_for_point(
+                    &ov.mon_rects,
+                    ov.vw,
+                    ov.vh,
+                    ((hover_rc.left + hover_rc.right) / 2).clamp(0, (ov.vw - 1).max(0)),
+                    hover_rc.top.clamp(0, (ov.vh - 1).max(0)),
+                );
+                let tx = ((hover_rc.left + hover_rc.right - tw) / 2).clamp(
+                    tip_mon.left + 4,
+                    (tip_mon.right - tw - 4).max(tip_mon.left + 4),
+                );
+                let ty = if ov.bar_rc.top - tip_mon.top >= 26 {
                     ov.bar_rc.top - 24
                 } else {
                     ov.bar_rc.bottom + 6
@@ -3579,6 +3763,32 @@ unsafe extern "system" fn overlay_wnd_proc(
             }
             0
         }
+        WM_DPICHANGED => 0,
+        WM_GETMINMAXINFO => {
+            if lp != 0 {
+                let (vw, vh) = SNIP_MGR.with(|m| {
+                    m.try_borrow()
+                        .map(|mgr| (mgr.overlay.vw, mgr.overlay.vh))
+                        .unwrap_or((0, 0))
+                });
+                if vw > 0 && vh > 0 {
+                    let mmi = &mut *(lp as *mut MINMAXINFO);
+                    if mmi.ptMaxSize.x < vw {
+                        mmi.ptMaxSize.x = vw;
+                    }
+                    if mmi.ptMaxSize.y < vh {
+                        mmi.ptMaxSize.y = vh;
+                    }
+                    if mmi.ptMaxTrackSize.x < vw {
+                        mmi.ptMaxTrackSize.x = vw;
+                    }
+                    if mmi.ptMaxTrackSize.y < vh {
+                        mmi.ptMaxTrackSize.y = vh;
+                    }
+                }
+            }
+            0
+        }
         WM_CAPTURECHANGED => 0,
         _ => DefWindowProcW(hwnd, msg, wp, lp),
     }
@@ -3631,7 +3841,9 @@ pub fn open_result_window(
 
     let win_w = (w + 16).clamp(480, 1200);
     let win_h = (h + 52).clamp(180, 820);
-    let wa = crate::ui::win32_ui::primary_work_area();
+    let mut cur = POINT::default();
+    unsafe { GetCursorPos(&mut cur) };
+    let wa = work_area_from_point(cur);
     let x = wa.left + ((wa.right - wa.left) - win_w).max(0) / 2;
     let y = wa.top + ((wa.bottom - wa.top) - win_h).max(0) / 2;
 
@@ -4767,5 +4979,78 @@ mod tests {
         let mut empty_cache = OverlayGdiCache::default();
         empty_cache.free();
         drop(empty_cache);
+    }
+
+    #[test]
+    fn test_multimonitor_virtual_bounds_and_asymmetric_clamping() {
+        // 1. 异形混合 DPI 双屏（左 2560x1440 + 右 2560x1600）
+        let mons_asym = [
+            RECT {
+                left: 0,
+                top: 0,
+                right: 2560,
+                bottom: 1440,
+            },
+            RECT {
+                left: 2560,
+                top: 0,
+                right: 5120,
+                bottom: 1600,
+            },
+        ];
+        assert_eq!(
+            compute_virtual_bounds(&mons_asym, (0, 0, 1, 1)),
+            (0, 0, 5120, 1600)
+        );
+
+        // 2. 负坐标左副屏拓扑
+        let mons_neg = [
+            RECT {
+                left: -1920,
+                top: 0,
+                right: 0,
+                bottom: 1080,
+            },
+            RECT {
+                left: 0,
+                top: 0,
+                right: 2560,
+                bottom: 1440,
+            },
+        ];
+        assert_eq!(
+            compute_virtual_bounds(&mons_neg, (0, 0, 1, 1)),
+            (-1920, 0, 4480, 1440)
+        );
+
+        // 3. monitor_bounds_for_point 区分左屏、右屏与左下不可见死角
+        let m_left = monitor_bounds_for_point(&mons_asym, 5120, 1600, 100, 500);
+        assert_eq!((m_left.left, m_left.right, m_left.bottom), (0, 2560, 1440));
+        let m_right = monitor_bounds_for_point(&mons_asym, 5120, 1600, 3000, 1500);
+        assert_eq!(
+            (m_right.left, m_right.right, m_right.bottom),
+            (2560, 5120, 1600)
+        );
+        // 点 (1000, 1550) 处于左屏正下方无屏幕覆盖死角，最近屏幕为左屏 (bottom=1440)
+        let m_dead = monitor_bounds_for_point(&mons_asym, 5120, 1600, 1000, 1550);
+        assert_eq!((m_dead.left, m_dead.right, m_dead.bottom), (0, 2560, 1440));
+
+        // 4. 在左屏底边拉框选时，悬浮工具栏应自动翻转到选区上方且不超过 1440
+        let mut ov = OverlayState {
+            vw: 5120,
+            vh: 1600,
+            mon_rects: mons_asym.to_vec(),
+            has_sel: true,
+            sel_rc: RECT {
+                left: 100,
+                top: 1300,
+                right: 900,
+                bottom: 1438,
+            },
+            ..Default::default()
+        };
+        layout_overlay_toolbar(&mut ov);
+        assert!(ov.bar_rc.bottom <= 1440);
+        assert!(ov.bar_rc.left >= 0 && ov.bar_rc.right <= 2560);
     }
 }

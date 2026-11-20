@@ -44,6 +44,7 @@ pub type WNDPROC = unsafe extern "system" fn(HWND_TYPE, UINT, WPARAM, LPARAM) ->
 pub type SUBCLASSPROC =
     unsafe extern "system" fn(HWND_TYPE, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR) -> LRESULT;
 pub type WNDENUMPROC = unsafe extern "system" fn(HWND_TYPE, LPARAM) -> BOOL;
+pub type MONITORENUMPROC = unsafe extern "system" fn(HMONITOR, HDC, *mut RECT, LPARAM) -> BOOL;
 pub type BFFCALLBACK = unsafe extern "system" fn(HWND_TYPE, UINT, LPARAM, LPARAM) -> i32;
 
 pub type HWND = crate::core::win32::HWND;
@@ -236,6 +237,7 @@ pub const RDW_ALLCHILDREN: UINT = 0x0080;
 pub const GA_ROOT: UINT = 2;
 pub const LWA_ALPHA: DWORD = 0x0000_0002;
 pub const ULW_ALPHA: DWORD = 0x0000_0002;
+pub const CAPTUREBLT: DWORD = 0x4000_0000;
 pub const AC_SRC_OVER: BYTE = 0x00;
 pub const AC_SRC_ALPHA: BYTE = 0x01;
 
@@ -871,6 +873,12 @@ extern "system" {
     pub fn MonitorFromPoint(pt: POINT, dwFlags: DWORD) -> HMONITOR;
     pub fn MonitorFromWindow(hwnd: HWND, dwFlags: DWORD) -> HMONITOR;
     pub fn GetMonitorInfoW(hMonitor: HMONITOR, lpmi: *mut MONITORINFO) -> BOOL;
+    pub fn EnumDisplayMonitors(
+        hdc: HDC,
+        lprcClip: *const RECT,
+        lpfnEnum: MONITORENUMPROC,
+        dwData: LPARAM,
+    ) -> BOOL;
     pub fn SetScrollInfo(hwnd: HWND, nBar: i32, lpsi: *const SCROLLINFO, redraw: BOOL) -> i32;
     pub fn GetScrollInfo(hwnd: HWND, nBar: i32, lpsi: *mut SCROLLINFO) -> BOOL;
     pub fn ShowScrollBar(hWnd: HWND, wBar: i32, bShow: BOOL) -> BOOL;
@@ -1218,15 +1226,46 @@ pub fn shutdown_gdiplus() {
     }
 }
 
+/// 优先启用 Per-Monitor V2 DPI 感知，确保混合 DPI 多屏下返回真实物理坐标
+unsafe fn enable_per_monitor_dpi_awareness() {
+    type PfnSetProcessDpiAwarenessContext = unsafe extern "system" fn(*mut c_void) -> BOOL;
+    type PfnSetProcessDpiAwareness = unsafe extern "system" fn(i32) -> i32;
+
+    let h_u32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
+    if !h_u32.is_null() {
+        let p = GetProcAddress(h_u32, c"SetProcessDpiAwarenessContext".as_ptr().cast());
+        if !p.is_null() {
+            let f: PfnSetProcessDpiAwarenessContext = std::mem::transmute(p);
+            if f((-4isize) as *mut c_void) != 0 || f((-3isize) as *mut c_void) != 0 {
+                return;
+            }
+        }
+    }
+
+    let h_shcore = LoadLibraryA(c"shcore.dll".as_ptr().cast());
+    if !h_shcore.is_null() {
+        let p = GetProcAddress(h_shcore, c"SetProcessDpiAwareness".as_ptr().cast());
+        if !p.is_null() {
+            let f: PfnSetProcessDpiAwareness = std::mem::transmute(p);
+            let hr = f(2); // PROCESS_PER_MONITOR_DPI_AWARE
+            if hr == 0 || hr == (0x8007_0005u32 as i32) {
+                return;
+            }
+        }
+    }
+
+    SetProcessDPIAware();
+}
+
 /// 初始化通用控件库（标准控件与热键控件）及 RichEdit 控件库
 pub fn init_ui_libraries() {
     let icc = INITCOMMONCONTROLSEX {
         dwSize: size_of::<INITCOMMONCONTROLSEX>() as DWORD,
         dwICC: ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES | ICC_HOTKEY_CLASS,
     };
-    // SAFETY: icc 已正确填写 dwSize
+    // SAFETY: 进程启动初期先设置 Per-Monitor V2 DPI 感知，再初始化公共控件库与 RichEdit
     unsafe {
-        SetProcessDPIAware();
+        enable_per_monitor_dpi_awareness();
         InitCommonControlsEx(&icc);
         LoadLibraryA(c"Msftedit.dll".as_ptr().cast());
     }
@@ -1704,6 +1743,40 @@ pub fn work_area_from_point(pt: POINT) -> RECT {
         }
     }
     primary_work_area()
+}
+
+/// 枚举所有在线物理显示器的桌面坐标矩形
+pub fn enum_display_monitor_rects() -> Vec<RECT> {
+    unsafe extern "system" fn cb(
+        hmon: HMONITOR,
+        _hdc: HDC,
+        _lprc: *mut RECT,
+        data: LPARAM,
+    ) -> BOOL {
+        let list = &mut *(data as *mut Vec<RECT>);
+        let mut mi = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as DWORD,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(hmon, &mut mi) != 0
+            && mi.rcMonitor.right > mi.rcMonitor.left
+            && mi.rcMonitor.bottom > mi.rcMonitor.top
+        {
+            list.push(mi.rcMonitor);
+        }
+        1
+    }
+    let mut rects = Vec::new();
+    // SAFETY: cb 写入栈上的 rects，不越界不逃逸
+    unsafe {
+        EnumDisplayMonitors(
+            null_mut(),
+            null(),
+            cb,
+            (&mut rects as *mut Vec<RECT>) as LPARAM,
+        );
+    }
+    rects
 }
 
 /// 写入 UTF-8 文本到系统剪贴板
