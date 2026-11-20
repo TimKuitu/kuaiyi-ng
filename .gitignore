@@ -22,6 +22,9 @@ nimcache/
 *.nim.cache
 *.decls
 
+# Rust 编译缓存
+/target/
+
 # 运行时数据、日志与临时文件
 fastT/
 *.log

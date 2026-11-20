@@ -1,0 +1,19 @@
+[package]
+name = "kuaiyi-ng"
+version = "1.4.0"
+edition = "2021"
+description = "快译NG 纯 Rust 重构版（Windows 轻量翻译与标识符命名工具）"
+license = "MIT"
+
+[lib]
+name = "kuaiyi_ng"
+path = "src/lib.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
