@@ -38,7 +38,7 @@ use crate::ui::win32_ui::{
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WPARAM, WS_CHILD, WS_CLIPCHILDREN,
     WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_VISIBLE,
 };
-use crate::ui::{WM_APP_PIN_DONE, WM_APP_SNIP_DONE};
+use crate::ui::{WM_APP_FLASH_HINT, WM_APP_PIN_DONE, WM_APP_SNIP_DONE};
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
@@ -79,6 +79,8 @@ pub struct SnipCfg {
     pub baidu_url: String,
     pub cache_dir: String,
     pub save_dir: String,
+    pub pin_mods: i32,
+    pub pin_vk: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2359,16 +2361,78 @@ unsafe extern "system" fn text_edit_subclass(
     DefSubclassProc(hwnd, msg, wp, lp)
 }
 
+/// 获取当前有效选区（优先已框选区域，其次悬停窗口矩形）
+fn active_overlay_sel_rect(ov: &OverlayState) -> Option<RECT> {
+    let rc = if ov.has_sel {
+        norm_rect(ov.sel_rc.left, ov.sel_rc.top, ov.sel_rc.right, ov.sel_rc.bottom)
+    } else if ov.hover_win_rc.right - ov.hover_win_rc.left >= 4
+        && ov.hover_win_rc.bottom - ov.hover_win_rc.top >= 4
+    {
+        norm_rect(
+            ov.hover_win_rc.left,
+            ov.hover_win_rc.top,
+            ov.hover_win_rc.right,
+            ov.hover_win_rc.bottom,
+        )
+    } else {
+        return None;
+    };
+    if rc.right - rc.left >= 4 && rc.bottom - rc.top >= 4 {
+        Some(rc)
+    } else {
+        None
+    }
+}
+
+/// 切换遮罩层标注工具并重排工具栏
+fn toggle_overlay_tool(ov: &mut OverlayState, tool: AnnotTool) {
+    ov.cur_tool = if ov.cur_tool == tool {
+        AnnotTool::None
+    } else {
+        tool
+    };
+    layout_overlay_toolbar(ov);
+}
+
+/// 数字键（含小键盘）转标注工具
+fn hotkey_to_annot_tool(vk: i32) -> AnnotTool {
+    match vk {
+        0x31 | 0x61 => AnnotTool::Rect,
+        0x32 | 0x62 => AnnotTool::Ellipse,
+        0x33 | 0x63 => AnnotTool::Line,
+        0x34 | 0x64 => AnnotTool::Arrow,
+        0x35 | 0x65 => AnnotTool::Pen,
+        0x36 | 0x66 => AnnotTool::Marker,
+        0x37 | 0x67 => AnnotTool::Number,
+        0x38 | 0x68 => AnnotTool::Text,
+        0x39 | 0x69 => AnnotTool::Mosaic,
+        0x30 | 0x60 => AnnotTool::Blur,
+        _ => AnnotTool::None,
+    }
+}
+
+/// 通知主窗口在提示栏临时闪烁显示操作反馈
+fn notify_main_hint(hwnd_main: isize, msg: &str) {
+    if hwnd_main != 0 {
+        let ptr = Box::into_raw(Box::new(msg.to_string()));
+        unsafe { PostMessageW(hwnd_main as HWND, WM_APP_FLASH_HINT, 0, ptr as LPARAM) };
+    }
+}
+
+fn notify_mgr_hint(msg: &str) {
+    let hwnd_main = SNIP_MGR.with(|m| m.borrow().cfg.hwnd_main);
+    notify_main_hint(hwnd_main, msg);
+}
+
 fn finish_selection_action(action: i32) {
     unsafe { take_and_commit_inline_text_edit() };
-    let (cw, ch, flat_bgra, cfg) = SNIP_MGR.with(|m| {
+    let (cw, ch, sx, sy, flat_bgra, cfg) = SNIP_MGR.with(|m| {
         let mut mgr = m.borrow_mut();
-        let sel = norm_rect(
-            mgr.overlay.sel_rc.left,
-            mgr.overlay.sel_rc.top,
-            mgr.overlay.sel_rc.right,
-            mgr.overlay.sel_rc.bottom,
-        );
+        let Some(sel) = active_overlay_sel_rect(&mgr.overlay) else {
+            return (0, 0, 0, 0, Vec::new(), mgr.cfg.clone());
+        };
+        let sx = mgr.overlay.vx + sel.left;
+        let sy = mgr.overlay.vy + sel.top;
         let (cw, ch, flat) = flatten_selection(
             &mgr.overlay.orig_bgra,
             mgr.overlay.vw,
@@ -2381,7 +2445,7 @@ fn finish_selection_action(action: i32) {
             mgr.last_cap_h = ch;
             mgr.last_cap_bgra = flat.clone();
         }
-        (cw, ch, flat, mgr.cfg.clone())
+        (cw, ch, sx, sy, flat, mgr.cfg.clone())
     });
 
     close_overlay();
@@ -2391,7 +2455,9 @@ fn finish_selection_action(action: i32) {
 
     match action {
         BTN_COPY => {
-            set_clipboard_bgra(&flat_bgra, cw, ch);
+            if set_clipboard_bgra(&flat_bgra, cw, ch) {
+                notify_main_hint(cfg.hwnd_main, "（已复制截图）");
+            }
         }
         BTN_SAVE => {
             let now = unsafe {
@@ -2415,11 +2481,23 @@ fn finish_selection_action(action: i32) {
                 save_file_dialog_png(cfg.hwnd_main as HWND, &cfg.save_dir, &now)
             };
             if let Some(p) = save_path {
-                save_bgra_as_png(&p, &flat_bgra, cw, ch);
+                if save_bgra_as_png(&p, &flat_bgra, cw, ch) {
+                    if quick_save {
+                        let fname = PathBuf::from(&p)
+                            .file_name()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or(now);
+                        notify_main_hint(cfg.hwnd_main, &format!("（已保存：{}）", fname));
+                    } else {
+                        notify_main_hint(cfg.hwnd_main, "（截图已保存）");
+                    }
+                } else {
+                    notify_main_hint(cfg.hwnd_main, "（截图保存失败）");
+                }
             }
         }
         BTN_PIN => {
-            create_pin_window_bgra(cw, ch, flat_bgra, String::new(), String::new());
+            create_pin_window_bgra_at(Some((sx, sy)), cw, ch, flat_bgra, String::new(), String::new());
         }
         BTN_TRANS => {
             trigger_ocr_result_thread(cw, ch, flat_bgra, cfg);
@@ -3799,17 +3877,26 @@ unsafe extern "system" fn overlay_wnd_proc(
         }
         WM_RBUTTONDOWN => 0,
         WM_RBUTTONUP => {
-            let had_sel = SNIP_MGR.with(|m| m.borrow().overlay.has_sel);
-            if had_sel {
-                SNIP_MGR.with(|m| {
-                    let ov = &mut m.borrow_mut().overlay;
+            take_and_commit_inline_text_edit();
+            let act = SNIP_MGR.with(|m| {
+                let ov = &mut m.borrow_mut().overlay;
+                if ov.has_sel && ov.cur_tool != AnnotTool::None {
+                    ov.cur_tool = AnnotTool::None;
+                    layout_overlay_toolbar(ov);
+                    1
+                } else if ov.has_sel {
                     ov.has_sel = false;
                     ov.cur_tool = AnnotTool::None;
                     ov.annots.clear();
                     ov.redo_stack.clear();
                     ov.filter_caches.clear();
                     rebuild_work_bits(ov);
-                });
+                    2
+                } else {
+                    0
+                }
+            });
+            if act != 0 {
                 InvalidateRect(hwnd, null(), 0);
             } else {
                 close_overlay();
@@ -3817,19 +3904,39 @@ unsafe extern "system" fn overlay_wnd_proc(
             0
         }
         WM_KEYDOWN => {
+            const VK_MENU_KEY: i32 = 0x12;
+            const VK_SPACE_KEY: i32 = 0x20;
+            const VK_LEFT_KEY: i32 = 0x25;
+            const VK_UP_KEY: i32 = 0x26;
+            const VK_RIGHT_KEY: i32 = 0x27;
+            const VK_DOWN_KEY: i32 = 0x28;
+            const VK_F3_KEY: i32 = 0x72;
+
             let vk = (wp & 0xFF) as i32;
             let ctrl = (GetAsyncKeyState(VK_CONTROL) as u16 & 0x8000) != 0;
+            let shift = (GetAsyncKeyState(VK_SHIFT) as u16 & 0x8000) != 0;
+            let alt = (GetAsyncKeyState(VK_MENU_KEY) as u16 & 0x8000) != 0;
+            let cur_mods = (if ctrl { 1 } else { 0 })
+                | (if shift { 2 } else { 0 })
+                | (if alt { 4 } else { 0 });
+
             if vk == VK_ESCAPE {
-                close_overlay();
-                return 0;
-            }
-            if vk == VK_RETURN {
-                if SNIP_MGR.with(|m| m.borrow().overlay.has_sel) {
-                    finish_selection_action(BTN_COPY);
+                let ed = SNIP_MGR.with(|m| {
+                    let ov = &mut m.borrow_mut().overlay;
+                    let old = ov.hwnd_text_edit;
+                    ov.hwnd_text_edit = null_mut();
+                    old
+                });
+                if !ed.is_null() {
+                    DestroyWindow(ed);
+                    SetFocus(hwnd);
+                    InvalidateRect(hwnd, null(), 0);
+                } else {
+                    close_overlay();
                 }
                 return 0;
             }
-            if vk == 'C' as i32 && !ctrl {
+            if vk == 'C' as i32 && !ctrl && !alt {
                 // 复制放大镜下当前像素十六进制颜色
                 let hex_opt = SNIP_MGR.with(|m| {
                     let ov = &m.borrow().overlay;
@@ -3847,49 +3954,134 @@ unsafe extern "system" fn overlay_wnd_proc(
                 });
                 if let Some(hex) = hex_opt {
                     set_clipboard_text(&hex);
+                    notify_mgr_hint(&format!("（已复制颜色：{hex}）"));
                 }
                 close_overlay();
                 return 0;
             }
-            if ctrl && vk == 'C' as i32 {
-                if SNIP_MGR.with(|m| m.borrow().overlay.has_sel) {
+
+            let (has_active_sel, has_drag_sel, pin_vk, pin_mods) = SNIP_MGR.with(|m| {
+                let mgr = m.borrow();
+                (
+                    active_overlay_sel_rect(&mgr.overlay).is_some(),
+                    mgr.overlay.has_sel,
+                    mgr.cfg.pin_vk,
+                    mgr.cfg.pin_mods,
+                )
+            });
+            if !has_active_sel {
+                return 0;
+            }
+
+            if (pin_vk != 0 && vk == pin_vk && cur_mods == pin_mods)
+                || (vk == VK_F3_KEY && cur_mods == 0)
+            {
+                finish_selection_action(BTN_PIN);
+                return 0;
+            }
+            if ctrl {
+                if has_drag_sel {
+                    let kt = hotkey_to_annot_tool(vk);
+                    if kt != AnnotTool::None {
+                        SNIP_MGR.with(|m| toggle_overlay_tool(&mut m.borrow_mut().overlay, kt));
+                        InvalidateRect(hwnd, null(), 0);
+                        return 0;
+                    }
+                    if vk == 'Z' as i32 {
+                        SNIP_MGR.with(|m| {
+                            let ov = &mut m.borrow_mut().overlay;
+                            let item = if shift {
+                                ov.redo_stack.pop()
+                            } else {
+                                ov.annots.pop()
+                            };
+                            if let Some(a) = item {
+                                let is_pixel =
+                                    matches!(a.tool, AnnotTool::Mosaic | AnnotTool::Blur);
+                                if shift {
+                                    ov.annots.push(a);
+                                } else {
+                                    ov.redo_stack.push(a);
+                                }
+                                if is_pixel {
+                                    rebuild_work_bits(ov);
+                                }
+                            }
+                        });
+                        InvalidateRect(hwnd, null(), 0);
+                        return 0;
+                    }
+                    if vk == 'Y' as i32 {
+                        SNIP_MGR.with(|m| {
+                            let ov = &mut m.borrow_mut().overlay;
+                            if let Some(a) = ov.redo_stack.pop() {
+                                let is_pixel =
+                                    matches!(a.tool, AnnotTool::Mosaic | AnnotTool::Blur);
+                                ov.annots.push(a);
+                                if is_pixel {
+                                    rebuild_work_bits(ov);
+                                }
+                            }
+                        });
+                        InvalidateRect(hwnd, null(), 0);
+                        return 0;
+                    }
+                }
+                if vk == 'C' as i32 {
                     finish_selection_action(BTN_COPY);
+                    return 0;
                 }
-                return 0;
-            }
-            if ctrl && vk == 'S' as i32 {
-                if SNIP_MGR.with(|m| m.borrow().overlay.has_sel) {
+                if vk == 'S' as i32 {
                     finish_selection_action(BTN_SAVE);
+                    return 0;
                 }
-                return 0;
             }
-            if ctrl && vk == 'Z' as i32 {
-                SNIP_MGR.with(|m| {
-                    let ov = &mut m.borrow_mut().overlay;
-                    if let Some(a) = ov.annots.pop() {
-                        let is_pixel = matches!(a.tool, AnnotTool::Mosaic | AnnotTool::Blur);
-                        ov.redo_stack.push(a);
-                        if is_pixel {
-                            rebuild_work_bits(ov);
-                        }
+
+            if !ctrl && !alt {
+                match vk {
+                    VK_RETURN | VK_SPACE_KEY => {
+                        finish_selection_action(BTN_COPY);
+                        return 0;
                     }
-                });
-                InvalidateRect(hwnd, null(), 0);
-                return 0;
-            }
-            if ctrl && vk == 'Y' as i32 {
-                SNIP_MGR.with(|m| {
-                    let ov = &mut m.borrow_mut().overlay;
-                    if let Some(a) = ov.redo_stack.pop() {
-                        let is_pixel = matches!(a.tool, AnnotTool::Mosaic | AnnotTool::Blur);
-                        ov.annots.push(a);
-                        if is_pixel {
-                            rebuild_work_bits(ov);
-                        }
+                    v if v == 'T' as i32 => {
+                        finish_selection_action(BTN_TRANS);
+                        return 0;
                     }
-                });
-                InvalidateRect(hwnd, null(), 0);
-                return 0;
+                    VK_LEFT_KEY | VK_RIGHT_KEY | VK_UP_KEY | VK_DOWN_KEY => {
+                        let moved = SNIP_MGR.with(|m| {
+                            let ov = &mut m.borrow_mut().overlay;
+                            if !ov.has_sel || ov.cur_tool != AnnotTool::None {
+                                return false;
+                            }
+                            match vk {
+                                VK_LEFT_KEY if ov.sel_rc.left > 0 => {
+                                    ov.sel_rc.left -= 1;
+                                    ov.sel_rc.right -= 1;
+                                }
+                                VK_RIGHT_KEY if ov.sel_rc.right < ov.vw => {
+                                    ov.sel_rc.left += 1;
+                                    ov.sel_rc.right += 1;
+                                }
+                                VK_UP_KEY if ov.sel_rc.top > 0 => {
+                                    ov.sel_rc.top -= 1;
+                                    ov.sel_rc.bottom -= 1;
+                                }
+                                VK_DOWN_KEY if ov.sel_rc.bottom < ov.vh => {
+                                    ov.sel_rc.top += 1;
+                                    ov.sel_rc.bottom += 1;
+                                }
+                                _ => return false,
+                            }
+                            layout_overlay_toolbar(ov);
+                            true
+                        });
+                        if moved {
+                            InvalidateRect(hwnd, null(), 0);
+                        }
+                        return 0;
+                    }
+                    _ => {}
+                }
             }
             0
         }
@@ -4231,10 +4423,16 @@ unsafe extern "system" fn result_wnd_proc(
                     1 => {
                         let t = SNIP_MGR.with(|m| m.borrow().result.zh_text.clone());
                         set_clipboard_text(&t);
+                        if !t.is_empty() {
+                            notify_mgr_hint("（已复制译文）");
+                        }
                     }
                     2 => {
                         let t = SNIP_MGR.with(|m| m.borrow().result.en_text.clone());
                         set_clipboard_text(&t);
+                        if !t.is_empty() {
+                            notify_mgr_hint("（已复制原文）");
+                        }
                     }
                     3 => {
                         let (w, h, bg) = SNIP_MGR.with(|m| {
@@ -4246,7 +4444,9 @@ unsafe extern "system" fn result_wnd_proc(
                             };
                             (r.img_w, r.img_h, b)
                         });
-                        set_clipboard_bgra(&bg, w, h);
+                        if set_clipboard_bgra(&bg, w, h) {
+                            notify_mgr_hint("（已复制图片）");
+                        }
                     }
                     4 => {
                         let (w, h, bg, sd) = SNIP_MGR.with(|m| {
@@ -4264,7 +4464,11 @@ unsafe extern "system" fn result_wnd_proc(
                             )
                         });
                         if let Some(p) = save_file_dialog_png(hwnd, &sd, "KuaiYiNG_Trans.png") {
-                            save_bgra_as_png(&p, &bg, w, h);
+                            if save_bgra_as_png(&p, &bg, w, h) {
+                                notify_mgr_hint("（截图已保存）");
+                            } else {
+                                notify_mgr_hint("（截图保存失败）");
+                            }
                         }
                     }
                     5 => {
@@ -4359,6 +4563,20 @@ unsafe extern "system" fn result_wnd_proc(
 // ---- 屏幕多贴图浮窗 ----
 
 pub fn create_pin_from_clipboard() {
+    // 截屏遮罩层开启时，按 F3/贴图热键直接将当前选区（或悬停窗口）贴图，绝不回退剪贴板或上次贴图
+    let (overlay_active, has_sel) = SNIP_MGR.with(|m| {
+        let ov = &m.borrow().overlay;
+        (ov.active, active_overlay_sel_rect(ov).is_some())
+    });
+    if overlay_active {
+        if has_sel {
+            finish_selection_action(BTN_PIN);
+        } else {
+            close_overlay();
+        }
+        return;
+    }
+
     if let Some((w, h, bgra)) = get_clipboard_bgra() {
         create_pin_window_bgra(w, h, bgra, String::new(), String::new());
         return;
@@ -4385,13 +4603,25 @@ pub fn create_pin_from_clipboard() {
 }
 
 pub fn create_pin_window_bgra(w: i32, h: i32, bgra: Vec<u8>, zh_text: String, en_text: String) {
+    create_pin_window_bgra_at(None, w, h, bgra, zh_text, en_text);
+}
+
+pub fn create_pin_window_bgra_at(
+    pos: Option<(i32, i32)>,
+    w: i32,
+    h: i32,
+    bgra: Vec<u8>,
+    zh_text: String,
+    en_text: String,
+) {
     if w <= 0 || h <= 0 || bgra.is_empty() {
         return;
     }
     unsafe { ensure_snip_classes() };
     let mut cur = POINT::default();
     unsafe { GetCursorPos(&mut cur) };
-    let wa = crate::ui::win32_ui::work_area_from_point(cur);
+    let ref_pt = pos.map(|(px, py)| POINT { x: px, y: py }).unwrap_or(cur);
+    let wa = crate::ui::win32_ui::work_area_from_point(ref_pt);
     let init_w = w.min((wa.right - wa.left) - 40).max(40);
     let init_h = h.min((wa.bottom - wa.top) - 40).max(40);
     let zoom = ((init_w as f64) / (w as f64))
@@ -4399,8 +4629,17 @@ pub fn create_pin_window_bgra(w: i32, h: i32, bgra: Vec<u8>, zh_text: String, en
         .clamp(0.15, 1.0);
     let draw_w = ((w as f64) * zoom).round() as i32;
     let draw_h = ((h as f64) * zoom).round() as i32;
-    let x = (cur.x - draw_w / 2).clamp(wa.left, (wa.right - draw_w).max(wa.left));
-    let y = (cur.y - draw_h / 2).clamp(wa.top, (wa.bottom - draw_h).max(wa.top));
+    let (x, y) = if let Some((px, py)) = pos {
+        (
+            px.clamp(wa.left, (wa.right - draw_w).max(wa.left)),
+            py.clamp(wa.top, (wa.bottom - draw_h).max(wa.top)),
+        )
+    } else {
+        (
+            (cur.x - draw_w / 2).clamp(wa.left, (wa.right - draw_w).max(wa.left)),
+            (cur.y - draw_h / 2).clamp(wa.top, (wa.bottom - draw_h).max(wa.top)),
+        )
+    };
 
     unsafe {
         let h_inst = GetModuleHandleW(null());
@@ -4784,6 +5023,9 @@ unsafe extern "system" fn pin_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LP
                                 .unwrap_or_default()
                         });
                         set_clipboard_text(&zh);
+                        if !zh.is_empty() {
+                            notify_mgr_hint("（已复制译文）");
+                        }
                     }
                     3 => {
                         let data = SNIP_MGR.with(|m| {
@@ -4797,7 +5039,9 @@ unsafe extern "system" fn pin_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LP
                             })
                         });
                         if let Some((w, h, b)) = data {
-                            set_clipboard_bgra(&b, w, h);
+                            if set_clipboard_bgra(&b, w, h) {
+                                notify_mgr_hint("（已复制贴图）");
+                            }
                         }
                     }
                     4 => {
@@ -4815,7 +5059,11 @@ unsafe extern "system" fn pin_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LP
                         });
                         if let Some((w, h, b)) = data {
                             if let Some(p) = save_file_dialog_png(hwnd, &sd, "KuaiYiNG_Pin.png") {
-                                save_bgra_as_png(&p, &b, w, h);
+                                if save_bgra_as_png(&p, &b, w, h) {
+                                    notify_mgr_hint("（贴图已保存）");
+                                } else {
+                                    notify_mgr_hint("（贴图保存失败）");
+                                }
                             }
                         }
                     }
@@ -5283,5 +5531,35 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
+    }
+
+    #[test]
+    fn test_active_overlay_sel_rect_and_tool_hotkey() {
+        let mut ov = OverlayState::default();
+        assert!(active_overlay_sel_rect(&ov).is_none());
+
+        ov.hover_win_rc = RECT {
+            left: 100,
+            top: 200,
+            right: 400,
+            bottom: 500,
+        };
+        let rc = active_overlay_sel_rect(&ov).expect("悬停窗口应作为回退选区");
+        assert_eq!((rc.left, rc.top, rc.right, rc.bottom), (100, 200, 400, 500));
+
+        ov.has_sel = true;
+        ov.sel_rc = RECT {
+            left: 50,
+            top: 60,
+            right: 250,
+            bottom: 160,
+        };
+        let rc2 = active_overlay_sel_rect(&ov).expect("已有选区应优先返回");
+        assert_eq!((rc2.left, rc2.top, rc2.right, rc2.bottom), (50, 60, 250, 160));
+
+        assert_eq!(hotkey_to_annot_tool(0x31), AnnotTool::Rect);
+        assert_eq!(hotkey_to_annot_tool(0x64), AnnotTool::Arrow);
+        assert_eq!(hotkey_to_annot_tool(0x30), AnnotTool::Blur);
+        assert_eq!(hotkey_to_annot_tool(0x41), AnnotTool::None);
     }
 }

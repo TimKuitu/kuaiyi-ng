@@ -50,9 +50,9 @@ use kuaiyi_ng::ui::{
     compute_def_win_size, orig_to_win, set_auto_start_reg, AppSettings, APP_TITLE, APP_VERSION,
     DEF_CAPTURE, DEF_COPY, DEF_HIST_DOWN, DEF_HIST_UP, DEF_PIN, DEF_SNIP, DEF_TOGGLE, HK_CAPTURE,
     HK_COPY, HK_HIST_DOWN, HK_HIST_UP, HK_PIN, HK_SNIP, HK_TOGGLE, KIND_NAMES, STYLE_CODES,
-    STYLE_NAMES, WM_APP_COPY_NAMING, WM_APP_DOWNLOAD, WM_APP_HIDE_MAIN, WM_APP_OPEN_SETTINGS,
-    WM_APP_PIN_DONE, WM_APP_POPUP_SELECT, WM_APP_SHOW_MAIN, WM_APP_SNIP_DONE, WM_APP_TRANSLATED,
-    WM_APP_TRAY, WM_APP_UPDATE,
+    STYLE_NAMES, WM_APP_COPY_NAMING, WM_APP_DOWNLOAD, WM_APP_FLASH_HINT, WM_APP_HIDE_MAIN,
+    WM_APP_OPEN_SETTINGS, WM_APP_PIN_DONE, WM_APP_POPUP_SELECT, WM_APP_SHOW_MAIN, WM_APP_SNIP_DONE,
+    WM_APP_TRANSLATED, WM_APP_TRAY, WM_APP_UPDATE,
 };
 use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
@@ -322,6 +322,8 @@ fn sync_snip_cfg_from_rt() {
         },
         cache_dir: rt.set.cache_dir.clone(),
         save_dir: rt.set.snip_save_dir.clone(),
+        pin_mods: rt.set.hk_pin.0,
+        pin_vk: rt.set.hk_pin.1,
     }) {
         update_snip_cfg(cfg);
     }
@@ -411,6 +413,14 @@ fn do_translate(mode: i32) {
     });
 }
 
+/// 在主窗口提示栏临时显示状态消息，2.8 秒后自动恢复默认提示
+fn flash_main_hint(hwnd_main: HWND, msg: &str) {
+    set_main_title_and_hint(None, Some(msg));
+    if !hwnd_main.is_null() {
+        unsafe { SetTimer(hwnd_main, TIMER_HINT_RESET, 2800, null()) };
+    }
+}
+
 /// 根据当前命名风格和命名对象缩减短语并写入剪贴板
 fn perform_naming_copy(from_result: bool) {
     let in_txt = get_input_text();
@@ -463,7 +473,7 @@ fn perform_naming_copy(from_result: bool) {
     if r.ok {
         set_clipboard_text(&r.name);
         set_result_text(&r.name);
-        set_main_title_and_hint(None, Some(&format!("已复制命名：{}", r.name)));
+        flash_main_hint(hwnd_main, &format!("已复制命名：{}", r.name));
         log_write("命名", &format!("复制标识符 {}", r.name));
     } else {
         let hint = if r.reason.is_empty() {
@@ -471,10 +481,9 @@ fn perform_naming_copy(from_result: bool) {
         } else {
             format!("命名失败：{}", r.reason)
         };
-        set_main_title_and_hint(None, Some(&hint));
+        flash_main_hint(hwnd_main, &hint);
     }
     let _ = copy_hk;
-    unsafe { SetTimer(hwnd_main, TIMER_HINT_RESET, 2800, null()) };
 }
 
 fn browse_history(delta: isize) {
@@ -881,6 +890,13 @@ unsafe extern "system" fn main_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: L
         }
         WM_APP_PIN_DONE => {
             handle_pin_done_message(wp, lp);
+            0
+        }
+        WM_APP_FLASH_HINT => {
+            if lp != 0 {
+                let msg = Box::from_raw(lp as *mut String);
+                flash_main_hint(hwnd, &msg);
+            }
             0
         }
         WM_APP_UPDATE => {

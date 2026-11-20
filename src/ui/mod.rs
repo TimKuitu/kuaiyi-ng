@@ -19,7 +19,7 @@ use std::path::Path;
 use std::ptr::null_mut;
 
 pub const APP_TITLE: &str = "快译NG";
-pub const APP_VERSION: &str = "3.0.0";
+pub const APP_VERSION: &str = "3.0.1";
 pub const APP_REPO_URL: &str = "https://github.com/TimKuitu/kuaiyi-ng";
 
 // 避开保留自定义消息区，统一使用 WM_APP + 0x0200..0x021F
@@ -34,6 +34,7 @@ pub const WM_APP_SHOW_MAIN: UINT = WM_APP + 0x0207;
 pub const WM_APP_HIDE_MAIN: UINT = WM_APP + 0x0208;
 pub const WM_APP_POPUP_SELECT: UINT = WM_APP + 0x0209;
 pub const WM_APP_COPY_NAMING: UINT = WM_APP + 0x020A;
+pub const WM_APP_FLASH_HINT: UINT = WM_APP + 0x020B;
 
 // 全局热键 ID
 pub const HK_TOGGLE: i32 = 1;
