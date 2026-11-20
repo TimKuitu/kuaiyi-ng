@@ -2,3 +2,4 @@
 
 pub mod core;
 pub mod naming_reducer;
+pub mod ui;

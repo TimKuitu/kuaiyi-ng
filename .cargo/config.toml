@@ -1,3 +1,6 @@
 [build]
 target = "x86_64-pc-windows-gnu"
 target-dir = "C:/Users/Lenovo/AppData/Local/Temp/kuaiyi-ng-target"
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=C:/Users/Lenovo/AppData/Local/Temp/kuaiyi-ng-target/app.res"]
