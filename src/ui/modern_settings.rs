@@ -6,7 +6,7 @@ use crate::ui::win32_ui::{
     apply_dwm_window_style, apply_font_to_children, apply_uxtheme_dark_app_mode, argb,
     attach_tooltip, browse_for_folder, current_exe_path, ensure_gdiplus, get_window_text,
     gp_draw_glyph, gp_fill_round_rect, gp_round_card, load_app_icon, lparam_xy, rgb,
-    set_control_theme, set_window_text, shell_open, wheel_delta, AlphaBlend, BeginPaint, BitBlt,
+    set_control_theme, set_window_text, shell_open, wheel_delta, BeginPaint, BitBlt,
     CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen, CreateSolidBrush,
     CreateWindowExW, DefSubclassProc, DefWindowProcW, DeleteDC, DeleteObject, DrawTextW, EndPaint,
     FillRect, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush,
@@ -14,24 +14,24 @@ use crate::ui::win32_ui::{
     GetClientRect, GetTickCount64, GetWindowRect, GpRectF, InvalidateRect, KillTimer, LoadCursorW,
     MoveWindow, PostMessageW, RegisterClassExW, ReleaseCapture, ScreenToClient, SelectObject,
     SendMessageW, SetBkColor, SetBkMode, SetCapture, SetTextColor, SetTimer, SetWindowPos,
-    SetWindowSubclass, ShowWindow, TrackMouseEvent, UpdateWindow, AC_SRC_OVER, BLENDFUNCTION,
-    CBN_SELCHANGE, CBS_DROPDOWNLIST, CBS_HASSTRINGS, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
-    CB_SETITEMHEIGHT, CLEARTYPE_QUALITY, COLORREF, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
-    DEFAULT_CHARSET, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-    DWORD, DWORD_PTR, EC_LEFTMARGIN, EC_RIGHTMARGIN, EM_SETMARGINS, EM_SETPASSWORDCHAR, EN_CHANGE,
-    ES_AUTOHSCROLL, ES_NUMBER, ES_PASSWORD, ES_READONLY, FW_BOLD, FW_MEDIUM, FW_NORMAL,
-    FW_SEMIBOLD, GP_OK, GP_SMOOTHING_ANTIALIAS, GP_UNIT_PIXEL, HBITMAP, HBRUSH, HDC, HFONT,
-    HTCAPTION, HTCLIENT, HWND, HWND_TOP, ICON_BIG, ICON_SMALL, IDC_ARROW, LPARAM, LRESULT,
-    MINMAXINFO, PAINTSTRUCT, POINT, PS_SOLID, RECT, SRCCOPY, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, TME_LEAVE,
-    TRACKMOUSEEVENT, TRANSPARENT, TTM_ACTIVATE, TTM_SETMAXTIPWIDTH, UINT, UINT_PTR, VK_BACK,
-    VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_TAB, WM_APP,
-    WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCPAINT, WM_PAINT,
-    WM_PRINT, WM_SETFOCUS, WM_SETICON, WM_SHOWWINDOW, WM_SYSKEYDOWN, WM_TIMER, WM_VSCROLL,
-    WNDCLASSEXW, WPARAM, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW,
-    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    SetWindowSubclass, ShowWindow, TrackMouseEvent, UpdateWindow, CBN_SELCHANGE, CBS_DROPDOWNLIST,
+    CBS_HASSTRINGS, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CB_SETITEMHEIGHT, CLEARTYPE_QUALITY,
+    COLORREF, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, DEFAULT_CHARSET, DT_CENTER, DT_END_ELLIPSIS,
+    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DWORD, DWORD_PTR, EC_LEFTMARGIN,
+    EC_RIGHTMARGIN, EM_SETMARGINS, EM_SETPASSWORDCHAR, EN_CHANGE, ES_AUTOHSCROLL, ES_NUMBER,
+    ES_PASSWORD, ES_READONLY, FW_BOLD, FW_MEDIUM, FW_NORMAL, FW_SEMIBOLD, GP_OK,
+    GP_SMOOTHING_ANTIALIAS, GP_UNIT_PIXEL, HBRUSH, HDC, HFONT, HTCAPTION, HTCLIENT, HWND, HWND_TOP,
+    ICON_BIG, ICON_SMALL, IDC_ARROW, LPARAM, LRESULT, MINMAXINFO, PAINTSTRUCT, POINT, PS_SOLID,
+    RECT, SRCCOPY, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE,
+    SW_MINIMIZE, SW_RESTORE, SW_SHOW, TME_LEAVE, TRACKMOUSEEVENT, TRANSPARENT, TTM_ACTIVATE,
+    TTM_SETMAXTIPWIDTH, UINT, UINT_PTR, VK_BACK, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LWIN,
+    VK_MENU, VK_RWIN, VK_SHIFT, VK_TAB, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
+    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCPAINT, WM_PAINT, WM_SETFOCUS, WM_SETICON,
+    WM_SHOWWINDOW, WM_SYSKEYDOWN, WM_TIMER, WM_VSCROLL, WNDCLASSEXW, WPARAM, WS_CAPTION, WS_CHILD,
+    WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE,
 };
 use crate::ui::{
     compute_def_win_size, format_hotkey_text, AppSettings, AI_PRESETS, APP_REPO_URL, APP_VERSION,
@@ -333,15 +333,6 @@ struct SettingsUiState {
     sub_pill_w: f32,
     sub_pill_tx: f32,
     sub_pill_tw: f32,
-
-    // 页面切换 AlphaBlend 过渡状态
-    fade_active: bool,
-    fade_start_ms: u64,
-    fade_dir: i32, // 1=向下, -1=向上, 2=向右, -2=向左
-    fade_from_bm: HBITMAP,
-    fade_to_bm: HBITMAP,
-    fade_w: i32,
-    fade_h: i32,
 
     // 底部 Toast
     toast_text: String,
@@ -1517,6 +1508,7 @@ pub fn select_settings_tab(target_page: usize) {
         return;
     }
 
+    let (old_cat, _) = page_to_cat_sub(old_page);
     let (cat_idx, sub_idx) = page_to_cat_sub(target);
     let nav_rc = nav_item_rect(cat_idx, sc);
     let sub_rects = sub_tab_rects(cat_idx, sc);
@@ -1525,73 +1517,16 @@ pub fn select_settings_tab(target_page: usize) {
         .map(|r| (r.left as f32, (r.right - r.left) as f32))
         .unwrap_or((0.0, 0.0));
 
-    // 启动 AlphaBlend 切页过渡动画（窗口已可见且开启动效时）
-    let mut started_fade = false;
-    if anim && old_page != target && unsafe { crate::ui::win32_ui::IsWindowVisible(hwnd_set) != 0 }
-    {
-        let pw = spx(SET_PAGE_W, sc);
-        let ph = spx(SET_PAGE_H, sc);
-        let old_h = pages[old_page];
-        let new_h = pages[target];
-        if !old_h.is_null() && !new_h.is_null() && pw > 0 && ph > 0 {
-            unsafe {
-                let hdc_scr = crate::ui::win32_ui::GetDC(null_mut());
-                let dc1 = CreateCompatibleDC(hdc_scr);
-                let bm1 = CreateCompatibleBitmap(hdc_scr, pw, ph);
-                let ob1 = SelectObject(dc1, bm1);
-                SendMessageW(old_h, WM_PRINT, dc1 as WPARAM, 0x1E);
-                SelectObject(dc1, ob1);
-                DeleteDC(dc1);
-
-                ShowWindow(old_h, SW_HIDE);
-                ShowWindow(new_h, SW_SHOW);
-
-                let dc2 = CreateCompatibleDC(hdc_scr);
-                let bm2 = CreateCompatibleBitmap(hdc_scr, pw, ph);
-                let ob2 = SelectObject(dc2, bm2);
-                SendMessageW(new_h, WM_PRINT, dc2 as WPARAM, 0x1E);
-                SelectObject(dc2, ob2);
-                DeleteDC(dc2);
-                crate::ui::win32_ui::ReleaseDC(null_mut(), hdc_scr);
-
-                let (old_cat, _) = page_to_cat_sub(old_page);
-                let dir = if cat_idx != old_cat {
-                    if cat_idx > old_cat {
-                        1
-                    } else {
-                        -1
-                    }
-                } else if target > old_page {
-                    2
-                } else {
-                    -2
-                };
-                SET_UI.with(|st| {
-                    let mut s = st.borrow_mut();
-                    if !s.fade_from_bm.is_null() {
-                        DeleteObject(s.fade_from_bm);
-                    }
-                    if !s.fade_to_bm.is_null() {
-                        DeleteObject(s.fade_to_bm);
-                    }
-                    s.fade_from_bm = bm1;
-                    s.fade_to_bm = bm2;
-                    s.fade_w = pw;
-                    s.fade_h = ph;
-                    s.fade_dir = dir;
-                    s.fade_start_ms = GetTickCount64();
-                    s.fade_active = true;
-                });
-                started_fade = true;
-            }
+    // 先显示目标子页再隐藏旧页，避免 WS_CLIPCHILDREN 下切换瞬间露出父窗底色或产生黑缝
+    if !pages[target].is_null() {
+        unsafe {
+            ShowWindow(pages[target], SW_SHOW);
+            InvalidateRect(pages[target], null(), 0);
         }
     }
-
-    if !started_fade {
-        for (i, &p) in pages.iter().enumerate() {
-            if !p.is_null() {
-                unsafe { ShowWindow(p, if i == target { SW_SHOW } else { SW_HIDE }) };
-            }
+    for (i, &p) in pages.iter().enumerate() {
+        if i != target && !p.is_null() {
+            unsafe { ShowWindow(p, SW_HIDE) };
         }
     }
 
@@ -1604,7 +1539,7 @@ pub fn select_settings_tab(target_page: usize) {
         }
         s.sub_pill_tx = sub_tx;
         s.sub_pill_tw = sub_tw;
-        if !anim || s.sub_pill_tw <= 0.1 {
+        if !anim || s.sub_pill_w <= 0.1 || old_cat != cat_idx {
             s.sub_pill_x = sub_tx;
             s.sub_pill_w = sub_tw;
         }
@@ -1784,7 +1719,6 @@ unsafe fn paint_settings_window(hwnd: HWND) {
         toast_text,
         toast_ok,
         toast_alpha,
-        fade_info,
     ) = SET_UI.with(|st| {
         let s = st.borrow();
         (
@@ -1801,15 +1735,6 @@ unsafe fn paint_settings_window(hwnd: HWND) {
             s.toast_text.clone(),
             s.toast_ok,
             s.toast_alpha,
-            (
-                s.fade_active,
-                s.fade_from_bm,
-                s.fade_to_bm,
-                s.fade_w,
-                s.fade_h,
-                s.fade_start_ms,
-                s.fade_dir,
-            ),
         )
     });
 
@@ -1833,7 +1758,7 @@ unsafe fn paint_settings_window(hwnd: HWND) {
     FillRect(hdc_buf, &nav_rc, br_nav);
     DeleteObject(br_nav);
 
-    // 导航分隔竖线与副标题底线
+    // 导航分隔竖线与副标题底线（画在 nav_w - 1 避免被右侧子页面窗口遮挡）
     let sep_col = if is_dark {
         rgb(40, 46, 56)
     } else {
@@ -1841,8 +1766,9 @@ unsafe fn paint_settings_window(hwnd: HWND) {
     };
     let pen_sep = CreatePen(PS_SOLID, 1, sep_col);
     let old_p = SelectObject(hdc_buf, pen_sep);
-    crate::ui::win32_ui::MoveToEx(hdc_buf, nav_w, 0, null_mut());
-    crate::ui::win32_ui::LineTo(hdc_buf, nav_w, h);
+    let sep_x = (nav_w - 1).max(0);
+    crate::ui::win32_ui::MoveToEx(hdc_buf, sep_x, 0, null_mut());
+    crate::ui::win32_ui::LineTo(hdc_buf, sep_x, h);
     crate::ui::win32_ui::MoveToEx(hdc_buf, nav_w, spx(SET_PAGE_Y, scale) - 1, null_mut());
     crate::ui::win32_ui::LineTo(hdc_buf, w, spx(SET_PAGE_Y, scale) - 1);
     SelectObject(hdc_buf, old_p);
@@ -2226,39 +2152,6 @@ unsafe fn paint_settings_window(hwnd: HWND) {
 
     SelectObject(hdc_buf, old_f);
     DeleteObject(hf_title);
-
-    // 页面过渡 AlphaBlend
-    let (fade_on, bm_from, bm_to, fw, fh, start_ms, dir) = fade_info;
-    if fade_on && !bm_from.is_null() && !bm_to.is_null() {
-        let elapsed = GetTickCount64().saturating_sub(start_ms) as f64;
-        let t = (elapsed / 170.0).clamp(0.0, 1.0);
-        let ease = 1.0f64 - (1.0f64 - t).powi(3);
-        let px = spx(SET_PAGE_X, scale);
-        let py = spx(SET_PAGE_Y, scale);
-        let shift = ((1.0 - ease) * 14.0 * scale).round() as i32;
-        let (dx, dy) = match dir {
-            1 => (0, shift),
-            -1 => (0, -shift),
-            2 => (shift, 0),
-            _ => (-shift, 0),
-        };
-        let dc_s = CreateCompatibleDC(hdc);
-        let ob = SelectObject(dc_s, bm_from);
-        BitBlt(hdc_buf, px, py, fw, fh, dc_s, 0, 0, SRCCOPY);
-        SelectObject(dc_s, bm_to);
-        let bf = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER,
-            BlendFlags: 0,
-            SourceConstantAlpha: (ease * 255.0).round() as u8,
-            AlphaFormat: 0,
-        };
-        AlphaBlend(hdc_buf, px + dx, py + dy, fw, fh, dc_s, 0, 0, fw, fh, bf);
-        SelectObject(dc_s, ob);
-        DeleteDC(dc_s);
-        if t >= 1.0 {
-            SET_UI.with(|st| st.borrow_mut().fade_active = false);
-        }
-    }
 
     BitBlt(hdc, 0, 0, w, h, hdc_buf, 0, 0, SRCCOPY);
     SelectObject(hdc_buf, old_bm);
@@ -2814,7 +2707,7 @@ unsafe fn settings_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM) -> LR
                     let dy = s.nav_pill_target_y - s.nav_pill_y;
                     let dx = s.sub_pill_tx - s.sub_pill_x;
                     let dw = s.sub_pill_tw - s.sub_pill_w;
-                    let mut active = s.fade_active;
+                    let mut active = false;
                     if dy.abs() > 0.4 {
                         s.nav_pill_y += dy * 0.28;
                         active = true;

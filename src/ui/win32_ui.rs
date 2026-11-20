@@ -916,6 +916,8 @@ extern "system" {
     ) -> BOOL;
     pub fn MoveToEx(hdc: HDC, x: i32, y: i32, lppt: *mut POINT) -> BOOL;
     pub fn LineTo(hdc: HDC, x: i32, y: i32) -> BOOL;
+    pub fn CreateRectRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> HRGN;
+    pub fn SelectClipRgn(hdc: HDC, hrgn: HRGN) -> i32;
     pub fn GetDeviceCaps(hdc: HDC, index: i32) -> i32;
 }
 

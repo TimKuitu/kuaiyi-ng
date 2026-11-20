@@ -6,35 +6,36 @@ use crate::core::str_util::utf8_to_wide;
 use crate::ui::win32_ui::{
     argb, ensure_gdiplus, get_clipboard_bgra, get_clipboard_text, get_window_text,
     gp_fill_round_rect, gp_round_card, lparam_xy, rgb, save_bgra_as_png, save_file_dialog_png,
-    set_clipboard_bgra, set_clipboard_text, wheel_delta, AlphaBlend, AppendMenuW, BeginPaint,
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen,
-    CreatePopupMenu, CreateSolidBrush, CreateWindowExW, DefSubclassProc, DefWindowProcW, DeleteDC,
-    DeleteObject, DestroyMenu, DestroyWindow, DrawTextW, DwmGetWindowAttribute, EndPaint,
-    EnumWindows, FillRect, GdiFlush, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill,
-    GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePen, GdipDrawEllipse, GdipDrawLine,
-    GdipDrawLines, GdipDrawRectangle, GdipFillEllipse, GdipFillRectangle, GdipSetPenEndCap,
-    GdipSetPenLineJoin, GdipSetPenStartCap, GdipSetSmoothingMode, GetAsyncKeyState, GetClientRect,
-    GetCurrentProcessId, GetCursorPos, GetDC, GetModuleHandleW, GetStockObject, GetSystemMetrics,
-    GetWindowRect, GetWindowThreadProcessId, GpPointF, InvalidateRect, IsIconic, IsWindow,
-    IsWindowVisible, LoadCursorW, PostMessageW, RegisterClassExW, ReleaseCapture, ReleaseDC,
-    ScreenToClient, SelectObject, SetBkMode, SetCapture, SetCursor, SetFocus,
+    set_clipboard_bgra, set_clipboard_text, wheel_delta, AppendMenuW, BeginPaint, BitBlt,
+    CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen,
+    CreatePopupMenu, CreateRectRgn, CreateSolidBrush, CreateWindowExW, DefSubclassProc,
+    DefWindowProcW, DeleteDC, DeleteObject, DestroyMenu, DestroyWindow, DrawTextW,
+    DwmGetWindowAttribute, EndPaint, EnumWindows, FillRect, GdiFlush, GdipCreateFromHDC,
+    GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePen,
+    GdipDrawEllipse, GdipDrawLine, GdipDrawLines, GdipDrawRectangle, GdipFillEllipse,
+    GdipFillRectangle, GdipSetPenEndCap, GdipSetPenLineJoin, GdipSetPenStartCap,
+    GdipSetSmoothingMode, GetAsyncKeyState, GetClientRect, GetCurrentProcessId, GetCursorPos,
+    GetDC, GetModuleHandleW, GetStockObject, GetSystemMetrics, GetWindowRect,
+    GetWindowThreadProcessId, GpPointF, InvalidateRect, IsIconic, IsWindow, IsWindowVisible,
+    LoadCursorW, PostMessageW, RegisterClassExW, ReleaseCapture, ReleaseDC, ScreenToClient,
+    SelectClipRgn, SelectObject, SetBkMode, SetCapture, SetCursor, SetFocus,
     SetLayeredWindowAttributes, SetStretchBltMode, SetTextColor, SetWindowPos, SetWindowSubclass,
-    ShowWindow, StretchBlt, TrackPopupMenu, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    BLENDFUNCTION, CLEARTYPE_QUALITY, COLORONCOLOR, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
-    DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_TOP, DT_VCENTER, DT_WORDBREAK, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
-    DWORD_PTR, ES_AUTOHSCROLL, ES_MULTILINE, ES_WANTRETURN, FW_BOLD, FW_MEDIUM, FW_NORMAL,
-    GP_LINE_CAP_ROUND, GP_LINE_JOIN_ROUND, GP_OK, GP_SMOOTHING_ANTIALIAS, GP_UNIT_PIXEL, HALFTONE,
-    HBITMAP, HDC, HWND, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS,
-    IDC_SIZENWSE, IDC_SIZEWE, LPARAM, LRESULT, LWA_ALPHA, MA_NOACTIVATE, MF_CHECKED, MF_SEPARATOR,
-    MF_STRING, NULL_BRUSH, PAINTSTRUCT, POINT, PS_DASH, PS_SOLID, RECT, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SRCCOPY, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SW_SHOW, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TRANSPARENT, UINT, UINT_PTR,
-    VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT, WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_DESTROY,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SETCURSOR, WNDCLASSEXW, WPARAM, WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    ShowWindow, StretchBlt, TrackPopupMenu, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    CLEARTYPE_QUALITY, COLORONCOLOR, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, DEFAULT_CHARSET,
+    DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
+    DT_TOP, DT_VCENTER, DT_WORDBREAK, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWORD_PTR,
+    ES_AUTOHSCROLL, ES_MULTILINE, ES_WANTRETURN, FW_BOLD, FW_MEDIUM, FW_NORMAL, GP_LINE_CAP_ROUND,
+    GP_LINE_JOIN_ROUND, GP_OK, GP_SMOOTHING_ANTIALIAS, GP_UNIT_PIXEL, HALFTONE, HBITMAP, HDC,
+    HFONT, HGDIOBJ, HWND, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LPARAM, LRESULT, LWA_ALPHA, MA_NOACTIVATE, MF_CHECKED,
+    MF_SEPARATOR, MF_STRING, NULL_BRUSH, PAINTSTRUCT, POINT, PS_DASH, PS_SOLID, RECT,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SRCCOPY,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TRANSPARENT, UINT, UINT_PTR, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_SHIFT, WM_CAPTURECHANGED,
+    WM_CHAR, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WPARAM, WS_CHILD, WS_CLIPCHILDREN,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 use crate::ui::{WM_APP_PIN_DONE, WM_APP_SNIP_DONE};
 use std::cell::RefCell;
@@ -179,35 +180,111 @@ pub fn crop_bgra(src: &[u8], src_w: i32, src_h: i32, rc: RECT) -> (i32, i32, Vec
     (cw, ch, out)
 }
 
-/// 对 top-down BGRA 指定矩形执行块均值马赛克
-pub fn apply_mosaic_to_bgra(bgra: &mut [u8], w: i32, h: i32, rc: RECT, block_px: i32) {
-    if w <= 0 || h <= 0 || bgra.len() < (w as usize) * (h as usize) * 4 {
-        return;
+/// 判断点是否落在矩形内
+#[inline]
+fn pt_in_rect(rc: RECT, x: i32, y: i32) -> bool {
+    x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom
+}
+
+/// 两个矩形求交
+#[inline]
+fn intersect_rects(a: RECT, b: RECT) -> RECT {
+    RECT {
+        left: a.left.max(b.left),
+        top: a.top.max(b.top),
+        right: a.right.min(b.right),
+        bottom: a.bottom.min(b.bottom),
+    }
+}
+
+/// 比较两矩形是否完全一致
+#[inline]
+fn rect_eq(a: RECT, b: RECT) -> bool {
+    a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom
+}
+
+/// 按 3 档线宽返回画笔半径（像素）
+#[inline]
+pub fn brush_radius_for_width(width: i32) -> i32 {
+    if width <= 2 {
+        10
+    } else if width <= 4 {
+        18
+    } else {
+        28
+    }
+}
+
+/// 按 3 档线宽返回马赛克块大小（像素）
+#[inline]
+pub fn mosaic_block_for_width(width: i32) -> i32 {
+    if width <= 2 {
+        8
+    } else if width <= 4 {
+        12
+    } else {
+        16
+    }
+}
+
+/// 按 3 档线宽返回模糊半径（像素）
+#[inline]
+pub fn blur_radius_for_width(width: i32) -> i32 {
+    if width <= 2 {
+        6
+    } else if width <= 4 {
+        10
+    } else {
+        14
+    }
+}
+
+/// 按全图全局网格对 ROI 区域预计算块均值马赛克图层，返回规范化 ROI 与紧凑 BGRA 缓冲
+pub fn compute_mosaic_layer(
+    orig: &[u8],
+    w: i32,
+    h: i32,
+    roi: RECT,
+    block_px: i32,
+) -> (RECT, Vec<u8>) {
+    if w <= 0 || h <= 0 || orig.len() < (w as usize) * (h as usize) * 4 {
+        return (RECT::default(), Vec::new());
     }
     let blk = block_px.clamp(4, 32);
-    let x0 = rc.left.clamp(0, w);
-    let y0 = rc.top.clamp(0, h);
-    let x1 = rc.right.clamp(0, w);
-    let y1 = rc.bottom.clamp(0, h);
+    let x0 = roi.left.clamp(0, w);
+    let y0 = roi.top.clamp(0, h);
+    let x1 = roi.right.clamp(0, w);
+    let y1 = roi.bottom.clamp(0, h);
     if x1 <= x0 || y1 <= y0 {
-        return;
+        return (RECT::default(), Vec::new());
     }
-    let mut by = y0;
+    let lw = (x1 - x0) as usize;
+    let lh = (y1 - y0) as usize;
+    let mut out = vec![0u8; lw * lh * 4];
+    let bx_start = (x0 / blk) * blk;
+    let by_start = (y0 / blk) * blk;
+
+    let mut by = by_start;
     while by < y1 {
-        let bh_end = (by + blk).min(y1);
-        let mut bx = x0;
+        let bh_end = (by + blk).min(h);
+        let wy0 = by.max(y0);
+        let wy1 = bh_end.min(y1);
+        let mut bx = bx_start;
         while bx < x1 {
-            let bw_end = (bx + blk).min(x1);
+            let bw_end = (bx + blk).min(w);
+            let wx0 = bx.max(x0);
+            let wx1 = bw_end.min(x1);
             let mut sb = 0u64;
             let mut sg = 0u64;
             let mut sr = 0u64;
             let mut cnt = 0u64;
             for py in by..bh_end {
+                let row_off = (py as usize) * (w as usize);
                 for px in bx..bw_end {
-                    let off = ((py as usize) * (w as usize) + (px as usize)) * 4;
-                    sb += bgra[off] as u64;
-                    sg += bgra[off + 1] as u64;
-                    sr += bgra[off + 2] as u64;
+                    let off = (row_off + (px as usize)) * 4;
+                    sb += orig[off] as u64;
+                    sg += orig[off + 1] as u64;
+                    sr += orig[off + 2] as u64;
                     cnt += 1;
                 }
             }
@@ -217,13 +294,14 @@ pub fn apply_mosaic_to_bgra(bgra: &mut [u8], w: i32, h: i32, rc: RECT, block_px:
                 sr.checked_div(cnt),
             ) {
                 let (ab, ag, ar) = (ab as u8, ag as u8, ar as u8);
-                for py in by..bh_end {
-                    for px in bx..bw_end {
-                        let off = ((py as usize) * (w as usize) + (px as usize)) * 4;
-                        bgra[off] = ab;
-                        bgra[off + 1] = ag;
-                        bgra[off + 2] = ar;
-                        bgra[off + 3] = 255;
+                for py in wy0..wy1 {
+                    let dst_row = ((py - y0) as usize) * lw;
+                    for px in wx0..wx1 {
+                        let d_off = (dst_row + ((px - x0) as usize)) * 4;
+                        out[d_off] = ab;
+                        out[d_off + 1] = ag;
+                        out[d_off + 2] = ar;
+                        out[d_off + 3] = 255;
                     }
                 }
             }
@@ -231,55 +309,310 @@ pub fn apply_mosaic_to_bgra(bgra: &mut [u8], w: i32, h: i32, rc: RECT, block_px:
         }
         by += blk;
     }
+
+    (
+        RECT {
+            left: x0,
+            top: y0,
+            right: x1,
+            bottom: y1,
+        },
+        out,
+    )
 }
 
-/// 对 top-down BGRA 指定矩形执行可调半径均值模糊
-pub fn apply_blur_to_bgra(bgra: &mut [u8], w: i32, h: i32, rc: RECT, radius: i32) {
-    if w <= 0 || h <= 0 || bgra.len() < (w as usize) * (h as usize) * 4 {
+/// 将指定图层矩形拷贝回目标 BGRA 画布
+fn blit_layer_rect_to_bgra(dst: &mut [u8], dst_w: i32, dst_h: i32, layer_rc: RECT, layer: &[u8]) {
+    let lw = (layer_rc.right - layer_rc.left).max(0);
+    let lh = (layer_rc.bottom - layer_rc.top).max(0);
+    if dst_w <= 0
+        || dst_h <= 0
+        || lw <= 0
+        || lh <= 0
+        || dst.len() < (dst_w as usize) * (dst_h as usize) * 4
+        || layer.len() < (lw as usize) * (lh as usize) * 4
+    {
         return;
     }
-    let rad = radius.clamp(2, 16);
-    let x0 = rc.left.clamp(0, w);
-    let y0 = rc.top.clamp(0, h);
-    let x1 = rc.right.clamp(0, w);
-    let y1 = rc.bottom.clamp(0, h);
-    if x1 <= x0 || y1 <= y0 {
-        return;
+    let row_bytes = (lw as usize) * 4;
+    for row in 0..lh {
+        let s_off = (row as usize) * row_bytes;
+        let d_off =
+            (((layer_rc.top + row) as usize) * (dst_w as usize) + (layer_rc.left as usize)) * 4;
+        dst[d_off..d_off + row_bytes].copy_from_slice(&layer[s_off..s_off + row_bytes]);
     }
-    let orig = bgra.to_vec();
-    let step = (rad / 2).max(1);
-    for py in y0..y1 {
-        for px in x0..x1 {
-            let mut sb = 0u32;
-            let mut sg = 0u32;
-            let mut sr = 0u32;
-            let mut cnt = 0u32;
-            let sy0 = (py - rad).max(0);
-            let sy1 = (py + rad).min(h - 1);
-            let sx0 = (px - rad).max(0);
-            let sx1 = (px + rad).min(w - 1);
-            let mut sy = sy0;
-            while sy <= sy1 {
-                let mut sx = sx0;
-                while sx <= sx1 {
-                    let off = ((sy as usize) * (w as usize) + (sx as usize)) * 4;
-                    sb += orig[off] as u32;
-                    sg += orig[off + 1] as u32;
-                    sr += orig[off + 2] as u32;
-                    cnt += 1;
-                    sx += step;
-                }
-                sy += step;
-            }
-            if cnt == 0 {
-                continue;
-            }
-            let off = ((py as usize) * (w as usize) + (px as usize)) * 4;
-            bgra[off] = (sb / cnt) as u8;
-            bgra[off + 1] = (sg / cnt) as u8;
-            bgra[off + 2] = (sr / cnt) as u8;
-            bgra[off + 3] = 255;
+}
+
+/// 对 top-down BGRA 指定矩形执行块均值马赛克
+pub fn apply_mosaic_to_bgra(bgra: &mut [u8], w: i32, h: i32, rc: RECT, block_px: i32) {
+    let (layer_rc, layer) = compute_mosaic_layer(bgra, w, h, rc, block_px);
+    if !layer.is_empty() {
+        blit_layer_rect_to_bgra(bgra, w, h, layer_rc, &layer);
+    }
+}
+
+/// 滑动窗口水平 1D 盒式模糊（边缘 clamp 复制，消除边缘黑边）
+fn box_blur_h(src: &[u8], dst: &mut [u8], pw: i32, ph: i32, rad: i32) {
+    let ksize = (2 * rad + 1) as u32;
+    let half = ksize / 2;
+    let pw_u = pw as usize;
+    for y in 0..ph as usize {
+        let row = y * pw_u;
+        let p0 = row * 4;
+        let b0 = src[p0] as u32;
+        let g0 = src[p0 + 1] as u32;
+        let r0 = src[p0 + 2] as u32;
+        let mut sb = b0 * ((rad as u32) + 1);
+        let mut sg = g0 * ((rad as u32) + 1);
+        let mut sr = r0 * ((rad as u32) + 1);
+        for k in 1..=rad {
+            let sx = k.min(pw - 1) as usize;
+            let off = (row + sx) * 4;
+            sb += src[off] as u32;
+            sg += src[off + 1] as u32;
+            sr += src[off + 2] as u32;
         }
+        for x in 0..pw {
+            let d_off = (row + (x as usize)) * 4;
+            dst[d_off] = ((sb + half) / ksize) as u8;
+            dst[d_off + 1] = ((sg + half) / ksize) as u8;
+            dst[d_off + 2] = ((sr + half) / ksize) as u8;
+            dst[d_off + 3] = 255;
+
+            let add_x = (x + 1 + rad).min(pw - 1) as usize;
+            let sub_x = (x - rad).max(0) as usize;
+            let a_off = (row + add_x) * 4;
+            let s_off = (row + sub_x) * 4;
+            sb = sb + (src[a_off] as u32) - (src[s_off] as u32);
+            sg = sg + (src[a_off + 1] as u32) - (src[s_off + 1] as u32);
+            sr = sr + (src[a_off + 2] as u32) - (src[s_off + 2] as u32);
+        }
+    }
+}
+
+/// 行优先滑动窗口垂直 1D 盒式模糊（高缓存命中，无列跳跃）
+fn box_blur_v(src: &[u8], dst: &mut [u8], pw: i32, ph: i32, rad: i32, col_sum: &mut [u32]) {
+    let ksize = (2 * rad + 1) as u32;
+    let half = ksize / 2;
+    let pw_u = pw as usize;
+    let mul0 = (rad as u32) + 1;
+    for x in 0..pw_u {
+        let off = x * 4;
+        let c = x * 3;
+        col_sum[c] = (src[off] as u32) * mul0;
+        col_sum[c + 1] = (src[off + 1] as u32) * mul0;
+        col_sum[c + 2] = (src[off + 2] as u32) * mul0;
+    }
+    for k in 1..=rad {
+        let sy = k.min(ph - 1) as usize;
+        let row_off = sy * pw_u;
+        for x in 0..pw_u {
+            let off = (row_off + x) * 4;
+            let c = x * 3;
+            col_sum[c] += src[off] as u32;
+            col_sum[c + 1] += src[off + 1] as u32;
+            col_sum[c + 2] += src[off + 2] as u32;
+        }
+    }
+    for y in 0..ph {
+        let d_row = (y as usize) * pw_u;
+        for x in 0..pw_u {
+            let d_off = (d_row + x) * 4;
+            let c = x * 3;
+            dst[d_off] = ((col_sum[c] + half) / ksize) as u8;
+            dst[d_off + 1] = ((col_sum[c + 1] + half) / ksize) as u8;
+            dst[d_off + 2] = ((col_sum[c + 2] + half) / ksize) as u8;
+            dst[d_off + 3] = 255;
+        }
+        if y + 1 < ph {
+            let add_y = (y + 1 + rad).min(ph - 1) as usize;
+            let sub_y = (y - rad).max(0) as usize;
+            let a_row = add_y * pw_u;
+            let s_row = sub_y * pw_u;
+            for x in 0..pw_u {
+                let a_off = (a_row + x) * 4;
+                let s_off = (s_row + x) * 4;
+                let c = x * 3;
+                col_sum[c] = col_sum[c] + (src[a_off] as u32) - (src[s_off] as u32);
+                col_sum[c + 1] = col_sum[c + 1] + (src[a_off + 1] as u32) - (src[s_off + 1] as u32);
+                col_sum[c + 2] = col_sum[c + 2] + (src[a_off + 2] as u32) - (src[s_off + 2] as u32);
+            }
+        }
+    }
+}
+
+/// 对 ROI 区域基于外扩上下文执行 2 轮可分离平滑盒式模糊，返回规范化 ROI 与紧凑 BGRA 缓冲
+pub fn compute_blur_layer(orig: &[u8], w: i32, h: i32, roi: RECT, radius: i32) -> (RECT, Vec<u8>) {
+    if w <= 0 || h <= 0 || orig.len() < (w as usize) * (h as usize) * 4 {
+        return (RECT::default(), Vec::new());
+    }
+    let rad = radius.clamp(2, 24);
+    let rx0 = roi.left.clamp(0, w);
+    let ry0 = roi.top.clamp(0, h);
+    let rx1 = roi.right.clamp(0, w);
+    let ry1 = roi.bottom.clamp(0, h);
+    if rx1 <= rx0 || ry1 <= ry0 {
+        return (RECT::default(), Vec::new());
+    }
+    let pad = (rad * 2).min(48);
+    let px0 = (rx0 - pad).max(0);
+    let py0 = (ry0 - pad).max(0);
+    let px1 = (rx1 + pad).min(w);
+    let py1 = (ry1 + pad).min(h);
+    let (pw, ph, mut buf) = crop_bgra(
+        orig,
+        w,
+        h,
+        RECT {
+            left: px0,
+            top: py0,
+            right: px1,
+            bottom: py1,
+        },
+    );
+    if pw <= 0 || ph <= 0 {
+        return (RECT::default(), Vec::new());
+    }
+    let mut tmp = vec![0u8; buf.len()];
+    let mut col_sum = vec![0u32; (pw as usize) * 3];
+    for _ in 0..2 {
+        box_blur_h(&buf, &mut tmp, pw, ph, rad);
+        box_blur_v(&tmp, &mut buf, pw, ph, rad, &mut col_sum);
+    }
+
+    let (_, _, out) = crop_bgra(
+        &buf,
+        pw,
+        ph,
+        RECT {
+            left: rx0 - px0,
+            top: ry0 - py0,
+            right: rx1 - px0,
+            bottom: ry1 - py0,
+        },
+    );
+    (
+        RECT {
+            left: rx0,
+            top: ry0,
+            right: rx1,
+            bottom: ry1,
+        },
+        out,
+    )
+}
+
+/// 对 top-down BGRA 指定矩形执行可分离平滑均值模糊
+pub fn apply_blur_to_bgra(bgra: &mut [u8], w: i32, h: i32, rc: RECT, radius: i32) {
+    let (layer_rc, layer) = compute_blur_layer(bgra, w, h, rc, radius);
+    if !layer.is_empty() {
+        blit_layer_rect_to_bgra(bgra, w, h, layer_rc, &layer);
+    }
+}
+
+/// 将预计算滤镜图层沿线段 `(p0 -> p1)` 的圆角胶囊画笔范围印到目标 BGRA 画布
+#[allow(clippy::too_many_arguments)]
+pub fn stamp_brush_capsule(
+    dst: &mut [u8],
+    dst_w: i32,
+    dst_h: i32,
+    layer_rc: RECT,
+    layer: &[u8],
+    p0: (i32, i32),
+    p1: (i32, i32),
+    brush_r: i32,
+    clip_rc: RECT,
+) {
+    let lw = layer_rc.right - layer_rc.left;
+    let lh = layer_rc.bottom - layer_rc.top;
+    if dst_w <= 0
+        || dst_h <= 0
+        || lw <= 0
+        || lh <= 0
+        || dst.len() < (dst_w as usize) * (dst_h as usize) * 4
+        || layer.len() < (lw as usize) * (lh as usize) * 4
+    {
+        return;
+    }
+    let r = brush_r.max(1);
+    let cap_rc = RECT {
+        left: p0.0.min(p1.0) - r,
+        top: p0.1.min(p1.1) - r,
+        right: p0.0.max(p1.0) + r + 1,
+        bottom: p0.1.max(p1.1) + r + 1,
+    };
+    let dst_rc = RECT {
+        left: 0,
+        top: 0,
+        right: dst_w,
+        bottom: dst_h,
+    };
+    let valid_rc = intersect_rects(
+        intersect_rects(cap_rc, dst_rc),
+        intersect_rects(layer_rc, clip_rc),
+    );
+    if valid_rc.right <= valid_rc.left || valid_rc.bottom <= valid_rc.top {
+        return;
+    }
+
+    let vx = (p1.0 - p0.0) as f32;
+    let vy = (p1.1 - p0.1) as f32;
+    let len2 = vx * vx + vy * vy;
+    let r2_i = (r as i64) * (r as i64);
+    let r2_f = r2_i as f32;
+
+    for py in valid_rc.top..valid_rc.bottom {
+        let dst_row = (py as usize) * (dst_w as usize);
+        let lyr_row = ((py - layer_rc.top) as usize) * (lw as usize);
+        let dy0 = py - p0.1;
+        for px in valid_rc.left..valid_rc.right {
+            let hit = if len2 < 0.0001 {
+                let dx0 = (px - p0.0) as i64;
+                let dy0_i = dy0 as i64;
+                dx0 * dx0 + dy0_i * dy0_i <= r2_i
+            } else {
+                let t = (((px - p0.0) as f32 * vx + (dy0 as f32) * vy) / len2).clamp(0.0, 1.0);
+                let cx = (p0.0 as f32) + t * vx - (px as f32);
+                let cy = (p0.1 as f32) + t * vy - (py as f32);
+                cx * cx + cy * cy <= r2_f
+            };
+            if hit {
+                let s_off = (lyr_row + ((px - layer_rc.left) as usize)) * 4;
+                let d_off = (dst_row + (px as usize)) * 4;
+                dst[d_off] = layer[s_off];
+                dst[d_off + 1] = layer[s_off + 1];
+                dst[d_off + 2] = layer[s_off + 2];
+                dst[d_off + 3] = 255;
+            }
+        }
+    }
+}
+
+/// 将整条自由涂抹路径从预计算滤镜图层印到目标 BGRA 画布
+#[allow(clippy::too_many_arguments)]
+pub fn apply_brush_stroke_from_layer(
+    dst: &mut [u8],
+    dst_w: i32,
+    dst_h: i32,
+    layer_rc: RECT,
+    layer: &[u8],
+    pts: &[(i32, i32)],
+    brush_r: i32,
+    clip_rc: RECT,
+) {
+    if pts.is_empty() {
+        return;
+    }
+    if pts.len() == 1 {
+        stamp_brush_capsule(
+            dst, dst_w, dst_h, layer_rc, layer, pts[0], pts[0], brush_r, clip_rc,
+        );
+        return;
+    }
+    for seg in pts.windows(2) {
+        stamp_brush_capsule(
+            dst, dst_w, dst_h, layer_rc, layer, seg[0], seg[1], brush_r, clip_rc,
+        );
     }
 }
 
@@ -337,14 +670,9 @@ pub fn capture_virtual_screen_bgra() -> Option<(i32, i32, i32, i32, Vec<u8>)> {
     }
 }
 
-/// 将 top-down BGRA 创建为 32-bit DIB 位图（返回 `HBITMAP` 与可直接写像素的地址）
-unsafe fn create_topdown_dib_from_bgra(
-    hdc: HDC,
-    bgra: &[u8],
-    w: i32,
-    h: i32,
-) -> Option<(HBITMAP, *mut u8)> {
-    if w <= 0 || h <= 0 || bgra.len() < (w as usize) * (h as usize) * 4 {
+/// 创建未填充像素的 32-bit top-down DIB 位图
+unsafe fn create_empty_topdown_dib(hdc: HDC, w: i32, h: i32) -> Option<(HBITMAP, *mut u8)> {
+    if w <= 0 || h <= 0 {
         return None;
     }
     let bi = BITMAPINFO {
@@ -366,20 +694,43 @@ unsafe fn create_topdown_dib_from_bgra(
     let mut bits: *mut c_void = null_mut();
     let hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
     if hbm.is_null() || bits.is_null() {
+        if !hbm.is_null() {
+            DeleteObject(hbm);
+        }
         return None;
     }
-    copy_nonoverlapping(
-        bgra.as_ptr(),
-        bits.cast::<u8>(),
-        (w as usize) * (h as usize) * 4,
-    );
-    GdiFlush();
     Some((hbm, bits.cast::<u8>()))
+}
+
+/// 将 top-down BGRA 创建为 32-bit DIB 位图（返回 `HBITMAP` 与可直接写像素的地址）
+unsafe fn create_topdown_dib_from_bgra(
+    hdc: HDC,
+    bgra: &[u8],
+    w: i32,
+    h: i32,
+) -> Option<(HBITMAP, *mut u8)> {
+    if w <= 0 || h <= 0 || bgra.len() < (w as usize) * (h as usize) * 4 {
+        return None;
+    }
+    let (hbm, bits) = create_empty_topdown_dib(hdc, w, h)?;
+    copy_nonoverlapping(bgra.as_ptr(), bits, (w as usize) * (h as usize) * 4);
+    GdiFlush();
+    Some((hbm, bits))
 }
 
 // ---- 绘制全部矢量与文本标注 ----
 
 unsafe fn draw_vector_annots(hdc: HDC, annots: &[AnnotItem], off_x: i32, off_y: i32) {
+    draw_vector_annots_with_draft(hdc, annots, None, off_x, off_y);
+}
+
+unsafe fn draw_vector_annots_with_draft(
+    hdc: HDC,
+    annots: &[AnnotItem],
+    draft: Option<&AnnotItem>,
+    off_x: i32,
+    off_y: i32,
+) {
     ensure_gdiplus();
     let mut g: *mut c_void = null_mut();
     let gp_ok = GdipCreateFromHDC(hdc, &mut g) == GP_OK && !g.is_null();
@@ -387,7 +738,7 @@ unsafe fn draw_vector_annots(hdc: HDC, annots: &[AnnotItem], off_x: i32, off_y: 
         GdipSetSmoothingMode(g, GP_SMOOTHING_ANTIALIAS);
     }
 
-    for it in annots {
+    for it in annots.iter().chain(draft) {
         if matches!(it.tool, AnnotTool::Mosaic | AnnotTool::Blur) {
             continue;
         }
@@ -598,20 +949,68 @@ fn flatten_selection(
     if cw <= 0 || ch <= 0 {
         return (0, 0, Vec::new());
     }
+    let crop_rc = RECT {
+        left: 0,
+        top: 0,
+        right: cw,
+        bottom: ch,
+    };
+    let mut cached_layers: Vec<(AnnotTool, i32, Vec<u8>)> = Vec::new();
     for it in annots {
         if !matches!(it.tool, AnnotTool::Mosaic | AnnotTool::Blur) {
             continue;
         }
-        let local_rc = norm_rect(
-            it.x1 - sel.left,
-            it.y1 - sel.top,
-            it.x2 - sel.left,
-            it.y2 - sel.top,
-        );
-        if it.tool == AnnotTool::Mosaic {
-            apply_mosaic_to_bgra(&mut crop, cw, ch, local_rc, it.width * 2 + 4);
+        let layer_idx = if let Some(idx) = cached_layers
+            .iter()
+            .position(|(t, w, _)| *t == it.tool && *w == it.width)
+        {
+            idx
         } else {
-            apply_blur_to_bgra(&mut crop, cw, ch, local_rc, it.width + 4);
+            let (_, layer) = match it.tool {
+                AnnotTool::Mosaic => {
+                    compute_mosaic_layer(orig_bgra, vw, vh, sel, mosaic_block_for_width(it.width))
+                }
+                _ => compute_blur_layer(orig_bgra, vw, vh, sel, blur_radius_for_width(it.width)),
+            };
+            cached_layers.push((it.tool, it.width, layer));
+            cached_layers.len() - 1
+        };
+        let layer = &cached_layers[layer_idx].2;
+        if !it.pts.is_empty() {
+            let local_pts: Vec<(i32, i32)> = it
+                .pts
+                .iter()
+                .map(|&(px, py)| (px - sel.left, py - sel.top))
+                .collect();
+            apply_brush_stroke_from_layer(
+                &mut crop,
+                cw,
+                ch,
+                crop_rc,
+                layer,
+                &local_pts,
+                brush_radius_for_width(it.width),
+                crop_rc,
+            );
+        } else {
+            // 兼容旧的矩形数据格式回退
+            let local_rc = norm_rect(
+                it.x1 - sel.left,
+                it.y1 - sel.top,
+                it.x2 - sel.left,
+                it.y2 - sel.top,
+            );
+            if it.tool == AnnotTool::Mosaic {
+                apply_mosaic_to_bgra(
+                    &mut crop,
+                    cw,
+                    ch,
+                    local_rc,
+                    mosaic_block_for_width(it.width),
+                );
+            } else {
+                apply_blur_to_bgra(&mut crop, cw, ch, local_rc, blur_radius_for_width(it.width));
+            }
         }
     }
 
@@ -753,9 +1152,249 @@ fn render_text_card_bgra(text: &str) -> (i32, i32, Vec<u8>) {
     }
 }
 
-// ---- 全局状态容器 ----
+// ---- 全局状态容器与持久 GDI 缓存 ----
 
-#[derive(Clone, Default)]
+struct OverlayGdiCache {
+    vw: i32,
+    vh: i32,
+    hdc_back: HDC,
+    hbm_back: HBITMAP,
+    old_back: HGDIOBJ,
+    hdc_dim: HDC,
+    hbm_dim: HBITMAP,
+    old_dim: HGDIOBJ,
+    hdc_work: HDC,
+    hbm_work: HBITMAP,
+    old_work: HGDIOBJ,
+    work_bits: *mut u8,
+    hf_badge: HFONT,
+    hf_btn: HFONT,
+    hf_mag: HFONT,
+}
+
+impl Default for OverlayGdiCache {
+    fn default() -> Self {
+        Self {
+            vw: 0,
+            vh: 0,
+            hdc_back: null_mut(),
+            hbm_back: null_mut(),
+            old_back: null_mut(),
+            hdc_dim: null_mut(),
+            hbm_dim: null_mut(),
+            old_dim: null_mut(),
+            hdc_work: null_mut(),
+            hbm_work: null_mut(),
+            old_work: null_mut(),
+            work_bits: null_mut(),
+            hf_badge: null_mut(),
+            hf_btn: null_mut(),
+            hf_mag: null_mut(),
+        }
+    }
+}
+
+impl Drop for OverlayGdiCache {
+    fn drop(&mut self) {
+        self.free();
+    }
+}
+
+impl OverlayGdiCache {
+    fn free(&mut self) {
+        unsafe {
+            if !self.hdc_back.is_null() {
+                if !self.old_back.is_null() {
+                    SelectObject(self.hdc_back, self.old_back);
+                }
+                DeleteDC(self.hdc_back);
+            }
+            if !self.hbm_back.is_null() {
+                DeleteObject(self.hbm_back);
+            }
+            if !self.hdc_dim.is_null() {
+                if !self.old_dim.is_null() {
+                    SelectObject(self.hdc_dim, self.old_dim);
+                }
+                DeleteDC(self.hdc_dim);
+            }
+            if !self.hbm_dim.is_null() {
+                DeleteObject(self.hbm_dim);
+            }
+            if !self.hdc_work.is_null() {
+                if !self.old_work.is_null() {
+                    SelectObject(self.hdc_work, self.old_work);
+                }
+                DeleteDC(self.hdc_work);
+            }
+            if !self.hbm_work.is_null() {
+                DeleteObject(self.hbm_work);
+            }
+            if !self.hf_badge.is_null() {
+                DeleteObject(self.hf_badge);
+            }
+            if !self.hf_btn.is_null() {
+                DeleteObject(self.hf_btn);
+            }
+            if !self.hf_mag.is_null() {
+                DeleteObject(self.hf_mag);
+            }
+        }
+        // 逐字段清零而非 `*self = Self::default()`，防止在 Drop::drop 内触发二次析构无限递归
+        self.vw = 0;
+        self.vh = 0;
+        self.hdc_back = null_mut();
+        self.hbm_back = null_mut();
+        self.old_back = null_mut();
+        self.hdc_dim = null_mut();
+        self.hbm_dim = null_mut();
+        self.old_dim = null_mut();
+        self.hdc_work = null_mut();
+        self.hbm_work = null_mut();
+        self.old_work = null_mut();
+        self.work_bits = null_mut();
+        self.hf_badge = null_mut();
+        self.hf_btn = null_mut();
+        self.hf_mag = null_mut();
+    }
+
+    unsafe fn init(&mut self, vw: i32, vh: i32, orig_bgra: &[u8]) -> bool {
+        self.free();
+        let total = (vw as usize).saturating_mul(vh as usize).saturating_mul(4);
+        if vw <= 0 || vh <= 0 || orig_bgra.len() < total {
+            return false;
+        }
+        let hdc_scr = GetDC(null_mut());
+        if hdc_scr.is_null() {
+            return false;
+        }
+
+        let mut ok = false;
+        'build: {
+            self.hdc_back = CreateCompatibleDC(hdc_scr);
+            self.hbm_back = CreateCompatibleBitmap(hdc_scr, vw, vh);
+            if self.hdc_back.is_null() || self.hbm_back.is_null() {
+                break 'build;
+            }
+            self.old_back = SelectObject(self.hdc_back, self.hbm_back);
+
+            self.hdc_dim = CreateCompatibleDC(hdc_scr);
+            let Some((hbm_d, dim_bits)) = create_empty_topdown_dib(hdc_scr, vw, vh) else {
+                break 'build;
+            };
+            self.hbm_dim = hbm_d;
+            self.old_dim = SelectObject(self.hdc_dim, self.hbm_dim);
+            let dim_dst = std::slice::from_raw_parts_mut(dim_bits, total);
+            for (d, s) in dim_dst
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(orig_bgra[..total].as_chunks::<4>().0)
+            {
+                d[0] = (((s[0] as u32) * 136) >> 8) as u8;
+                d[1] = (((s[1] as u32) * 136) >> 8) as u8;
+                d[2] = (((s[2] as u32) * 136) >> 8) as u8;
+                d[3] = 255;
+            }
+
+            self.hdc_work = CreateCompatibleDC(hdc_scr);
+            let Some((hbm_w, work_bits)) = create_topdown_dib_from_bgra(hdc_scr, orig_bgra, vw, vh)
+            else {
+                break 'build;
+            };
+            self.hbm_work = hbm_w;
+            self.old_work = SelectObject(self.hdc_work, self.hbm_work);
+            self.work_bits = work_bits;
+
+            let wf_badge = utf8_to_wide("Segoe UI");
+            self.hf_badge = CreateFontW(
+                -12,
+                0,
+                0,
+                0,
+                FW_MEDIUM,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                0,
+                0,
+                CLEARTYPE_QUALITY,
+                0,
+                wf_badge.as_ptr(),
+            );
+            let wf_ui = utf8_to_wide("Microsoft YaHei UI");
+            self.hf_btn = CreateFontW(
+                -12,
+                0,
+                0,
+                0,
+                FW_MEDIUM,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                0,
+                0,
+                CLEARTYPE_QUALITY,
+                0,
+                wf_ui.as_ptr(),
+            );
+            self.hf_mag = CreateFontW(
+                -11,
+                0,
+                0,
+                0,
+                FW_NORMAL,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                0,
+                0,
+                CLEARTYPE_QUALITY,
+                0,
+                wf_ui.as_ptr(),
+            );
+            GdiFlush();
+            self.vw = vw;
+            self.vh = vh;
+            ok = true;
+        }
+        ReleaseDC(null_mut(), hdc_scr);
+        if !ok {
+            self.free();
+        }
+        ok
+    }
+
+    unsafe fn work_slice_mut(&mut self) -> Option<&mut [u8]> {
+        if self.work_bits.is_null() || self.vw <= 0 || self.vh <= 0 {
+            return None;
+        }
+        let total = (self.vw as usize) * (self.vh as usize) * 4;
+        Some(std::slice::from_raw_parts_mut(self.work_bits, total))
+    }
+
+    unsafe fn copy_orig(&mut self, orig: &[u8]) {
+        if self.work_bits.is_null() || self.vw <= 0 || self.vh <= 0 {
+            return;
+        }
+        let total = (self.vw as usize) * (self.vh as usize) * 4;
+        if orig.len() >= total {
+            copy_nonoverlapping(orig.as_ptr(), self.work_bits, total);
+        }
+    }
+}
+
+struct FilterLayerCache {
+    tool: AnnotTool,
+    width: i32,
+    roi: RECT,
+    bgra: Vec<u8>,
+}
+
+#[derive(Default)]
 struct OverlayState {
     hwnd: HWND,
     active: bool,
@@ -763,7 +1402,8 @@ struct OverlayState {
     vw: i32,
     vh: i32,
     orig_bgra: Vec<u8>,
-    work_bgra: Vec<u8>, // 含马赛克/模糊后的预览底图（按需局部重算）
+    gdi: OverlayGdiCache,
+    filter_caches: Vec<FilterLayerCache>,
     win_rects: Vec<RECT>,
 
     dragging_sel: bool,
@@ -1097,28 +1737,145 @@ fn layout_overlay_toolbar(ov: &mut OverlayState) {
     }
 }
 
-fn rebuild_work_bgra(ov: &mut OverlayState) {
-    ov.work_bgra = ov.orig_bgra.clone();
+fn ensure_filter_layer(ov: &mut OverlayState, tool: AnnotTool, width: i32) -> Option<usize> {
+    if !matches!(tool, AnnotTool::Mosaic | AnnotTool::Blur) {
+        return None;
+    }
+    let roi = if ov.has_sel {
+        norm_rect(
+            ov.sel_rc.left,
+            ov.sel_rc.top,
+            ov.sel_rc.right,
+            ov.sel_rc.bottom,
+        )
+    } else {
+        RECT {
+            left: 0,
+            top: 0,
+            right: ov.vw,
+            bottom: ov.vh,
+        }
+    };
+    if roi.right <= roi.left || roi.bottom <= roi.top {
+        return None;
+    }
+    if let Some(idx) = ov
+        .filter_caches
+        .iter()
+        .position(|c| c.tool == tool && c.width == width && rect_eq(c.roi, roi))
+    {
+        return Some(idx);
+    }
+    let (layer_rc, bgra) = match tool {
+        AnnotTool::Mosaic => compute_mosaic_layer(
+            &ov.orig_bgra,
+            ov.vw,
+            ov.vh,
+            roi,
+            mosaic_block_for_width(width),
+        ),
+        _ => compute_blur_layer(
+            &ov.orig_bgra,
+            ov.vw,
+            ov.vh,
+            roi,
+            blur_radius_for_width(width),
+        ),
+    };
+    if bgra.is_empty() {
+        return None;
+    }
+    ov.filter_caches.push(FilterLayerCache {
+        tool,
+        width,
+        roi: layer_rc,
+        bgra,
+    });
+    Some(ov.filter_caches.len() - 1)
+}
+
+fn apply_brush_segment_to_work(
+    ov: &mut OverlayState,
+    tool: AnnotTool,
+    width: i32,
+    p0: (i32, i32),
+    p1: (i32, i32),
+) {
+    let Some(idx) = ensure_filter_layer(ov, tool, width) else {
+        return;
+    };
+    let sel = norm_rect(
+        ov.sel_rc.left,
+        ov.sel_rc.top,
+        ov.sel_rc.right,
+        ov.sel_rc.bottom,
+    );
+    let layer_rc = ov.filter_caches[idx].roi;
+    let layer = &ov.filter_caches[idx].bgra;
+    let vw = ov.vw;
+    let vh = ov.vh;
+    let r = brush_radius_for_width(width);
+    if let Some(dst) = unsafe { ov.gdi.work_slice_mut() } {
+        stamp_brush_capsule(dst, vw, vh, layer_rc, layer, p0, p1, r, sel);
+    }
+}
+
+fn rebuild_work_bits(ov: &mut OverlayState) {
+    struct PixelStroke {
+        tool: AnnotTool,
+        width: i32,
+        rect: RECT,
+        pts: Vec<(i32, i32)>,
+    }
+
+    unsafe { ov.gdi.copy_orig(&ov.orig_bgra) };
+    let mut pixel_strokes: Vec<PixelStroke> = Vec::new();
     for it in &ov.annots {
-        let rc = norm_rect(it.x1, it.y1, it.x2, it.y2);
-        match it.tool {
-            AnnotTool::Mosaic => {
-                apply_mosaic_to_bgra(&mut ov.work_bgra, ov.vw, ov.vh, rc, it.width * 2 + 4)
-            }
-            AnnotTool::Blur => {
-                apply_blur_to_bgra(&mut ov.work_bgra, ov.vw, ov.vh, rc, it.width + 4)
-            }
-            _ => {}
+        if matches!(it.tool, AnnotTool::Mosaic | AnnotTool::Blur) {
+            pixel_strokes.push(PixelStroke {
+                tool: it.tool,
+                width: it.width,
+                rect: norm_rect(it.x1, it.y1, it.x2, it.y2),
+                pts: it.pts.clone(),
+            });
         }
     }
     if let Some(d) = &ov.draft_annot {
-        let rc = norm_rect(d.x1, d.y1, d.x2, d.y2);
-        match d.tool {
-            AnnotTool::Mosaic => {
-                apply_mosaic_to_bgra(&mut ov.work_bgra, ov.vw, ov.vh, rc, d.width * 2 + 4)
+        if matches!(d.tool, AnnotTool::Mosaic | AnnotTool::Blur) {
+            pixel_strokes.push(PixelStroke {
+                tool: d.tool,
+                width: d.width,
+                rect: norm_rect(d.x1, d.y1, d.x2, d.y2),
+                pts: d.pts.clone(),
+            });
+        }
+    }
+    if pixel_strokes.is_empty() {
+        return;
+    }
+    let sel = norm_rect(
+        ov.sel_rc.left,
+        ov.sel_rc.top,
+        ov.sel_rc.right,
+        ov.sel_rc.bottom,
+    );
+    let vw = ov.vw;
+    let vh = ov.vh;
+    for st in pixel_strokes {
+        let Some(idx) = ensure_filter_layer(ov, st.tool, st.width) else {
+            continue;
+        };
+        let layer_rc = ov.filter_caches[idx].roi;
+        let layer = &ov.filter_caches[idx].bgra;
+        let r = brush_radius_for_width(st.width);
+        if let Some(dst) = unsafe { ov.gdi.work_slice_mut() } {
+            if !st.pts.is_empty() {
+                apply_brush_stroke_from_layer(dst, vw, vh, layer_rc, layer, &st.pts, r, sel);
+            } else if st.tool == AnnotTool::Mosaic {
+                apply_mosaic_to_bgra(dst, vw, vh, st.rect, mosaic_block_for_width(st.width));
+            } else {
+                apply_blur_to_bgra(dst, vw, vh, st.rect, blur_radius_for_width(st.width));
             }
-            AnnotTool::Blur => apply_blur_to_bgra(&mut ov.work_bgra, ov.vw, ov.vh, rc, d.width + 4),
-            _ => {}
         }
     }
 }
@@ -1144,6 +1901,11 @@ fn start_overlay(trans_mode: bool) {
     unsafe { ensure_snip_classes() };
     let win_rects = unsafe { enum_visible_windows(vx, vy) };
 
+    let mut gdi = OverlayGdiCache::default();
+    if !unsafe { gdi.init(vw, vh, &bgra) } {
+        return;
+    }
+
     SNIP_MGR.with(|m| {
         let mut mgr = m.borrow_mut();
         mgr.overlay = OverlayState {
@@ -1151,8 +1913,9 @@ fn start_overlay(trans_mode: bool) {
             trans_mode,
             vw,
             vh,
-            orig_bgra: bgra.clone(),
-            work_bgra: bgra,
+            orig_bgra: bgra,
+            gdi,
+            filter_caches: Vec::new(),
             win_rects,
             cur_tool: AnnotTool::None,
             cur_size_idx: 1,
@@ -1183,7 +1946,7 @@ fn start_overlay(trans_mode: bool) {
             null_mut(),
         );
         if hwnd.is_null() {
-            SNIP_MGR.with(|m| m.borrow_mut().overlay.active = false);
+            SNIP_MGR.with(|m| m.borrow_mut().overlay = OverlayState::default());
             return;
         }
         SNIP_MGR.with(|m| m.borrow_mut().overlay.hwnd = hwnd);
@@ -1583,7 +2346,13 @@ unsafe fn draw_overlay_tool_icon(g: *mut c_void, id: i32, rc: RECT, col: u32) {
     }
 }
 
-unsafe fn draw_overlay_magnifier(hdc_back: HDC, hdc_orig: HDC, ov: &OverlayState, sel: RECT) {
+unsafe fn draw_overlay_magnifier(
+    hdc_back: HDC,
+    hdc_orig: HDC,
+    ov: &OverlayState,
+    sel: RECT,
+    hf_mag: HFONT,
+) {
     let mx = ov.mouse_pt.x;
     let my = ov.mouse_pt.y;
     if mx < 0 || my < 0 || mx >= ov.vw || my >= ov.vh {
@@ -1664,24 +2433,29 @@ unsafe fn draw_overlay_magnifier(hdc_back: HDC, hdc_orig: HDC, ov: &OverlayState
     FillRect(hdc_back, &sw_rc, sw_br);
     DeleteObject(sw_br);
 
-    let wf = utf8_to_wide("Microsoft YaHei UI");
-    let hf = CreateFontW(
-        -11,
-        0,
-        0,
-        0,
-        FW_NORMAL,
-        0,
-        0,
-        0,
-        DEFAULT_CHARSET,
-        0,
-        0,
-        CLEARTYPE_QUALITY,
-        0,
-        wf.as_ptr(),
-    );
-    let old_f = SelectObject(hdc_back, hf);
+    let own_hf = if hf_mag.is_null() {
+        let wf = utf8_to_wide("Microsoft YaHei UI");
+        CreateFontW(
+            -11,
+            0,
+            0,
+            0,
+            FW_NORMAL,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            0,
+            0,
+            CLEARTYPE_QUALITY,
+            0,
+            wf.as_ptr(),
+        )
+    } else {
+        null_mut()
+    };
+    let use_hf = if hf_mag.is_null() { own_hf } else { hf_mag };
+    let old_f = SelectObject(hdc_back, use_hf);
     SetBkMode(hdc_back, TRANSPARENT);
     SetTextColor(hdc_back, rgb(236, 242, 252));
     let sw = (sel.right - sel.left).max(0);
@@ -1716,7 +2490,9 @@ unsafe fn draw_overlay_magnifier(hdc_back: HDC, hdc_orig: HDC, ov: &OverlayState
         DT_LEFT | DT_TOP | DT_NOPREFIX,
     );
     SelectObject(hdc_back, old_f);
-    DeleteObject(hf);
+    if !own_hf.is_null() {
+        DeleteObject(own_hf);
+    }
 
     let pen_bd = CreatePen(PS_SOLID, 1, rgb(68, 76, 92));
     let op2 = SelectObject(hdc_back, pen_bd);
@@ -1730,477 +2506,448 @@ unsafe fn draw_overlay_magnifier(hdc_back: HDC, hdc_orig: HDC, ov: &OverlayState
 unsafe fn paint_overlay(hwnd: HWND) {
     let mut ps: PAINTSTRUCT = zeroed();
     let hdc = BeginPaint(hwnd, &mut ps);
-    let ov = SNIP_MGR.with(|m| m.borrow().overlay.clone());
-    if ov.vw <= 0 || ov.vh <= 0 {
-        EndPaint(hwnd, &ps);
-        return;
-    }
-
-    let hdc_back = CreateCompatibleDC(hdc);
-    let hbm_back = CreateCompatibleBitmap(hdc, ov.vw, ov.vh);
-    let old_back = SelectObject(hdc_back, hbm_back);
-
-    let hdc_src = CreateCompatibleDC(hdc);
-    let Some((hbm_src, _)) = create_topdown_dib_from_bgra(hdc, &ov.work_bgra, ov.vw, ov.vh) else {
-        SelectObject(hdc_back, old_back);
-        DeleteObject(hbm_back);
-        DeleteDC(hdc_back);
-        DeleteDC(hdc_src);
-        EndPaint(hwnd, &ps);
-        return;
-    };
-    let old_src = SelectObject(hdc_src, hbm_src);
-    BitBlt(hdc_back, 0, 0, ov.vw, ov.vh, hdc_src, 0, 0, SRCCOPY);
-
-    // 绘制矢量标注（原图坐标偏移 0,0）
-    let mut all_vec = ov.annots.clone();
-    if let Some(d) = &ov.draft_annot {
-        all_vec.push(d.clone());
-    }
-    draw_vector_annots(hdc_back, &all_vec, 0, 0);
-
-    // 暗化 45% 蒙版（用 1x1 黑色位图绕过选区或高亮悬停窗口）
-    let sel = if ov.has_sel {
-        norm_rect(
-            ov.sel_rc.left,
-            ov.sel_rc.top,
-            ov.sel_rc.right,
-            ov.sel_rc.bottom,
-        )
-    } else if ov.hover_win_rc.right > ov.hover_win_rc.left {
-        ov.hover_win_rc
-    } else {
-        RECT::default()
-    };
-
-    let dc_blk = CreateCompatibleDC(hdc);
-    let mut px_blk = [0u8, 0, 0, 255];
-    if let Some((bm_blk, _)) = create_topdown_dib_from_bgra(hdc, &px_blk, 1, 1) {
-        let ob_blk = SelectObject(dc_blk, bm_blk);
-        let bf = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER,
-            BlendFlags: 0,
-            SourceConstantAlpha: 120,
-            AlphaFormat: 0,
+    SNIP_MGR.with(|m| {
+        let Ok(mgr) = m.try_borrow() else {
+            return;
         };
+        let ov = &mgr.overlay;
+        let gdi = &ov.gdi;
+        if ov.vw <= 0 || ov.vh <= 0 || gdi.hdc_back.is_null() {
+            return;
+        }
+        let hdc_back = gdi.hdc_back;
+
+        // 1. 极速复制预暗化全屏底图（零 AlphaBlend / 零每帧位图分配）
+        BitBlt(hdc_back, 0, 0, ov.vw, ov.vh, gdi.hdc_dim, 0, 0, SRCCOPY);
+
+        let sel = if ov.has_sel {
+            norm_rect(
+                ov.sel_rc.left,
+                ov.sel_rc.top,
+                ov.sel_rc.right,
+                ov.sel_rc.bottom,
+            )
+        } else if ov.hover_win_rc.right > ov.hover_win_rc.left {
+            ov.hover_win_rc
+        } else {
+            RECT::default()
+        };
+
+        let show_brush_ring = ov.has_sel
+            && !ov.dragging_sel
+            && matches!(ov.cur_tool, AnnotTool::Mosaic | AnnotTool::Blur)
+            && pt_in_rect(sel, ov.mouse_pt.x, ov.mouse_pt.y)
+            && !pt_in_rect(ov.bar_rc, ov.mouse_pt.x, ov.mouse_pt.y)
+            && (ov.cur_tool == AnnotTool::None
+                || !pt_in_rect(ov.sub_bar_rc, ov.mouse_pt.x, ov.mouse_pt.y));
+
+        // 2. 将选区（含已涂抹工作底图）BitBlt 到高亮区，并裁剪绘制矢量标注与画笔预览圈
         if sel.right > sel.left && sel.bottom > sel.top {
-            if sel.top > 0 {
-                AlphaBlend(hdc_back, 0, 0, ov.vw, sel.top, dc_blk, 0, 0, 1, 1, bf);
-            }
-            if sel.bottom < ov.vh {
-                AlphaBlend(
-                    hdc_back,
-                    0,
-                    sel.bottom,
-                    ov.vw,
-                    ov.vh - sel.bottom,
-                    dc_blk,
-                    0,
-                    0,
-                    1,
-                    1,
-                    bf,
-                );
-            }
-            if sel.left > 0 {
-                AlphaBlend(
-                    hdc_back,
-                    0,
-                    sel.top,
-                    sel.left,
-                    sel.bottom - sel.top,
-                    dc_blk,
-                    0,
-                    0,
-                    1,
-                    1,
-                    bf,
-                );
-            }
-            if sel.right < ov.vw {
-                AlphaBlend(
-                    hdc_back,
-                    sel.right,
-                    sel.top,
-                    ov.vw - sel.right,
-                    sel.bottom - sel.top,
-                    dc_blk,
-                    0,
-                    0,
-                    1,
-                    1,
-                    bf,
-                );
-            }
-        } else {
-            AlphaBlend(hdc_back, 0, 0, ov.vw, ov.vh, dc_blk, 0, 0, 1, 1, bf);
-        }
-        let _ = &mut px_blk;
-        SelectObject(dc_blk, ob_blk);
-        DeleteObject(bm_blk);
-    }
-    DeleteDC(dc_blk);
-
-    // 选区亮蓝边界与 8 个调节手柄 + 尺寸角标
-    if sel.right > sel.left && sel.bottom > sel.top {
-        let pen = CreatePen(PS_SOLID, 2, rgb(59, 130, 246));
-        let op = SelectObject(hdc_back, pen);
-        let ob = SelectObject(hdc_back, GetStockObject(NULL_BRUSH));
-        crate::ui::win32_ui::Rectangle(hdc_back, sel.left, sel.top, sel.right, sel.bottom);
-        SelectObject(hdc_back, ob);
-        SelectObject(hdc_back, op);
-        DeleteObject(pen);
-
-        if ov.has_sel {
-            let hs = HANDLE_SIZE / 2;
-            let pts = [
-                (sel.left, sel.top),
-                ((sel.left + sel.right) / 2, sel.top),
-                (sel.right, sel.top),
-                (sel.right, (sel.top + sel.bottom) / 2),
-                (sel.right, sel.bottom),
-                ((sel.left + sel.right) / 2, sel.bottom),
-                (sel.left, sel.bottom),
-                (sel.left, (sel.top + sel.bottom) / 2),
-            ];
-            let br_w = CreateSolidBrush(rgb(255, 255, 255));
-            let pen_h = CreatePen(PS_SOLID, 1, rgb(59, 130, 246));
-            let op_h = SelectObject(hdc_back, pen_h);
-            for (hx, hy) in pts {
-                let r = RECT {
-                    left: hx - hs,
-                    top: hy - hs,
-                    right: hx + hs + 1,
-                    bottom: hy + hs + 1,
-                };
-                FillRect(hdc_back, &r, br_w);
-                let ob_h = SelectObject(hdc_back, GetStockObject(NULL_BRUSH));
-                crate::ui::win32_ui::Rectangle(hdc_back, r.left, r.top, r.right, r.bottom);
-                SelectObject(hdc_back, ob_h);
-            }
-            SelectObject(hdc_back, op_h);
-            DeleteObject(pen_h);
-            DeleteObject(br_w);
-        }
-
-        // 左上角尺寸提示徽标
-        let sz_txt = format!("{} × {}", sel.right - sel.left, sel.bottom - sel.top);
-        let tag_y = if sel.top >= 26 {
-            sel.top - 24
-        } else {
-            sel.top + 4
-        };
-        let mut tr = RECT {
-            left: sel.left.clamp(4, (ov.vw - 110).max(4)),
-            top: tag_y,
-            right: (sel.left + 104).min(ov.vw - 4),
-            bottom: tag_y + 20,
-        };
-        let br_t = CreateSolidBrush(rgb(20, 24, 32));
-        FillRect(hdc_back, &tr, br_t);
-        DeleteObject(br_t);
-        let wf = utf8_to_wide("Segoe UI");
-        let hf = CreateFontW(
-            -12,
-            0,
-            0,
-            0,
-            FW_MEDIUM,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            0,
-            0,
-            CLEARTYPE_QUALITY,
-            0,
-            wf.as_ptr(),
-        );
-        let old_f = SelectObject(hdc_back, hf);
-        SetBkMode(hdc_back, TRANSPARENT);
-        SetTextColor(hdc_back, rgb(240, 244, 250));
-        let wt = utf8_to_wide(&sz_txt);
-        DrawTextW(
-            hdc_back,
-            wt.as_ptr(),
-            -1,
-            &mut tr,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        );
-        SelectObject(hdc_back, old_f);
-        DeleteObject(hf);
-    }
-
-    // 选区完成且非翻译极速模式下绘制悬浮工具栏与子栏
-    if ov.has_sel && !ov.dragging_sel && !ov.trans_mode && !ov.btns.is_empty() {
-        let br_bar = CreateSolidBrush(rgb(30, 34, 42));
-        FillRect(hdc_back, &ov.bar_rc, br_bar);
-        DeleteObject(br_bar);
-        let p_bd = CreatePen(PS_SOLID, 1, rgb(68, 76, 92));
-        let op_b = SelectObject(hdc_back, p_bd);
-        let ob_b = SelectObject(hdc_back, GetStockObject(NULL_BRUSH));
-        crate::ui::win32_ui::Rectangle(
-            hdc_back,
-            ov.bar_rc.left,
-            ov.bar_rc.top,
-            ov.bar_rc.right,
-            ov.bar_rc.bottom,
-        );
-        SelectObject(hdc_back, ob_b);
-        SelectObject(hdc_back, op_b);
-        DeleteObject(p_bd);
-
-        ensure_gdiplus();
-        let mut g_ic: *mut c_void = null_mut();
-        if GdipCreateFromHDC(hdc_back, &mut g_ic) == GP_OK && !g_ic.is_null() {
-            GdipSetSmoothingMode(g_ic, GP_SMOOTHING_ANTIALIAS);
-        }
-
-        let wf = utf8_to_wide("Microsoft YaHei UI");
-        let hf_btn = CreateFontW(
-            -12,
-            0,
-            0,
-            0,
-            FW_MEDIUM,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            0,
-            0,
-            CLEARTYPE_QUALITY,
-            0,
-            wf.as_ptr(),
-        );
-        let old_f = SelectObject(hdc_back, hf_btn);
-        SetBkMode(hdc_back, TRANSPARENT);
-        let active_id = tool_to_btn(ov.cur_tool);
-        let mut hover_tip = "";
-        let mut hover_rc = RECT::default();
-
-        for b in &ov.btns {
-            let hot = ov.hover_btn == b.id;
-            let active = active_id != 0 && b.id == active_id;
-            let dis = (b.id == BTN_UNDO && ov.annots.is_empty())
-                || (b.id == BTN_REDO && ov.redo_stack.is_empty());
-            let b_col = if b.id == BTN_COPY {
-                if hot {
-                    rgb(79, 145, 250)
-                } else {
-                    rgb(59, 130, 246)
-                }
-            } else if b.id == BTN_CANCEL && hot {
-                rgb(200, 62, 62)
-            } else if active {
-                rgb(59, 130, 246)
-            } else if hot && !dis {
-                rgb(64, 72, 88)
-            } else {
-                rgb(42, 48, 58)
-            };
-            let br_b = CreateSolidBrush(b_col);
-            let mut r = b.rect;
-            FillRect(hdc_back, &r, br_b);
-            DeleteObject(br_b);
-            let t_col = if dis {
-                rgb(105, 114, 130)
-            } else {
-                rgb(242, 246, 252)
-            };
-            if b.id <= BTN_REDO && !g_ic.is_null() {
-                let c_gp = argb(
-                    crate::ui::win32_ui::get_r_value(t_col) as u8,
-                    crate::ui::win32_ui::get_g_value(t_col) as u8,
-                    crate::ui::win32_ui::get_b_value(t_col) as u8,
-                    if dis { 100 } else { 245 },
-                );
-                draw_overlay_tool_icon(g_ic, b.id, r, c_gp);
-            } else {
-                SetTextColor(hdc_back, t_col);
-                let wl = utf8_to_wide(b.label);
-                DrawTextW(
-                    hdc_back,
-                    wl.as_ptr(),
-                    -1,
-                    &mut r,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-                );
-            }
-            if hot && !b.tip.is_empty() {
-                hover_tip = b.tip;
-                hover_rc = r;
-            }
-        }
-
-        // 二级子属性栏
-        if ov.cur_tool != AnnotTool::None && ov.sub_bar_rc.right > ov.sub_bar_rc.left {
-            let br_s = CreateSolidBrush(rgb(26, 30, 38));
-            FillRect(hdc_back, &ov.sub_bar_rc, br_s);
-            DeleteObject(br_s);
-            if !g_ic.is_null() {
-                let diams = [5.0f32, 9.0, 13.0];
-                for (i, &d) in diams.iter().enumerate() {
-                    let r = ov.size_rcs[i];
-                    let act = ov.cur_size_idx == i;
-                    let hot = ov.sub_hover == SUB_SIZE_0 + (i as i32);
-                    if act || hot {
-                        let mut bg_c: *mut c_void = null_mut();
-                        let cc = if act {
-                            argb(59, 130, 246, 90)
-                        } else {
-                            argb(255, 255, 255, 32)
-                        };
-                        if GdipCreateSolidFill(cc, &mut bg_c) == GP_OK && !bg_c.is_null() {
-                            GdipFillEllipse(
-                                g_ic,
-                                bg_c,
-                                (r.left + 2) as f32,
-                                (r.top + 2) as f32,
-                                20.0,
-                                20.0,
-                            );
-                            GdipDeleteBrush(bg_c);
-                        }
-                    }
-                    let cx = (r.left + r.right) as f32 * 0.5 - d * 0.5;
-                    let cy = (r.top + r.bottom) as f32 * 0.5 - d * 0.5;
-                    let mut dc: *mut c_void = null_mut();
-                    let col = if act {
-                        argb(96, 165, 250, 255)
-                    } else {
-                        argb(218, 226, 238, 255)
-                    };
-                    if GdipCreateSolidFill(col, &mut dc) == GP_OK && !dc.is_null() {
-                        GdipFillEllipse(g_ic, dc, cx, cy, d, d);
-                        GdipDeleteBrush(dc);
-                    }
-                }
-            }
-            if matches!(ov.cur_tool, AnnotTool::Rect | AnnotTool::Ellipse) {
-                let mut fr = ov.fill_rc;
-                let fc = if ov.cur_filled {
-                    rgb(59, 130, 246)
-                } else if ov.sub_hover == SUB_FILL {
-                    rgb(64, 72, 88)
-                } else {
-                    rgb(42, 48, 58)
-                };
-                let br_f = CreateSolidBrush(fc);
-                FillRect(hdc_back, &fr, br_f);
-                DeleteObject(br_f);
-                SetTextColor(hdc_back, rgb(240, 244, 250));
-                let wf_t = utf8_to_wide(if ov.cur_filled { "实心" } else { "空心" });
-                DrawTextW(
-                    hdc_back,
-                    wf_t.as_ptr(),
-                    -1,
-                    &mut fr,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-                );
-            }
-            if !matches!(ov.cur_tool, AnnotTool::Mosaic | AnnotTool::Blur) {
-                for (i, &(r, g, b)) in ANNOT_COLORS.iter().enumerate() {
-                    let rc = ov.color_rcs[i];
-                    let br_sw = CreateSolidBrush(rgb(r, g, b));
-                    FillRect(hdc_back, &rc, br_sw);
-                    DeleteObject(br_sw);
-                    if ov.cur_color_idx == i || ov.sub_hover == SUB_COLOR_BASE + (i as i32) {
-                        let ring = if ov.cur_color_idx == i {
-                            rgb(255, 255, 255)
-                        } else {
-                            rgb(147, 197, 253)
-                        };
-                        let rp =
-                            CreatePen(PS_SOLID, if ov.cur_color_idx == i { 2 } else { 1 }, ring);
-                        let op_r = SelectObject(hdc_back, rp);
-                        let ob_r = SelectObject(hdc_back, GetStockObject(NULL_BRUSH));
-                        crate::ui::win32_ui::Rectangle(
-                            hdc_back,
-                            rc.left - 2,
-                            rc.top - 2,
-                            rc.right + 2,
-                            rc.bottom + 2,
-                        );
-                        SelectObject(hdc_back, ob_r);
-                        SelectObject(hdc_back, op_r);
-                        DeleteObject(rp);
-                    }
-                }
-            } else {
-                let mut hrc = RECT {
-                    left: ov.size_rcs[2].right + 10,
-                    top: ov.sub_bar_rc.top,
-                    right: ov.sub_bar_rc.right - 6,
-                    bottom: ov.sub_bar_rc.bottom,
-                };
-                SetTextColor(hdc_back, rgb(158, 170, 190));
-                let wh = utf8_to_wide("强度/粗细 (左选圆点)");
-                DrawTextW(
-                    hdc_back,
-                    wh.as_ptr(),
-                    -1,
-                    &mut hrc,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-                );
-            }
-        }
-
-        if !hover_tip.is_empty() {
-            let wt = utf8_to_wide(hover_tip);
-            let mut cr = RECT::default();
-            DrawTextW(
+            BitBlt(
                 hdc_back,
-                wt.as_ptr(),
-                -1,
-                &mut cr,
-                DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX,
+                sel.left,
+                sel.top,
+                sel.right - sel.left,
+                sel.bottom - sel.top,
+                gdi.hdc_work,
+                sel.left,
+                sel.top,
+                SRCCOPY,
             );
-            let tw = (cr.right - cr.left + 16).clamp(54, 340);
-            let tx = ((hover_rc.left + hover_rc.right - tw) / 2).clamp(4, (ov.vw - tw - 4).max(4));
-            let ty = if ov.bar_rc.top >= 26 {
-                ov.bar_rc.top - 24
+
+            let has_vectors = ov
+                .annots
+                .iter()
+                .any(|it| !matches!(it.tool, AnnotTool::Mosaic | AnnotTool::Blur))
+                || ov
+                    .draft_annot
+                    .as_ref()
+                    .is_some_and(|d| !matches!(d.tool, AnnotTool::Mosaic | AnnotTool::Blur));
+
+            if has_vectors || show_brush_ring {
+                let hrgn = CreateRectRgn(sel.left, sel.top, sel.right, sel.bottom);
+                SelectClipRgn(hdc_back, hrgn);
+                if has_vectors {
+                    draw_vector_annots_with_draft(
+                        hdc_back,
+                        &ov.annots,
+                        ov.draft_annot.as_ref(),
+                        0,
+                        0,
+                    );
+                }
+                if show_brush_ring {
+                    ensure_gdiplus();
+                    let mut g_br: *mut c_void = null_mut();
+                    if GdipCreateFromHDC(hdc_back, &mut g_br) == GP_OK && !g_br.is_null() {
+                        GdipSetSmoothingMode(g_br, GP_SMOOTHING_ANTIALIAS);
+                        let r = brush_radius_for_width(SIZE_WIDTHS[ov.cur_size_idx]) as f32;
+                        let bx = (ov.mouse_pt.x as f32) - r;
+                        let by = (ov.mouse_pt.y as f32) - r;
+                        let d = r * 2.0;
+                        let mut p_outer: *mut c_void = null_mut();
+                        if GdipCreatePen1(argb(20, 24, 32, 200), 2.2, GP_UNIT_PIXEL, &mut p_outer)
+                            == GP_OK
+                            && !p_outer.is_null()
+                        {
+                            GdipDrawEllipse(g_br, p_outer, bx, by, d, d);
+                            GdipDeletePen(p_outer);
+                        }
+                        let mut p_inner: *mut c_void = null_mut();
+                        if GdipCreatePen1(
+                            argb(255, 255, 255, 235),
+                            1.2,
+                            GP_UNIT_PIXEL,
+                            &mut p_inner,
+                        ) == GP_OK
+                            && !p_inner.is_null()
+                        {
+                            GdipDrawEllipse(g_br, p_inner, bx, by, d, d);
+                            GdipDeletePen(p_inner);
+                        }
+                        GdipDeleteGraphics(g_br);
+                    }
+                }
+                SelectClipRgn(hdc_back, null_mut());
+                if !hrgn.is_null() {
+                    DeleteObject(hrgn);
+                }
+            }
+
+            // 3. 选区亮蓝边界与 8 个调节手柄 + 尺寸角标
+            let pen = CreatePen(PS_SOLID, 2, rgb(59, 130, 246));
+            let op = SelectObject(hdc_back, pen);
+            let ob = SelectObject(hdc_back, GetStockObject(NULL_BRUSH));
+            crate::ui::win32_ui::Rectangle(hdc_back, sel.left, sel.top, sel.right, sel.bottom);
+            SelectObject(hdc_back, ob);
+            SelectObject(hdc_back, op);
+            DeleteObject(pen);
+
+            if ov.has_sel {
+                let hs = HANDLE_SIZE / 2;
+                let pts = [
+                    (sel.left, sel.top),
+                    ((sel.left + sel.right) / 2, sel.top),
+                    (sel.right, sel.top),
+                    (sel.right, (sel.top + sel.bottom) / 2),
+                    (sel.right, sel.bottom),
+                    ((sel.left + sel.right) / 2, sel.bottom),
+                    (sel.left, sel.bottom),
+                    (sel.left, (sel.top + sel.bottom) / 2),
+                ];
+                let br_w = CreateSolidBrush(rgb(255, 255, 255));
+                let pen_h = CreatePen(PS_SOLID, 1, rgb(59, 130, 246));
+                let op_h = SelectObject(hdc_back, pen_h);
+                for (hx, hy) in pts {
+                    let r = RECT {
+                        left: hx - hs,
+                        top: hy - hs,
+                        right: hx + hs + 1,
+                        bottom: hy + hs + 1,
+                    };
+                    FillRect(hdc_back, &r, br_w);
+                    let ob_h = SelectObject(hdc_back, GetStockObject(NULL_BRUSH));
+                    crate::ui::win32_ui::Rectangle(hdc_back, r.left, r.top, r.right, r.bottom);
+                    SelectObject(hdc_back, ob_h);
+                }
+                SelectObject(hdc_back, op_h);
+                DeleteObject(pen_h);
+                DeleteObject(br_w);
+            }
+
+            // 左上角尺寸提示徽标
+            let sz_txt = format!("{} × {}", sel.right - sel.left, sel.bottom - sel.top);
+            let tag_y = if sel.top >= 26 {
+                sel.top - 24
             } else {
-                ov.bar_rc.bottom + 6
+                sel.top + 4
             };
             let mut tr = RECT {
-                left: tx,
-                top: ty,
-                right: tx + tw,
-                bottom: ty + 20,
+                left: sel.left.clamp(4, (ov.vw - 110).max(4)),
+                top: tag_y,
+                right: (sel.left + 104).min(ov.vw - 4),
+                bottom: tag_y + 20,
             };
-            let tb = CreateSolidBrush(rgb(20, 24, 32));
-            FillRect(hdc_back, &tr, tb);
-            DeleteObject(tb);
-            SetTextColor(hdc_back, rgb(230, 238, 250));
+            let br_t = CreateSolidBrush(rgb(20, 24, 32));
+            FillRect(hdc_back, &tr, br_t);
+            DeleteObject(br_t);
+            let old_f = if !gdi.hf_badge.is_null() {
+                SelectObject(hdc_back, gdi.hf_badge)
+            } else {
+                null_mut()
+            };
+            SetBkMode(hdc_back, TRANSPARENT);
+            SetTextColor(hdc_back, rgb(240, 244, 250));
+            let wt = utf8_to_wide(&sz_txt);
             DrawTextW(
                 hdc_back,
                 wt.as_ptr(),
                 -1,
                 &mut tr,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE,
             );
+            if !old_f.is_null() {
+                SelectObject(hdc_back, old_f);
+            }
         }
 
-        if !g_ic.is_null() {
-            GdipDeleteGraphics(g_ic);
+        // 4. 选区完成且非翻译极速模式下绘制悬浮工具栏与子栏
+        if ov.has_sel && !ov.dragging_sel && !ov.trans_mode && !ov.btns.is_empty() {
+            let br_bar = CreateSolidBrush(rgb(30, 34, 42));
+            FillRect(hdc_back, &ov.bar_rc, br_bar);
+            DeleteObject(br_bar);
+            let p_bd = CreatePen(PS_SOLID, 1, rgb(68, 76, 92));
+            let op_b = SelectObject(hdc_back, p_bd);
+            let ob_b = SelectObject(hdc_back, GetStockObject(NULL_BRUSH));
+            crate::ui::win32_ui::Rectangle(
+                hdc_back,
+                ov.bar_rc.left,
+                ov.bar_rc.top,
+                ov.bar_rc.right,
+                ov.bar_rc.bottom,
+            );
+            SelectObject(hdc_back, ob_b);
+            SelectObject(hdc_back, op_b);
+            DeleteObject(p_bd);
+
+            ensure_gdiplus();
+            let mut g_ic: *mut c_void = null_mut();
+            if GdipCreateFromHDC(hdc_back, &mut g_ic) == GP_OK && !g_ic.is_null() {
+                GdipSetSmoothingMode(g_ic, GP_SMOOTHING_ANTIALIAS);
+            }
+
+            let old_f = if !gdi.hf_btn.is_null() {
+                SelectObject(hdc_back, gdi.hf_btn)
+            } else {
+                null_mut()
+            };
+            SetBkMode(hdc_back, TRANSPARENT);
+            let active_id = tool_to_btn(ov.cur_tool);
+            let mut hover_tip = "";
+            let mut hover_rc = RECT::default();
+
+            for b in &ov.btns {
+                let hot = ov.hover_btn == b.id;
+                let active = active_id != 0 && b.id == active_id;
+                let dis = (b.id == BTN_UNDO && ov.annots.is_empty())
+                    || (b.id == BTN_REDO && ov.redo_stack.is_empty());
+                let b_col = if b.id == BTN_COPY {
+                    if hot {
+                        rgb(79, 145, 250)
+                    } else {
+                        rgb(59, 130, 246)
+                    }
+                } else if b.id == BTN_CANCEL && hot {
+                    rgb(200, 62, 62)
+                } else if active {
+                    rgb(59, 130, 246)
+                } else if hot && !dis {
+                    rgb(64, 72, 88)
+                } else {
+                    rgb(42, 48, 58)
+                };
+                let br_b = CreateSolidBrush(b_col);
+                let mut r = b.rect;
+                FillRect(hdc_back, &r, br_b);
+                DeleteObject(br_b);
+                let t_col = if dis {
+                    rgb(105, 114, 130)
+                } else {
+                    rgb(242, 246, 252)
+                };
+                if b.id <= BTN_REDO && !g_ic.is_null() {
+                    let c_gp = argb(
+                        crate::ui::win32_ui::get_r_value(t_col) as u8,
+                        crate::ui::win32_ui::get_g_value(t_col) as u8,
+                        crate::ui::win32_ui::get_b_value(t_col) as u8,
+                        if dis { 100 } else { 245 },
+                    );
+                    draw_overlay_tool_icon(g_ic, b.id, r, c_gp);
+                } else {
+                    SetTextColor(hdc_back, t_col);
+                    let wl = utf8_to_wide(b.label);
+                    DrawTextW(
+                        hdc_back,
+                        wl.as_ptr(),
+                        -1,
+                        &mut r,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                    );
+                }
+                if hot && !b.tip.is_empty() {
+                    hover_tip = b.tip;
+                    hover_rc = r;
+                }
+            }
+
+            // 二级子属性栏
+            if ov.cur_tool != AnnotTool::None && ov.sub_bar_rc.right > ov.sub_bar_rc.left {
+                let br_s = CreateSolidBrush(rgb(26, 30, 38));
+                FillRect(hdc_back, &ov.sub_bar_rc, br_s);
+                DeleteObject(br_s);
+                if !g_ic.is_null() {
+                    let diams = [5.0f32, 9.0, 13.0];
+                    for (i, &d) in diams.iter().enumerate() {
+                        let r = ov.size_rcs[i];
+                        let act = ov.cur_size_idx == i;
+                        let hot = ov.sub_hover == SUB_SIZE_0 + (i as i32);
+                        if act || hot {
+                            let mut bg_c: *mut c_void = null_mut();
+                            let cc = if act {
+                                argb(59, 130, 246, 90)
+                            } else {
+                                argb(255, 255, 255, 32)
+                            };
+                            if GdipCreateSolidFill(cc, &mut bg_c) == GP_OK && !bg_c.is_null() {
+                                GdipFillEllipse(
+                                    g_ic,
+                                    bg_c,
+                                    (r.left + 2) as f32,
+                                    (r.top + 2) as f32,
+                                    20.0,
+                                    20.0,
+                                );
+                                GdipDeleteBrush(bg_c);
+                            }
+                        }
+                        let cx = (r.left + r.right) as f32 * 0.5 - d * 0.5;
+                        let cy = (r.top + r.bottom) as f32 * 0.5 - d * 0.5;
+                        let mut dc: *mut c_void = null_mut();
+                        let col = if act {
+                            argb(96, 165, 250, 255)
+                        } else {
+                            argb(218, 226, 238, 255)
+                        };
+                        if GdipCreateSolidFill(col, &mut dc) == GP_OK && !dc.is_null() {
+                            GdipFillEllipse(g_ic, dc, cx, cy, d, d);
+                            GdipDeleteBrush(dc);
+                        }
+                    }
+                }
+                if matches!(ov.cur_tool, AnnotTool::Rect | AnnotTool::Ellipse) {
+                    let mut fr = ov.fill_rc;
+                    let fc = if ov.cur_filled {
+                        rgb(59, 130, 246)
+                    } else if ov.sub_hover == SUB_FILL {
+                        rgb(64, 72, 88)
+                    } else {
+                        rgb(42, 48, 58)
+                    };
+                    let br_f = CreateSolidBrush(fc);
+                    FillRect(hdc_back, &fr, br_f);
+                    DeleteObject(br_f);
+                    SetTextColor(hdc_back, rgb(240, 244, 250));
+                    let wf_t = utf8_to_wide(if ov.cur_filled { "实心" } else { "空心" });
+                    DrawTextW(
+                        hdc_back,
+                        wf_t.as_ptr(),
+                        -1,
+                        &mut fr,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                    );
+                }
+                if !matches!(ov.cur_tool, AnnotTool::Mosaic | AnnotTool::Blur) {
+                    for (i, &(r, g, b)) in ANNOT_COLORS.iter().enumerate() {
+                        let rc = ov.color_rcs[i];
+                        let br_sw = CreateSolidBrush(rgb(r, g, b));
+                        FillRect(hdc_back, &rc, br_sw);
+                        DeleteObject(br_sw);
+                        if ov.cur_color_idx == i || ov.sub_hover == SUB_COLOR_BASE + (i as i32) {
+                            let ring = if ov.cur_color_idx == i {
+                                rgb(255, 255, 255)
+                            } else {
+                                rgb(147, 197, 253)
+                            };
+                            let rp = CreatePen(
+                                PS_SOLID,
+                                if ov.cur_color_idx == i { 2 } else { 1 },
+                                ring,
+                            );
+                            let op_r = SelectObject(hdc_back, rp);
+                            let ob_r = SelectObject(hdc_back, GetStockObject(NULL_BRUSH));
+                            crate::ui::win32_ui::Rectangle(
+                                hdc_back,
+                                rc.left - 2,
+                                rc.top - 2,
+                                rc.right + 2,
+                                rc.bottom + 2,
+                            );
+                            SelectObject(hdc_back, ob_r);
+                            SelectObject(hdc_back, op_r);
+                            DeleteObject(rp);
+                        }
+                    }
+                } else {
+                    let mut hrc = RECT {
+                        left: ov.size_rcs[2].right + 10,
+                        top: ov.sub_bar_rc.top,
+                        right: ov.sub_bar_rc.right - 6,
+                        bottom: ov.sub_bar_rc.bottom,
+                    };
+                    SetTextColor(hdc_back, rgb(158, 170, 190));
+                    let wh = utf8_to_wide("笔刷粗细 (左选圆点)");
+                    DrawTextW(
+                        hdc_back,
+                        wh.as_ptr(),
+                        -1,
+                        &mut hrc,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+                    );
+                }
+            }
+
+            if !hover_tip.is_empty() {
+                let wt = utf8_to_wide(hover_tip);
+                let mut cr = RECT::default();
+                DrawTextW(
+                    hdc_back,
+                    wt.as_ptr(),
+                    -1,
+                    &mut cr,
+                    DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX,
+                );
+                let tw = (cr.right - cr.left + 16).clamp(54, 340);
+                let tx =
+                    ((hover_rc.left + hover_rc.right - tw) / 2).clamp(4, (ov.vw - tw - 4).max(4));
+                let ty = if ov.bar_rc.top >= 26 {
+                    ov.bar_rc.top - 24
+                } else {
+                    ov.bar_rc.bottom + 6
+                };
+                let mut tr = RECT {
+                    left: tx,
+                    top: ty,
+                    right: tx + tw,
+                    bottom: ty + 20,
+                };
+                let tb = CreateSolidBrush(rgb(20, 24, 32));
+                FillRect(hdc_back, &tr, tb);
+                DeleteObject(tb);
+                SetTextColor(hdc_back, rgb(230, 238, 250));
+                DrawTextW(
+                    hdc_back,
+                    wt.as_ptr(),
+                    -1,
+                    &mut tr,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                );
+            }
+
+            if !g_ic.is_null() {
+                GdipDeleteGraphics(g_ic);
+            }
+            if !old_f.is_null() {
+                SelectObject(hdc_back, old_f);
+            }
         }
-        SelectObject(hdc_back, old_f);
-        DeleteObject(hf_btn);
-    }
 
-    // 未确定选区或正在调整选区大小时显示 12x 放大镜取色器
-    if !ov.has_sel || ov.dragging_sel {
-        draw_overlay_magnifier(hdc_back, hdc_src, &ov, sel);
-    }
+        // 5. 未确定选区或正在调整选区大小时显示 12x 放大镜取色器
+        if !ov.has_sel || ov.dragging_sel {
+            draw_overlay_magnifier(hdc_back, gdi.hdc_work, ov, sel, gdi.hf_mag);
+        }
 
-    BitBlt(hdc, 0, 0, ov.vw, ov.vh, hdc_back, 0, 0, SRCCOPY);
-    SelectObject(hdc_src, old_src);
-    DeleteObject(hbm_src);
-    DeleteDC(hdc_src);
-    SelectObject(hdc_back, old_back);
-    DeleteObject(hbm_back);
-    DeleteDC(hdc_back);
+        BitBlt(hdc, 0, 0, ov.vw, ov.vh, hdc_back, 0, 0, SRCCOPY);
+    });
     EndPaint(hwnd, &ps);
 }
 
@@ -2268,9 +3015,10 @@ unsafe extern "system" fn overlay_wnd_proc(
         }
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lp);
-            let need_rebuild = SNIP_MGR.with(|m| {
+            let need_repaint = SNIP_MGR.with(|m| {
                 let mut mgr = m.borrow_mut();
                 let ov = &mut mgr.overlay;
+                let prev_pt = ov.mouse_pt;
                 ov.mouse_pt = POINT { x, y };
 
                 if ov.dragging_sel {
@@ -2311,28 +3059,87 @@ unsafe extern "system" fn overlay_wnd_proc(
                         }
                         _ => {}
                     }
-                    return false;
+                    return true;
                 }
 
                 if ov.drawing_annot {
+                    let sel = norm_rect(
+                        ov.sel_rc.left,
+                        ov.sel_rc.top,
+                        ov.sel_rc.right,
+                        ov.sel_rc.bottom,
+                    );
+                    struct StampSeg {
+                        tool: AnnotTool,
+                        width: i32,
+                        p0: (i32, i32),
+                        p1: (i32, i32),
+                    }
+                    let mut stamp_info: Option<StampSeg> = None;
+                    let mut repaint = false;
                     if let Some(d) = ov.draft_annot.as_mut() {
-                        d.x2 = x;
-                        d.y2 = y;
-                        if matches!(d.tool, AnnotTool::Pen | AnnotTool::Marker) {
-                            d.pts.push((x, y));
-                        }
-                        if matches!(d.tool, AnnotTool::Mosaic | AnnotTool::Blur) {
-                            return true;
+                        match d.tool {
+                            AnnotTool::Mosaic | AnnotTool::Blur => {
+                                let cx = x.clamp(sel.left, (sel.right - 1).max(sel.left));
+                                let cy = y.clamp(sel.top, (sel.bottom - 1).max(sel.top));
+                                d.x2 = cx;
+                                d.y2 = cy;
+                                if let Some(&last) = d.pts.last() {
+                                    let dx = cx - last.0;
+                                    let dy = cy - last.1;
+                                    if dx * dx + dy * dy >= 4 {
+                                        d.pts.push((cx, cy));
+                                        stamp_info = Some(StampSeg {
+                                            tool: d.tool,
+                                            width: d.width,
+                                            p0: last,
+                                            p1: (cx, cy),
+                                        });
+                                    }
+                                } else {
+                                    d.pts.push((cx, cy));
+                                    stamp_info = Some(StampSeg {
+                                        tool: d.tool,
+                                        width: d.width,
+                                        p0: (cx, cy),
+                                        p1: (cx, cy),
+                                    });
+                                }
+                                repaint = true;
+                            }
+                            AnnotTool::Pen | AnnotTool::Marker => {
+                                d.x2 = x;
+                                d.y2 = y;
+                                let push_pt = d.pts.last().is_none_or(|&(lx, ly)| {
+                                    let dx = x - lx;
+                                    let dy = y - ly;
+                                    dx * dx + dy * dy >= 4
+                                });
+                                if push_pt {
+                                    d.pts.push((x, y));
+                                    repaint = true;
+                                }
+                            }
+                            _ => {
+                                if d.x2 != x || d.y2 != y {
+                                    d.x2 = x;
+                                    d.y2 = y;
+                                    repaint = true;
+                                }
+                            }
                         }
                     }
-                    return false;
+                    if let Some(seg) = stamp_info {
+                        apply_brush_segment_to_work(ov, seg.tool, seg.width, seg.p0, seg.p1);
+                    }
+                    return repaint;
                 }
 
                 if !ov.has_sel {
                     let mut best = RECT::default();
                     let mut best_area = i64::MAX;
                     for &wrc in &ov.win_rects {
-                        if x >= wrc.left && x < wrc.right && y >= wrc.top && y < wrc.bottom {
+                        if pt_in_rect(wrc, x, y) {
                             let area =
                                 ((wrc.right - wrc.left) as i64) * ((wrc.bottom - wrc.top) as i64);
                             if area < best_area {
@@ -2342,48 +3149,49 @@ unsafe extern "system" fn overlay_wnd_proc(
                         }
                     }
                     ov.hover_win_rc = best;
+                    prev_pt.x != x || prev_pt.y != y
                 } else {
+                    let prev_hover_btn = ov.hover_btn;
+                    let prev_sub_hover = ov.sub_hover;
                     ov.hover_btn = 0;
                     for b in &ov.btns {
-                        if x >= b.rect.left
-                            && x < b.rect.right
-                            && y >= b.rect.top
-                            && y < b.rect.bottom
-                        {
+                        if pt_in_rect(b.rect, x, y) {
                             ov.hover_btn = b.id;
                             break;
                         }
                     }
                     ov.sub_hover = 0;
                     if ov.cur_tool != AnnotTool::None {
-                        for (i, r) in ov.size_rcs.iter().enumerate() {
-                            if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+                        for (i, &r) in ov.size_rcs.iter().enumerate() {
+                            if pt_in_rect(r, x, y) {
                                 ov.sub_hover = SUB_SIZE_0 + (i as i32);
                             }
                         }
                         if matches!(ov.cur_tool, AnnotTool::Rect | AnnotTool::Ellipse)
-                            && x >= ov.fill_rc.left
-                            && x < ov.fill_rc.right
-                            && y >= ov.fill_rc.top
-                            && y < ov.fill_rc.bottom
+                            && pt_in_rect(ov.fill_rc, x, y)
                         {
                             ov.sub_hover = SUB_FILL;
                         }
                         if !matches!(ov.cur_tool, AnnotTool::Mosaic | AnnotTool::Blur) {
-                            for (i, r) in ov.color_rcs.iter().enumerate() {
-                                if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+                            for (i, &r) in ov.color_rcs.iter().enumerate() {
+                                if pt_in_rect(r, x, y) {
                                     ov.sub_hover = SUB_COLOR_BASE + (i as i32);
                                 }
                             }
                         }
                     }
+                    let hover_changed =
+                        ov.hover_btn != prev_hover_btn || ov.sub_hover != prev_sub_hover;
+                    let brush_ring_move =
+                        matches!(ov.cur_tool, AnnotTool::Mosaic | AnnotTool::Blur)
+                            && (pt_in_rect(ov.sel_rc, prev_pt.x, prev_pt.y)
+                                || pt_in_rect(ov.sel_rc, x, y));
+                    hover_changed || brush_ring_move
                 }
-                false
             });
-            if need_rebuild {
-                SNIP_MGR.with(|m| rebuild_work_bgra(&mut m.borrow_mut().overlay));
+            if need_repaint {
+                InvalidateRect(hwnd, null(), 0);
             }
-            InvalidateRect(hwnd, null(), 0);
             0
         }
         WM_LBUTTONDOWN => {
@@ -2396,38 +3204,26 @@ unsafe extern "system" fn overlay_wnd_proc(
 
                 if ov.has_sel && !ov.trans_mode {
                     for b in &ov.btns {
-                        if x >= b.rect.left
-                            && x < b.rect.right
-                            && y >= b.rect.top
-                            && y < b.rect.bottom
-                        {
+                        if pt_in_rect(b.rect, x, y) {
                             return Some(b.id);
                         }
                     }
-                    if ov.cur_tool != AnnotTool::None
-                        && x >= ov.sub_bar_rc.left
-                        && x < ov.sub_bar_rc.right
-                        && y >= ov.sub_bar_rc.top
-                        && y < ov.sub_bar_rc.bottom
-                    {
-                        for (i, r) in ov.size_rcs.iter().enumerate() {
-                            if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+                    if ov.cur_tool != AnnotTool::None && pt_in_rect(ov.sub_bar_rc, x, y) {
+                        for (i, &r) in ov.size_rcs.iter().enumerate() {
+                            if pt_in_rect(r, x, y) {
                                 ov.cur_size_idx = i;
                                 return Some(-1);
                             }
                         }
                         if matches!(ov.cur_tool, AnnotTool::Rect | AnnotTool::Ellipse)
-                            && x >= ov.fill_rc.left
-                            && x < ov.fill_rc.right
-                            && y >= ov.fill_rc.top
-                            && y < ov.fill_rc.bottom
+                            && pt_in_rect(ov.fill_rc, x, y)
                         {
                             ov.cur_filled = !ov.cur_filled;
                             return Some(-1);
                         }
                         if !matches!(ov.cur_tool, AnnotTool::Mosaic | AnnotTool::Blur) {
-                            for (i, r) in ov.color_rcs.iter().enumerate() {
-                                if x >= r.left && x < r.right && y >= r.top && y < r.bottom {
+                            for (i, &r) in ov.color_rcs.iter().enumerate() {
+                                if pt_in_rect(r, x, y) {
                                     ov.cur_color_idx = i;
                                     return Some(-1);
                                 }
@@ -2449,11 +3245,7 @@ unsafe extern "system" fn overlay_wnd_proc(
                         ov.drag_mode = hm;
                         ov.drag_start_pt = POINT { x, y };
                         ov.drag_orig_rc = ov.sel_rc;
-                    } else if x >= ov.sel_rc.left
-                        && x < ov.sel_rc.right
-                        && y >= ov.sel_rc.top
-                        && y < ov.sel_rc.bottom
-                    {
+                    } else if pt_in_rect(ov.sel_rc, x, y) {
                         if ov.cur_tool == AnnotTool::None {
                             ov.dragging_sel = true;
                             ov.drag_mode = 2;
@@ -2485,9 +3277,10 @@ unsafe extern "system" fn overlay_wnd_proc(
                         } else {
                             let (r, g, b) = ANNOT_COLORS[ov.cur_color_idx];
                             let w = SIZE_WIDTHS[ov.cur_size_idx];
+                            let tool = ov.cur_tool;
                             ov.drawing_annot = true;
                             ov.draft_annot = Some(AnnotItem {
-                                tool: ov.cur_tool,
+                                tool,
                                 x1: x,
                                 y1: y,
                                 x2: x,
@@ -2501,6 +3294,9 @@ unsafe extern "system" fn overlay_wnd_proc(
                                 num: 0,
                                 text: String::new(),
                             });
+                            if matches!(tool, AnnotTool::Mosaic | AnnotTool::Blur) {
+                                apply_brush_segment_to_work(ov, tool, w, (x, y), (x, y));
+                            }
                         }
                     } else {
                         ov.dragging_sel = true;
@@ -2510,7 +3306,8 @@ unsafe extern "system" fn overlay_wnd_proc(
                         ov.cur_tool = AnnotTool::None;
                         ov.annots.clear();
                         ov.redo_stack.clear();
-                        rebuild_work_bgra(ov);
+                        ov.filter_caches.clear();
+                        rebuild_work_bits(ov);
                     }
                 }
                 None
@@ -2575,8 +3372,12 @@ unsafe extern "system" fn overlay_wnd_proc(
                         SNIP_MGR.with(|m| {
                             let ov = &mut m.borrow_mut().overlay;
                             if let Some(a) = ov.annots.pop() {
+                                let is_pixel =
+                                    matches!(a.tool, AnnotTool::Mosaic | AnnotTool::Blur);
                                 ov.redo_stack.push(a);
-                                rebuild_work_bgra(ov);
+                                if is_pixel {
+                                    rebuild_work_bits(ov);
+                                }
                             }
                         });
                     }
@@ -2584,8 +3385,12 @@ unsafe extern "system" fn overlay_wnd_proc(
                         SNIP_MGR.with(|m| {
                             let ov = &mut m.borrow_mut().overlay;
                             if let Some(a) = ov.redo_stack.pop() {
+                                let is_pixel =
+                                    matches!(a.tool, AnnotTool::Mosaic | AnnotTool::Blur);
                                 ov.annots.push(a);
-                                rebuild_work_bgra(ov);
+                                if is_pixel {
+                                    rebuild_work_bits(ov);
+                                }
                             }
                         });
                     }
@@ -2613,6 +3418,7 @@ unsafe extern "system" fn overlay_wnd_proc(
                 let mut mgr = m.borrow_mut();
                 let ov = &mut mgr.overlay;
                 if ov.dragging_sel {
+                    let old_mode = ov.drag_mode;
                     ov.dragging_sel = false;
                     let w = ov.sel_rc.right - ov.sel_rc.left;
                     let h = ov.sel_rc.bottom - ov.sel_rc.top;
@@ -2631,16 +3437,31 @@ unsafe extern "system" fn overlay_wnd_proc(
                         }
                         layout_overlay_toolbar(ov);
                     }
+                    if old_mode != 1 {
+                        ov.filter_caches.clear();
+                        if ov
+                            .annots
+                            .iter()
+                            .any(|a| matches!(a.tool, AnnotTool::Mosaic | AnnotTool::Blur))
+                        {
+                            rebuild_work_bits(ov);
+                        }
+                    }
                 } else if ov.drawing_annot {
                     ov.drawing_annot = false;
                     if let Some(d) = ov.draft_annot.take() {
-                        let valid =
-                            (d.x2 - d.x1).abs() > 2 || (d.y2 - d.y1).abs() > 2 || d.pts.len() > 2;
+                        let is_pixel = matches!(d.tool, AnnotTool::Mosaic | AnnotTool::Blur);
+                        let valid = if is_pixel {
+                            !d.pts.is_empty()
+                        } else {
+                            (d.x2 - d.x1).abs() > 2 || (d.y2 - d.y1).abs() > 2 || d.pts.len() > 2
+                        };
                         if valid {
                             ov.annots.push(d);
                             ov.redo_stack.clear();
+                        } else if is_pixel {
+                            rebuild_work_bits(ov);
                         }
-                        rebuild_work_bgra(ov);
                     }
                 }
                 false
@@ -2672,7 +3493,8 @@ unsafe extern "system" fn overlay_wnd_proc(
                     ov.cur_tool = AnnotTool::None;
                     ov.annots.clear();
                     ov.redo_stack.clear();
-                    rebuild_work_bgra(ov);
+                    ov.filter_caches.clear();
+                    rebuild_work_bits(ov);
                 });
                 InvalidateRect(hwnd, null(), 0);
             } else {
@@ -2731,8 +3553,11 @@ unsafe extern "system" fn overlay_wnd_proc(
                 SNIP_MGR.with(|m| {
                     let ov = &mut m.borrow_mut().overlay;
                     if let Some(a) = ov.annots.pop() {
+                        let is_pixel = matches!(a.tool, AnnotTool::Mosaic | AnnotTool::Blur);
                         ov.redo_stack.push(a);
-                        rebuild_work_bgra(ov);
+                        if is_pixel {
+                            rebuild_work_bits(ov);
+                        }
                     }
                 });
                 InvalidateRect(hwnd, null(), 0);
@@ -2742,8 +3567,11 @@ unsafe extern "system" fn overlay_wnd_proc(
                 SNIP_MGR.with(|m| {
                     let ov = &mut m.borrow_mut().overlay;
                     if let Some(a) = ov.redo_stack.pop() {
+                        let is_pixel = matches!(a.tool, AnnotTool::Mosaic | AnnotTool::Blur);
                         ov.annots.push(a);
-                        rebuild_work_bgra(ov);
+                        if is_pixel {
+                            rebuild_work_bits(ov);
+                        }
                     }
                 });
                 InvalidateRect(hwnd, null(), 0);
@@ -3830,5 +4658,114 @@ mod tests {
         // 混合交界处应既有 R 又有 B
         let mid_off = (3 * 6 + 3) * 4;
         assert!(sub[mid_off] > 0 && sub[mid_off + 2] > 0);
+    }
+
+    #[test]
+    fn test_brush_mosaic_and_blur_capsule_stroke() {
+        // 构造 32x32 黑白棋盘测试图（4x4 格子）
+        let w = 32;
+        let h = 32;
+        let mut orig = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let off = ((y * w + x) * 4) as usize;
+                let dark = ((x / 4) + (y / 4)) % 2 == 0;
+                let v = if dark { 20u8 } else { 220u8 };
+                orig[off] = v;
+                orig[off + 1] = v;
+                orig[off + 2] = v;
+                orig[off + 3] = 255;
+            }
+        }
+        let full_rc = RECT {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: h,
+        };
+
+        // 1. 画笔式马赛克（斜线轨迹）
+        let (m_rc, m_layer) = compute_mosaic_layer(&orig, w, h, full_rc, 8);
+        let mut dst_mosaic = orig.clone();
+        let pts = vec![(8, 8), (22, 22)];
+        apply_brush_stroke_from_layer(&mut dst_mosaic, w, h, m_rc, &m_layer, &pts, 5, full_rc);
+        // 轨迹内部某点（如 (15,15)）应变为灰阶均值 ~120，而不是原始极端值 20 或 220
+        let in_off = ((15 * w + 15) * 4) as usize;
+        assert!(
+            dst_mosaic[in_off] > 50 && dst_mosaic[in_off] < 190,
+            "马赛克轨迹内像素值异常: {}",
+            dst_mosaic[in_off]
+        );
+        // 远离轨迹的角落 (0, 30) 应保持原图不变
+        let out_off = ((30 * w) * 4) as usize;
+        assert_eq!(
+            &dst_mosaic[out_off..out_off + 3],
+            &orig[out_off..out_off + 3]
+        );
+
+        // 2. 画笔式模糊（单点点击生效）
+        let (b_rc, b_layer) = compute_blur_layer(&orig, w, h, full_rc, 4);
+        let mut dst_blur = orig.clone();
+        apply_brush_stroke_from_layer(&mut dst_blur, w, h, b_rc, &b_layer, &[(16, 16)], 4, full_rc);
+        let center_off = ((16 * w + 16) * 4) as usize;
+        assert_ne!(dst_blur[center_off], orig[center_off]);
+        assert_eq!(&dst_blur[out_off..out_off + 3], &orig[out_off..out_off + 3]);
+
+        // 3. flatten_selection 集成验证：画笔标注输出与选区外部隔离
+        let sel = RECT {
+            left: 4,
+            top: 4,
+            right: 28,
+            bottom: 28,
+        };
+        let annots = vec![
+            AnnotItem {
+                tool: AnnotTool::Mosaic,
+                x1: 10,
+                y1: 10,
+                x2: 20,
+                y2: 20,
+                pts: vec![(10, 10), (20, 20)],
+                r: 0,
+                g: 0,
+                b: 0,
+                width: 2,
+                filled: false,
+                num: 0,
+                text: String::new(),
+            },
+            AnnotItem {
+                tool: AnnotTool::Blur,
+                x1: 22,
+                y1: 10,
+                x2: 22,
+                y2: 10,
+                pts: vec![(22, 10)],
+                r: 0,
+                g: 0,
+                b: 0,
+                width: 2,
+                filled: false,
+                num: 0,
+                text: String::new(),
+            },
+        ];
+        let (cw, ch, flat) = flatten_selection(&orig, w, h, sel, &annots);
+        assert_eq!((cw, ch), (24, 24));
+        // 原图全局 (15, 15) 对应局部 (11, 11) 在马赛克轨迹上
+        let flat_in = ((11 * cw + 11) * 4) as usize;
+        assert!(flat[flat_in] > 50 && flat[flat_in] < 190);
+        // 选区左下角局部 (0, 23) 对应全局 (4, 27)，远离所有画笔半径范围（r=10），保持原样
+        let flat_corner = (23 * cw * 4) as usize;
+        let orig_corner = ((27 * w + 4) * 4) as usize;
+        assert_eq!(
+            &flat[flat_corner..flat_corner + 3],
+            &orig[orig_corner..orig_corner + 3]
+        );
+
+        // 验证空缓存及析构路径不发生递归栈溢出
+        let mut empty_cache = OverlayGdiCache::default();
+        empty_cache.free();
+        drop(empty_cache);
     }
 }
