@@ -14,10 +14,10 @@
 ### Phase 2：`core` 核心层（4 波次逐步迁移）
 | 波次 | 单元 | 源文件参考 | Rust 目标文件 | 状态 |
 | --- | --- | --- | --- | --- |
-| Wave 1 | 纯算法与文本工具 | `core/md5.c`, `core/str.c`, `core/json.c`, `core/fmt.c` | 待定 | `open` |
-| Wave 2 | 本地配置、历史与日志 | `core/cfg.c`, `core/hist.c`, `core/log.c` | 待定 | `open` |
-| Wave 3 | HTTP 与翻译回退链/更新 | `core/http.c`, `core/baidu.c`, `core/ai.c`, `core/bing.c`, `core/update.c` | 待定 | `open` |
-| Wave 4 | 截屏 OCR 与原图贴字 | `core/ocr.c` | 待定 | `open` |
+| Wave 1 | 纯算法与文本工具 | `core/md5.c`, `core/str.c`, `core/json.c`, `core/fmt.c` | `src/core/{md5,str_util,json,fmt}.rs` | `done` |
+| Wave 2 | 本地配置、历史与日志 | `core/cfg.c`, `core/hist.c`, `core/log.c` | `src/core/{cfg,hist,log}.rs` | `done` |
+| Wave 3 | HTTP 与翻译回退链/更新 | `core/http.c`, `core/baidu.c`, `core/ai.c`, `core/bing.c`, `core/update.c` | `src/core/{http,baidu,ai,bing,update}.rs` | `done` |
+| Wave 4 | 截屏 OCR 与原图贴字 | `core/ocr.c` | `src/core/ocr.rs` | `done` |
 
 ### Phase 3：`ui` 界面层（纯 Rust 原生 Windows GUI）
 | 单元 | 源文件参考 | Rust 目标文件 | 状态 |
