@@ -19,7 +19,7 @@ use std::path::Path;
 use std::ptr::null_mut;
 
 pub const APP_TITLE: &str = "快译NG";
-pub const APP_VERSION: &str = "3.0.4";
+pub const APP_VERSION: &str = "3.0.5";
 pub const APP_REPO_URL: &str = "https://github.com/TimKuitu/kuaiyi-ng";
 
 // 避开保留自定义消息区，统一使用 WM_APP + 0x0200..0x021F
