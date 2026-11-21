@@ -322,12 +322,19 @@ var
   g_bitsOrig, g_bitsBack: pointer
   g_state: OverlayState = osHover
   g_ptMouse: POINT
+type
+  WindowCandidate = object
+    topRect: RECT
+    subRects: seq[RECT]
+
+var
   g_ptStart, g_ptCurr: POINT
   g_selRc: RECT
   g_dragOrigRc: RECT
   g_dragStartPt: POINT
   g_resizeHandle = 0        # 1..8
   g_winRects: seq[RECT] = @[]
+  g_winCands: seq[WindowCandidate] = @[]
   g_hoverWinRc: RECT
   g_hasHoverWin = false
 
@@ -2058,6 +2065,7 @@ proc closeOverlay() =
   g_state = osHover
   g_hasHoverWin = false
   g_winRects.setLen(0)
+  g_winCands.setLen(0)
   g_annots.setLen(0)
   g_redoStack.setLen(0)
   g_curTool = atNone
@@ -2081,8 +2089,74 @@ proc cancelSnip*() =
   elif g_hwndResult != 0:
     closeResultWindow()
 
+proc intersectRects(a, b: RECT): RECT {.inline.} =
+  result.left = max(a.left, b.left)
+  result.top = max(a.top, b.top)
+  result.right = max(result.left, min(a.right, b.right))
+  result.bottom = max(result.top, min(a.bottom, b.bottom))
+
+type
+  ChildEnumData = object
+    topRc: RECT
+    vx, vy: int
+    subList: ptr seq[RECT]
+
+proc childEnumProc(chwnd: HWND, lParam: LPARAM): WINBOOL {.stdcall.} =
+  let data = cast[ptr ChildEnumData](lParam)
+  if IsWindowVisible(chwnd) == 0: return 1
+  let ex = GetWindowLongPtrW(chwnd, GWL_EXSTYLE)
+  if (ex and WS_EX_TRANSPARENT) != 0: return 1
+  var rc: RECT
+  if GetWindowRect(chwnd, addr rc) == 0: return 1
+  let cw = rc.right - rc.left
+  let ch = rc.bottom - rc.top
+  if cw < 24 or ch < 14: return 1
+  let local = RECT(
+    left: LONG(int(rc.left) - data.vx),
+    top: LONG(int(rc.top) - data.vy),
+    right: LONG(int(rc.right) - data.vx),
+    bottom: LONG(int(rc.bottom) - data.vy)
+  )
+  let inter = intersectRects(local, data.topRc)
+  let iw = inter.right - inter.left
+  let ih = inter.bottom - inter.top
+  if iw >= 24 and ih >= 14:
+    data.subList[].add(inter)
+    let topGap = inter.top - data.topRc.top
+    let topW = data.topRc.right - data.topRc.left
+    if topGap >= 16 and topGap <= 200 and iw * 10 >= topW * 7:
+      data.subList[].add(RECT(
+        left: data.topRc.left,
+        top: data.topRc.top,
+        right: data.topRc.right,
+        bottom: inter.top
+      ))
+  if data.subList[].len >= 64: 0 else: 1
+
+proc cleanSubRects(topRc: RECT, list: var seq[RECT]) =
+  var cleaned: seq[RECT] = @[]
+  let tw = topRc.right - topRc.left
+  let th = topRc.bottom - topRc.top
+  for r in list:
+    let rw = r.right - r.left
+    let rh = r.bottom - r.top
+    if abs(rw - tw) <= 2 and abs(rh - th) <= 2: continue
+    if rw < 24 or rh < 14: continue
+    var dup = false
+    for c in cleaned:
+      if abs(c.left - r.left) <= 2 and abs(c.top - r.top) <= 2 and
+         abs(c.right - r.right) <= 2 and abs(c.bottom - r.bottom) <= 2:
+        dup = true
+        break
+    if not dup:
+      cleaned.add(r)
+  if cleaned.len > 40:
+    cleaned.setLen(40)
+  list = cleaned
+
 proc enumScreenWindows() =
   g_winRects.setLen(0)
+  g_winCands.setLen(0)
   var h = GetTopWindow(0)
   while h != 0:
     if h != g_hwndMain and h != g_hwndOverlay and h != g_hwndResult and
@@ -2098,14 +2172,52 @@ proc enumScreenWindows() =
         var r = min(int(g_vw), int(rc.right) - int(g_vx))
         var b = min(int(g_vh), int(rc.bottom) - int(g_vy))
         if r - l >= 16 and b - t >= 16:
-          g_winRects.add(RECT(left: LONG(l), top: LONG(t), right: LONG(r), bottom: LONG(b)))
+          let topRc = RECT(left: LONG(l), top: LONG(t), right: LONG(r), bottom: LONG(b))
+          var subs: seq[RECT] = @[]
+          var clRc: RECT
+          if GetClientRect(h, addr clRc) != 0 and clRc.right > 0 and clRc.bottom > 0:
+            var pt = POINT(x: 0, y: 0)
+            discard ClientToScreen(h, addr pt)
+            let clLocal = RECT(
+              left: LONG(int(pt.x) - int(g_vx)),
+              top: LONG(int(pt.y) - int(g_vy)),
+              right: LONG(int(pt.x) - int(g_vx) + int(clRc.right - clRc.left)),
+              bottom: LONG(int(pt.y) - int(g_vy) + int(clRc.bottom - clRc.top))
+            )
+            let clInter = intersectRects(topRc, clLocal)
+            if clInter.top - topRc.top >= 16 and clInter.top - topRc.top <= 200:
+              subs.add(RECT(left: topRc.left, top: topRc.top, right: topRc.right, bottom: clInter.top))
+            if clInter.right - clInter.left >= 32 and clInter.bottom - clInter.top >= 24:
+              subs.add(clInter)
+
+          var enumData = ChildEnumData(
+            topRc: topRc,
+            vx: int(g_vx),
+            vy: int(g_vy),
+            subList: addr subs
+          )
+          discard EnumChildWindows(h, childEnumProc, cast[LPARAM](addr enumData))
+          cleanSubRects(topRc, subs)
+          g_winCands.add(WindowCandidate(topRect: topRc, subRects: subs))
+          g_winRects.add(topRc)
     h = GetWindow(h, GW_HWNDNEXT)
 
 proc updateHoverWindow(mx, my: int) =
   g_hasHoverWin = false
-  for rc in g_winRects:
-    if ptInRect(rc, mx, my):
-      g_hoverWinRc = rc
+  for cand in g_winCands:
+    if ptInRect(cand.topRect, mx, my):
+      var bestRc = cand.topRect
+      var bestArea = int64(cand.topRect.right - cand.topRect.left) * int64(cand.topRect.bottom - cand.topRect.top)
+      for sub in cand.subRects:
+        if ptInRect(sub, mx, my):
+          let w = sub.right - sub.left
+          let h = sub.bottom - sub.top
+          if w >= 24 and h >= 14:
+            let area = int64(w) * int64(h)
+            if area < bestArea:
+              bestArea = area
+              bestRc = sub
+      g_hoverWinRc = bestRc
       g_hasHoverWin = true
       return
 
@@ -2467,6 +2579,7 @@ proc execOverlayAction(actionId: int) =
   g_state = osHover
   g_hasHoverWin = false
   g_winRects.setLen(0)
+  g_winCands.setLen(0)
   g_annots.setLen(0)
   g_redoStack.setLen(0)
   g_curTool = atNone
