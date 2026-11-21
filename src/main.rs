@@ -563,7 +563,7 @@ fn show_tray_context_menu(hwnd: HWND) {
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         add(2, "区域截屏", MF_STRING);
         add(3, "剪贴板贴图", MF_STRING);
-        add(4, "直接截屏翻译", MF_STRING);
+        add(4, "直接截图翻译 (Ctrl+Alt+D)", MF_STRING);
         if has_active_pins() {
             add(5, "关闭所有贴图", MF_STRING);
         }

@@ -3898,7 +3898,7 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
     let snip_specs = [
         ("区域截屏（含工具栏）", 50, ID_HK_SNIP_CAPTURE, 5usize),
         ("贴图到屏幕", 84, ID_HK_SNIP_PIN, 6usize),
-        ("直接截屏翻译", 118, ID_HK_SNIP_TRANS, 4usize),
+        ("直接截图翻译", 118, ID_HK_SNIP_TRANS, 4usize),
     ];
     let mut lbl_snip_hk_status = [null_mut(); 3];
     for (i, (label, y, cid, hidx)) in snip_specs.into_iter().enumerate() {
@@ -4007,7 +4007,7 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
         BtnKind::Normal,
     );
     p8.btn(
-        "直接截屏翻译",
+        "直接截图翻译",
         ID_BTN_TRY_SNIP,
         cx,
         478,
@@ -4033,7 +4033,7 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
         ("上一个历史记录", 66),
         ("下一个历史记录", 108),
         ("复制单词", 150),
-        ("直接截屏翻译", 192),
+        ("直接截图翻译", 192),
         ("截屏（含工具栏）", 234),
         ("贴图到屏幕", 276),
     ];

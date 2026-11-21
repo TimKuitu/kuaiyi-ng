@@ -3043,7 +3043,7 @@ fn classify_snip_error(err: &str) -> (Tone, String) {
     if e.contains("未识别到文本") || e.contains("未识别到文字") {
         (Tone::Warn, "未识别到文字".to_string())
     } else if e.contains("未检测到需要翻译的英文") || e.contains("英文") {
-        (Tone::Warn, "未识别到英文，无需翻译".to_string())
+        (Tone::Warn, "未识别到英文，已保留原图".to_string())
     } else {
         let brief: String = e.chars().take(40).collect();
         (Tone::Error, format!("翻译失败：{brief}"))
@@ -5714,6 +5714,8 @@ fn start_pin_translate(pin_hwnd: HWND) {
     let Ok(Some((w, h, bgra, cfg))) = params else {
         return;
     };
+    // 贴图上给出明确反馈：否则 OCR 那 1~3 秒里用户会以为"只截了个图"
+    show_toast(pin_hwnd, "截图翻译中…", Tone::Info);
     let hwnd_main = cfg.hwnd_main;
     let pin_raw = pin_hwnd as usize;
     thread::spawn(move || {
