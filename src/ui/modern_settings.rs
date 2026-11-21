@@ -3908,7 +3908,7 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
     }
     p8.sec_title("截图默认保存位置", 178);
     p8.static_txt(
-        "Ctrl+Shift+S 直接保存到此目录；Ctrl+S 弹出窗口自选位置；Ctrl+C 复制截图；框选后按 F2 直接翻译",
+        "F2 翻译选区 · Ctrl+S 另存 · Ctrl+Shift+S 快速保存 · Ctrl+C 复制 · 贴图内 Ctrl+左键 划字复制",
         cx,
         206,
         INNER_W,

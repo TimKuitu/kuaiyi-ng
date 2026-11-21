@@ -5275,7 +5275,15 @@ unsafe extern "system" fn result_wnd_proc(
                 return 0;
             }
             let in_sel = SNIP_MGR.with(|m| m.borrow().result.sel.mode);
-            if in_sel {
+            // 选中态下点底部按钮仍按按钮处理，不抢成划字
+            let on_btn = SNIP_MGR.with(|m| {
+                m.borrow()
+                    .result
+                    .btn_rcs
+                    .iter()
+                    .any(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+            });
+            if in_sel && !on_btn {
                 let inside_img = SNIP_MGR.with(|m| {
                     let mgr = m.borrow();
                     let mut rc = RECT::default();
