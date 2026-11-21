@@ -29,7 +29,7 @@ use crate::ui::win32_ui::{
     ES_AUTOHSCROLL, ES_MULTILINE, ES_WANTRETURN, FW_BOLD, FW_MEDIUM, FW_NORMAL, GA_ROOT,
     GP_LINE_CAP_ROUND, GP_LINE_JOIN_ROUND, GP_OK, GP_SMOOTHING_ANTIALIAS, GP_UNIT_PIXEL,
     GWL_EXSTYLE, GW_HWNDNEXT, HALFTONE, HBITMAP, HDC, HFONT, HGDIOBJ, HWND, HWND_TOPMOST, IDC_ARROW, IDC_CROSS,
-    IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LPARAM, LRESULT, LWA_ALPHA,
+    IDC_IBEAM, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LPARAM, LRESULT, LWA_ALPHA,
     MA_NOACTIVATE, MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, NULL_BRUSH, PAINTSTRUCT, POINT,
     PS_DASH, PS_SOLID, RECT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
     SM_YVIRTUALSCREEN, SRCCOPY, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW,
@@ -3797,21 +3797,42 @@ unsafe fn paint_overlay(hwnd: HWND) {
 }
 
 fn hit_test_handles(sel: RECT, x: i32, y: i32) -> i32 {
-    let pts = [
-        (sel.left, sel.top, 10),
-        ((sel.left + sel.right) / 2, sel.top, 11),
-        (sel.right, sel.top, 12),
-        (sel.right, (sel.top + sel.bottom) / 2, 13),
-        (sel.right, sel.bottom, 14),
-        ((sel.left + sel.right) / 2, sel.bottom, 15),
-        (sel.left, sel.bottom, 16),
-        (sel.left, (sel.top + sel.bottom) / 2, 17),
-    ];
-    for (hx, hy, mode) in pts {
-        if (x - hx).abs() <= SNAP_DIST && (y - hy).abs() <= SNAP_DIST {
-            return mode;
-        }
+    let l = sel.left;
+    let r = sel.right;
+    let t = sel.top;
+    let b = sel.bottom;
+
+    const CORNER_TOL: i32 = 8;
+    let border_tol = SNAP_DIST;
+
+    // 1. 优先判定四个角点（10=TL, 12=TR, 14=BR, 16=BL）
+    if (x - l).abs() <= CORNER_TOL && (y - t).abs() <= CORNER_TOL {
+        return 10;
     }
+    if (x - r).abs() <= CORNER_TOL && (y - t).abs() <= CORNER_TOL {
+        return 12;
+    }
+    if (x - r).abs() <= CORNER_TOL && (y - b).abs() <= CORNER_TOL {
+        return 14;
+    }
+    if (x - l).abs() <= CORNER_TOL && (y - b).abs() <= CORNER_TOL {
+        return 16;
+    }
+
+    // 2. 判定四条边（11=T, 13=R, 15=B, 17=L，支持沿整个边界拖动调整尺寸）
+    if (y - t).abs() <= border_tol && x >= l - border_tol && x <= r + border_tol {
+        return 11;
+    }
+    if (y - b).abs() <= border_tol && x >= l - border_tol && x <= r + border_tol {
+        return 15;
+    }
+    if (x - l).abs() <= border_tol && y >= t - border_tol && y <= b + border_tol {
+        return 17;
+    }
+    if (x - r).abs() <= border_tol && y >= t - border_tol && y <= b + border_tol {
+        return 13;
+    }
+
     0
 }
 
@@ -3841,13 +3862,14 @@ unsafe extern "system" fn overlay_wnd_proc(
                         12 | 16 => IDC_SIZENESW,
                         11 | 15 => IDC_SIZENS,
                         13 | 17 => IDC_SIZEWE,
-                        _ if ov.cur_tool == AnnotTool::None
-                            && x >= ov.sel_rc.left
-                            && x < ov.sel_rc.right
-                            && y >= ov.sel_rc.top
-                            && y < ov.sel_rc.bottom =>
-                        {
-                            IDC_SIZEALL
+                        _ if pt_in_rect(ov.sel_rc, x, y) => {
+                            if ov.cur_tool == AnnotTool::None {
+                                IDC_ARROW
+                            } else if ov.cur_tool == AnnotTool::Text {
+                                IDC_IBEAM
+                            } else {
+                                IDC_CROSS
+                            }
                         }
                         _ => IDC_CROSS,
                     }
@@ -4081,10 +4103,7 @@ unsafe extern "system" fn overlay_wnd_proc(
                         ov.drag_orig_rc = ov.sel_rc;
                     } else if pt_in_rect(ov.sel_rc, x, y) {
                         if ov.cur_tool == AnnotTool::None {
-                            ov.dragging_sel = true;
-                            ov.drag_mode = 2;
-                            ov.drag_start_pt = POINT { x, y };
-                            ov.drag_orig_rc = ov.sel_rc;
+                            // 选区内部：不可以拖动整个选框，拦截事件，不启动移动拖拽，也不触发重新新建选区
                         } else if ov.cur_tool == AnnotTool::Number {
                             let (r, g, b) = ANNOT_COLORS[ov.cur_color_idx];
                             let n = ov.next_num;
@@ -5649,6 +5668,38 @@ fn unused_keep() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_hit_test_handles_and_disable_whole_rect_drag() {
+        let sel = RECT {
+            left: 100,
+            top: 100,
+            right: 300,
+            bottom: 300,
+        };
+
+        // 1. 四个角点（10=TL, 12=TR, 14=BR, 16=BL）
+        assert_eq!(hit_test_handles(sel, 100, 100), 10);
+        assert_eq!(hit_test_handles(sel, 300, 100), 12);
+        assert_eq!(hit_test_handles(sel, 300, 300), 14);
+        assert_eq!(hit_test_handles(sel, 100, 300), 16);
+
+        // 2. 边框上的任意位置（即使偏离中点，也可顺畅拖动边界）
+        assert_eq!(hit_test_handles(sel, 150, 100), 11); // T
+        assert_eq!(hit_test_handles(sel, 250, 102), 11); // T（带边框容差）
+        assert_eq!(hit_test_handles(sel, 300, 180), 13); // R
+        assert_eq!(hit_test_handles(sel, 200, 300), 15); // B
+        assert_eq!(hit_test_handles(sel, 100, 220), 17); // L
+
+        // 3. 选区内部：不属于边界手柄，不返回任何手柄编号
+        assert_eq!(hit_test_handles(sel, 200, 200), 0);
+        assert_eq!(hit_test_handles(sel, 150, 150), 0);
+        assert!(pt_in_rect(sel, 200, 200));
+
+        // 4. 选区外部远距离
+        assert_eq!(hit_test_handles(sel, 50, 50), 0);
+        assert!(!pt_in_rect(sel, 50, 50));
+    }
 
     #[test]
     fn test_norm_rect_crop_and_mosaic_blur() {
