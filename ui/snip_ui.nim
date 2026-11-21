@@ -324,6 +324,7 @@ var
   g_ptMouse: POINT
 type
   WindowCandidate = object
+    hwnd: HWND
     topRect: RECT
     subRects: seq[RECT]
 
@@ -2157,6 +2158,10 @@ proc cleanSubRects(topRc: RECT, list: var seq[RECT]) =
 proc enumScreenWindows() =
   g_winRects.setLen(0)
   g_winCands.setLen(0)
+  let fgHwnd = GetForegroundWindow()
+  let fgRoot = if fgHwnd != 0: GetAncestor(fgHwnd, 2) else: 0
+  var topmostCands: seq[WindowCandidate] = @[]
+  var normalCands: seq[WindowCandidate] = @[]
   var h = GetTopWindow(0)
   while h != 0:
     if h != g_hwndMain and h != g_hwndOverlay and h != g_hwndResult and
@@ -2198,9 +2203,25 @@ proc enumScreenWindows() =
           )
           discard EnumChildWindows(h, childEnumProc, cast[LPARAM](addr enumData))
           cleanSubRects(topRc, subs)
-          g_winCands.add(WindowCandidate(topRect: topRc, subRects: subs))
-          g_winRects.add(topRc)
+          let cand = WindowCandidate(hwnd: h, topRect: topRc, subRects: subs)
+          let exStyle = GetWindowLongPtr(h, GWL_EXSTYLE)
+          if (exStyle and WS_EX_TOPMOST) != 0:
+            topmostCands.add(cand)
+          else:
+            normalCands.add(cand)
     h = GetWindow(h, GW_HWNDNEXT)
+
+  if fgRoot != 0:
+    for i in 0 ..< normalCands.len:
+      if normalCands[i].hwnd == fgRoot:
+        let fgCand = normalCands[i]
+        normalCands.delete(i)
+        normalCands.insert(fgCand, 0)
+        break
+
+  g_winCands = topmostCands & normalCands
+  for c in g_winCands:
+    g_winRects.add(c.topRect)
 
 proc updateHoverWindow(mx, my: int) =
   g_hasHoverWin = false
