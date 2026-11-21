@@ -1627,6 +1627,8 @@ struct ResultWinState {
     blocks: Vec<SnipBlock>,
     /// 正在识别（状态栏显示「识别中…」，译文相关按钮禁用）
     translating: bool,
+    /// 选字模式（Ctrl+左键进入，与贴图窗共用同一套状态机）
+    sel: TextSel,
     zoom: f64,
     hover_btn: i32,
     btn_rcs: [RECT; 7],
@@ -1649,7 +1651,7 @@ struct PinEntry {
     lines: Vec<OcrLine>,
     blocks: Vec<SnipBlock>,
     /// 选中态（Ctrl+左键进入）：划字复制、双击复制整图，不关闭贴图
-    sel: PinSel,
+    sel: TextSel,
     zoom: f64,
     alpha: u8,
     hover_trans: bool,
@@ -1659,7 +1661,7 @@ struct PinEntry {
 
 /// 贴图「选中态」状态机
 #[derive(Clone, Default)]
-struct PinSel {
+struct TextSel {
     /// 已进入选中态（描边变蓝、光标 IBeam）
     mode: bool,
     /// 正在拖框
@@ -1745,7 +1747,7 @@ unsafe fn ensure_snip_classes() {
             RegisterClassExW(&wc);
         };
     reg(OVERLAY_CLASS_NAME, overlay_wnd_proc, IDC_CROSS, true);
-    reg(RESULT_CLASS_NAME, result_wnd_proc, IDC_ARROW, false);
+    reg(RESULT_CLASS_NAME, result_wnd_proc, IDC_ARROW, true);
     reg(PIN_CLASS_NAME, pin_wnd_proc, IDC_ARROW, true);
     SNIP_MGR.with(|m| m.borrow_mut().classes_registered = true);
 }
@@ -4820,6 +4822,7 @@ pub fn open_result_window(
             lines: Vec::new(),
             blocks: Vec::new(),
             translating: !has_zh,
+            sel: TextSel::default(),
             zoom: 1.0,
             hover_btn: -1,
             btn_rcs: [RECT::default(); 7],
@@ -4953,6 +4956,61 @@ unsafe fn paint_result_window(hwnd: HWND) {
         }
     }
 
+    // 选中态：行高亮 + 拖框（坐标都在客户区，直接画）
+    if res.sel.mode && !res.lines.is_empty() {
+        let mut mpt = POINT::default();
+        GetCursorPos(&mut mpt);
+        ScreenToClient(hwnd, &mut mpt);
+        let (hx, hy) = result_img_pt(&res, w, h, mpt.x, mpt.y);
+        let hover = hit_ocr_line(&res.lines, hx, hy);
+        if hover >= 0 {
+            if let Some(l) = res.lines.get(hover as usize) {
+                let lr = result_win_rc(
+                    &res,
+                    w,
+                    h,
+                    &RECT {
+                        left: l.x.floor() as i32,
+                        top: l.y.floor() as i32,
+                        right: (l.x + l.w).ceil() as i32,
+                        bottom: (l.y + l.h).ceil() as i32,
+                    },
+                );
+                let light = CreateSolidBrush(rgb(46, 74, 122));
+                FillRect(hdc_buf, &lr, light);
+                DeleteObject(light);
+                let pen_h = CreatePen(PS_SOLID, 1, rgb(59, 130, 246));
+                let op_h = SelectObject(hdc_buf, pen_h);
+                let ob_h = SelectObject(hdc_buf, GetStockObject(NULL_BRUSH));
+                crate::ui::win32_ui::Rectangle(hdc_buf, lr.left, lr.top, lr.right, lr.bottom);
+                SelectObject(hdc_buf, ob_h);
+                SelectObject(hdc_buf, op_h);
+                DeleteObject(pen_h);
+            }
+        }
+    }
+    if res.sel.mode && (res.sel.dragging || res.sel.has_rect) {
+        let sr = if res.sel.dragging {
+            RECT {
+                left: res.sel.from.x.min(res.sel.to.x),
+                top: res.sel.from.y.min(res.sel.to.y),
+                right: res.sel.from.x.max(res.sel.to.x),
+                bottom: res.sel.from.y.max(res.sel.to.y),
+            }
+        } else {
+            res.sel.rect
+        };
+        if sr.right > sr.left && sr.bottom > sr.top {
+            let pen_s = CreatePen(PS_DASH, 1, rgb(59, 130, 246));
+            let op_s = SelectObject(hdc_buf, pen_s);
+            let ob_s = SelectObject(hdc_buf, GetStockObject(NULL_BRUSH));
+            crate::ui::win32_ui::Rectangle(hdc_buf, sr.left, sr.top, sr.right, sr.bottom);
+            SelectObject(hdc_buf, ob_s);
+            SelectObject(hdc_buf, op_s);
+            DeleteObject(pen_s);
+        }
+    }
+
     // 底部按钮栏
     let wf = utf8_to_wide("Microsoft YaHei UI");
     let hf = CreateFontW(
@@ -5012,7 +5070,9 @@ unsafe fn paint_result_window(hwnd: HWND) {
     }
     SetTextColor(hdc_buf, rgb(240, 244, 250));
 
-    let z_txt = if res.translating {
+    let z_txt = if res.sel.mode {
+        "选字模式：拖选文字复制 · 单击复制图片 · Esc 退出".to_string()
+    } else if res.translating {
         "识别中…".to_string()
     } else if !has_zh {
         format!(
@@ -5044,7 +5104,12 @@ unsafe fn paint_result_window(hwnd: HWND) {
     SelectObject(hdc_buf, old_f);
     DeleteObject(hf);
 
-    let pen_bd = CreatePen(PS_SOLID, 1, rgb(64, 72, 88));
+    let (bd_col, bd_w) = if res.sel.mode {
+        (rgb(59, 130, 246), 2)
+    } else {
+        (rgb(64, 72, 88), 1)
+    };
+    let pen_bd = CreatePen(PS_SOLID, bd_w, bd_col);
     let op = SelectObject(hdc_buf, pen_bd);
     let ob = SelectObject(hdc_buf, GetStockObject(NULL_BRUSH));
     crate::ui::win32_ui::Rectangle(hdc_buf, 0, 0, w, h);
@@ -5158,6 +5223,18 @@ unsafe extern "system" fn result_wnd_proc(
         }
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lp);
+            let sel_drag = SNIP_MGR.with(|m| {
+                let mut mgr = m.borrow_mut();
+                if mgr.result.sel.dragging {
+                    mgr.result.sel.to = POINT { x, y };
+                    return true;
+                }
+                false
+            });
+            if sel_drag {
+                InvalidateRect(hwnd, null(), 0);
+                return 0;
+            }
             let dragging = SNIP_MGR.with(|m| {
                 let mut mgr = m.borrow_mut();
                 if mgr.result.dragging {
@@ -5193,6 +5270,45 @@ unsafe extern "system" fn result_wnd_proc(
         }
         WM_LBUTTONDOWN => {
             let (x, y) = lparam_xy(lp);
+            if (GetAsyncKeyState(VK_CONTROL) as u16 & 0x8000) != 0 {
+                result_toggle_sel(hwnd);
+                return 0;
+            }
+            let in_sel = SNIP_MGR.with(|m| m.borrow().result.sel.mode);
+            if in_sel {
+                let inside_img = SNIP_MGR.with(|m| {
+                    let mgr = m.borrow();
+                    let mut rc = RECT::default();
+                    GetClientRect(hwnd, &mut rc);
+                    let (dx, dy) = result_img_origin(&mgr.result, rc.right, rc.bottom);
+                    let dw = ((mgr.result.img_w as f64) * mgr.result.zoom).round() as i32;
+                    let dh = ((mgr.result.img_h as f64) * mgr.result.zoom).round() as i32;
+                    x >= dx && x < dx + dw && y >= dy && y < dy + dh
+                });
+                if inside_img {
+                    SNIP_MGR.with(|m| {
+                        let mut mgr = m.borrow_mut();
+                        let r = &mut mgr.result;
+                        r.sel.dragging = true;
+                        r.sel.has_rect = false;
+                        r.sel.text.clear();
+                        r.sel.from = POINT { x, y };
+                        r.sel.to = POINT { x, y };
+                    });
+                    SetCapture(hwnd);
+                } else {
+                    // 图外点一下：等同"没划到字"，复制整图
+                    SNIP_MGR.with(|m| {
+                        let mut mgr = m.borrow_mut();
+                        let r = &mut mgr.result;
+                        r.sel.dragging = true;
+                        r.sel.from = POINT { x, y };
+                        r.sel.to = POINT { x, y };
+                    });
+                    result_finish_selection(hwnd);
+                }
+                return 0;
+            }
             let clicked = SNIP_MGR.with(|m| {
                 let mgr = m.borrow();
                 for (i, r) in mgr.result.btn_rcs.iter().enumerate() {
@@ -5303,7 +5419,40 @@ unsafe extern "system" fn result_wnd_proc(
         }
         WM_LBUTTONUP => {
             ReleaseCapture();
+            let in_sel_drag = SNIP_MGR.with(|m| m.borrow().result.sel.dragging);
+            if in_sel_drag {
+                result_finish_selection(hwnd);
+                return 0;
+            }
             SNIP_MGR.with(|m| m.borrow_mut().result.dragging = false);
+            0
+        }
+        WM_LBUTTONDBLCLK => {
+            let in_sel = SNIP_MGR.with(|m| m.borrow().result.sel.mode);
+            if in_sel {
+                let (x, y) = lparam_xy(lp);
+                SNIP_MGR.with(|m| {
+                    let mut mgr = m.borrow_mut();
+                    let r = &mut mgr.result;
+                    r.sel.dragging = true;
+                    r.sel.from = POINT { x, y };
+                    r.sel.to = POINT { x, y };
+                });
+                result_finish_selection(hwnd);
+                return 0;
+            }
+            // 普通态双击 = 关闭（Snipaste 习惯），但点在按钮上不算
+            let (x, y) = lparam_xy(lp);
+            let on_btn = SNIP_MGR.with(|m| {
+                m.borrow()
+                    .result
+                    .btn_rcs
+                    .iter()
+                    .any(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+            });
+            if !on_btn {
+                DestroyWindow(hwnd);
+            }
             0
         }
         WM_MOUSEWHEEL => {
@@ -5341,9 +5490,25 @@ unsafe extern "system" fn result_wnd_proc(
             let no_zh = SNIP_MGR.with(|m| m.borrow().result.bgra_zh.is_empty());
             match vk {
                 VK_ESCAPE => {
-                    DestroyWindow(hwnd);
+                    let in_sel = SNIP_MGR.with(|m| m.borrow().result.sel.mode);
+                    if in_sel {
+                        SNIP_MGR.with(|m| {
+                            let mut mgr = m.borrow_mut();
+                            let r = &mut mgr.result;
+                            r.sel.mode = false;
+                            r.sel.has_rect = false;
+                            r.sel.text.clear();
+                        });
+                        InvalidateRect(hwnd, null(), 0);
+                    } else {
+                        DestroyWindow(hwnd);
+                    }
                 }
-                VK_F2_KEY => result_f2(hwnd),
+                VK_F2_KEY => {
+                    if !result_translate_selection(hwnd) {
+                        result_f2(hwnd);
+                    }
+                }
                 VK_F3_KEY => result_pin(hwnd),
                 0x43 if ctrl => result_copy(hwnd),
                 0x53 if ctrl => result_save_png(hwnd),
@@ -5361,7 +5526,16 @@ unsafe extern "system" fn result_wnd_proc(
             }
             0
         }
+        WM_SETCURSOR => {
+            let in_sel = SNIP_MGR.with(|m| m.borrow().result.sel.mode);
+            if in_sel {
+                SetCursor(LoadCursorW(null_mut(), IDC_IBEAM));
+                return 1;
+            }
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
         WM_CLOSE | WM_DESTROY => {
+            crate::ui::snip_toast::hide_all();
             SNIP_MGR.with(|m| m.borrow_mut().result.hwnd = null_mut());
             DefWindowProcW(hwnd, msg, wp, lp)
         }
@@ -5485,7 +5659,7 @@ pub fn create_pin_window_bgra_at(
                 en_text,
                 lines: Vec::new(),
                 blocks: Vec::new(),
-                sel: PinSel::default(),
+                sel: TextSel::default(),
                 zoom,
                 alpha: 255,
                 hover_trans: false,
@@ -5785,6 +5959,32 @@ fn pin_win_rc(pin: &PinEntry, rc: &RECT) -> RECT {
     }
 }
 
+/// 结果窗图像左上角在客户区的位置（与 paint_result_window 的排版保持一致）
+fn result_img_origin(res: &ResultWinState, cw: i32, ch: i32) -> (i32, i32) {
+    let dw = ((res.img_w as f64) * res.zoom).round() as i32;
+    let dh = ((res.img_h as f64) * res.zoom).round() as i32;
+    (((cw - dw) / 2).max(8), ((ch - 46 - dh) / 2).max(8))
+}
+
+/// 结果窗客户区坐标 → 图像像素坐标
+fn result_img_pt(res: &ResultWinState, cw: i32, ch: i32, x: i32, y: i32) -> (f32, f32) {
+    let (dx, dy) = result_img_origin(res, cw, ch);
+    let z = if res.zoom > 0.05 { res.zoom } else { 1.0 };
+    (((x - dx) as f32) / z as f32, ((y - dy) as f32) / z as f32)
+}
+
+/// 图像像素矩形 → 结果窗客户区矩形
+fn result_win_rc(res: &ResultWinState, cw: i32, ch: i32, rc: &RECT) -> RECT {
+    let (dx, dy) = result_img_origin(res, cw, ch);
+    let z = if res.zoom > 0.05 { res.zoom } else { 1.0 };
+    RECT {
+        left: dx + (rc.left as f64 * z).round() as i32,
+        top: dy + (rc.top as f64 * z).round() as i32,
+        right: dx + (rc.right as f64 * z).round() as i32,
+        bottom: dy + (rc.bottom as f64 * z).round() as i32,
+    }
+}
+
 /// 客户区矩形 → 屏幕矩形（气泡定位用）
 unsafe fn client_rect_to_screen(hwnd: HWND, rc: RECT) -> RECT {
     let mut tl = POINT {
@@ -5839,17 +6039,23 @@ fn lines_in_img_rect(lines: &[OcrLine], rc: RECT) -> Vec<usize> {
     hit
 }
 
-/// 按命中行取文本：原图态取英文行，译图态取所在块译文
-fn pin_sel_text(pin: &PinEntry, idxs: &[usize]) -> (String, bool) {
-    let is_zh = pin.show_zh && !pin.bgra_zh.is_empty();
+/// 按命中行取文本：原图态取英文行，译图态取所在块译文（贴图窗/结果窗共用）
+fn sel_text_from(
+    lines: &[OcrLine],
+    blocks: &[SnipBlock],
+    show_zh: bool,
+    has_zh: bool,
+    idxs: &[usize],
+) -> (String, bool) {
+    let is_zh = show_zh && has_zh;
     let mut parts: Vec<String> = Vec::new();
     if is_zh {
         let mut used: Vec<String> = Vec::new();
         for &i in idxs {
-            let Some(l) = pin.lines.get(i) else { continue };
+            let Some(l) = lines.get(i) else { continue };
             let cx = l.x + l.w * 0.5;
             let cy = l.y + l.h * 0.5;
-            let Some(b) = pin.blocks.iter().find(|b| b.contains(cx, cy)) else {
+            let Some(b) = blocks.iter().find(|b| b.contains(cx, cy)) else {
                 continue;
             };
             if used.iter().any(|u| u == &b.en) {
@@ -5864,7 +6070,7 @@ fn pin_sel_text(pin: &PinEntry, idxs: &[usize]) -> (String, bool) {
         }
     } else {
         for &i in idxs {
-            if let Some(l) = pin.lines.get(i) {
+            if let Some(l) = lines.get(i) {
                 if !l.text.is_empty() {
                     parts.push(l.text.clone());
                 }
@@ -5872,6 +6078,17 @@ fn pin_sel_text(pin: &PinEntry, idxs: &[usize]) -> (String, bool) {
         }
     }
     (parts.join("\n"), is_zh)
+}
+
+/// 贴图窗取文（薄封装）
+fn pin_sel_text(pin: &PinEntry, idxs: &[usize]) -> (String, bool) {
+    sel_text_from(
+        &pin.lines,
+        &pin.blocks,
+        pin.show_zh,
+        !pin.bgra_zh.is_empty(),
+        idxs,
+    )
 }
 
 /// 行框懒加载：贴图还没翻译过时，进入选中态先跑一次纯 OCR
@@ -5902,7 +6119,12 @@ fn pin_ensure_lines(hwnd: HWND) {
             Ok(l) => (l, String::new()),
             Err(e) => (Vec::new(), e),
         };
-        let payload = Box::into_raw(Box::new(PinLinesPayload { target, lines, err }));
+        let payload = Box::into_raw(Box::new(PinLinesPayload {
+            target,
+            kind: 0,
+            lines,
+            err,
+        }));
         unsafe {
             PostMessageW(hwnd_main as HWND, WM_APP_PIN_LINES, 0, payload as LPARAM);
         }
@@ -5911,6 +6133,8 @@ fn pin_ensure_lines(hwnd: HWND) {
 
 struct PinLinesPayload {
     target: usize,
+    /// 0 = 贴图窗，1 = 结果窗
+    kind: u8,
     lines: Vec<OcrLine>,
     err: String,
 }
@@ -5927,8 +6151,19 @@ pub fn handle_pin_lines_message(lp: LPARAM) {
     }
     let empty = payload.lines.is_empty();
     let err = payload.err.clone();
+    let is_result = payload.kind == 1;
     SNIP_MGR.with(|m| {
-        if let Some(p) = m.borrow_mut().pins.iter_mut().find(|x| x.hwnd == hwnd) {
+        let mut mgr = m.borrow_mut();
+        if is_result {
+            if mgr.result.hwnd == hwnd {
+                mgr.result.sel.loading = false;
+                if !empty {
+                    mgr.result.lines = payload.lines.clone();
+                }
+            }
+            return;
+        }
+        if let Some(p) = mgr.pins.iter_mut().find(|x| x.hwnd == hwnd) {
             p.sel.loading = false;
             if !empty {
                 p.lines = payload.lines.clone();
@@ -5939,13 +6174,209 @@ pub fn handle_pin_lines_message(lp: LPARAM) {
         let src = if err.is_empty() { "未识别到文本" } else { &err };
         let (tone, msg) = classify_snip_error(src);
         SNIP_MGR.with(|m| {
-            if let Some(p) = m.borrow_mut().pins.iter_mut().find(|x| x.hwnd == hwnd) {
+            let mut mgr = m.borrow_mut();
+            if is_result {
+                if mgr.result.hwnd == hwnd {
+                    mgr.result.sel.mode = false;
+                }
+            } else if let Some(p) = mgr.pins.iter_mut().find(|x| x.hwnd == hwnd) {
                 p.sel.mode = false;
             }
         });
         show_toast(hwnd, &msg, tone);
     }
     unsafe { InvalidateRect(hwnd, null(), 0) };
+}
+
+/// 结果窗：行框懒加载（预览态还没翻译时）
+fn result_ensure_lines(hwnd: HWND) {
+    let need = SNIP_MGR.with(|m| {
+        let mut mgr = m.borrow_mut();
+        if mgr.result.hwnd != hwnd || !mgr.result.lines.is_empty() || mgr.result.sel.loading {
+            return None;
+        }
+        let (w, h, orig) = (
+            mgr.result.img_w,
+            mgr.result.img_h,
+            mgr.result.bgra_orig.clone(),
+        );
+        mgr.result.sel.loading = true;
+        Some((w, h, orig))
+    });
+    let Some((w, h, bgra)) = need else {
+        return;
+    };
+    let hwnd_main = SNIP_MGR.with(|m| m.borrow().cfg.hwnd_main);
+    if hwnd_main == 0 {
+        return;
+    }
+    show_toast(hwnd, "正在识别文字…", Tone::Info);
+    let target = hwnd as usize;
+    thread::spawn(move || {
+        let res = crate::core::ocr::snip_ocr_lines(&bgra, w, h);
+        let (lines, err) = match res {
+            Ok(l) => (l, String::new()),
+            Err(e) => (Vec::new(), e),
+        };
+        let payload = Box::into_raw(Box::new(PinLinesPayload {
+            target,
+            kind: 1,
+            lines,
+            err,
+        }));
+        unsafe {
+            PostMessageW(hwnd_main as HWND, WM_APP_PIN_LINES, 0, payload as LPARAM);
+        }
+    });
+}
+
+/// 结果窗 Ctrl+左键：进/出选字模式
+fn result_toggle_sel(hwnd: HWND) {
+    let (now_on, has_lines, can_ocr) = SNIP_MGR.with(|m| {
+        let mut mgr = m.borrow_mut();
+        if mgr.result.hwnd != hwnd {
+            return (false, false, false);
+        }
+        let on = !mgr.result.sel.mode;
+        mgr.result.sel.mode = on;
+        mgr.result.sel.dragging = false;
+        mgr.result.sel.has_rect = false;
+        mgr.result.sel.text.clear();
+        (on, !mgr.result.lines.is_empty(), mgr.cfg.hwnd_main != 0)
+    });
+    if now_on {
+        if !has_lines && can_ocr {
+            result_ensure_lines(hwnd);
+        }
+        show_toast(hwnd, "选字模式：拖选文字复制 · 空白单击复制图片", Tone::Info);
+    }
+    unsafe { InvalidateRect(hwnd, null(), 0) };
+}
+
+/// 结果窗划选结束
+fn result_finish_selection(hwnd: HWND) {
+    let out = SNIP_MGR.with(|m| {
+        let mut mgr = m.borrow_mut();
+        if mgr.result.hwnd != hwnd || !mgr.result.sel.dragging {
+            return None;
+        }
+        let mut rc = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rc) };
+        let (cw, ch) = (rc.right, rc.bottom);
+        let r = &mut mgr.result;
+        r.sel.dragging = false;
+        let (x1, y1) = (r.sel.from.x, r.sel.from.y);
+        let (x2, y2) = (r.sel.to.x, r.sel.to.y);
+        let sel_rc = RECT {
+            left: x1.min(x2),
+            top: y1.min(y2),
+            right: x1.max(x2),
+            bottom: y1.max(y2),
+        };
+        if (x2 - x1).abs() < 4 && (y2 - y1).abs() < 4 {
+            r.sel.has_rect = false;
+            return Some((true, String::new(), false, sel_rc, cw, ch));
+        }
+        let (ix1, iy1) = result_img_pt(r, cw, ch, sel_rc.left, sel_rc.top);
+        let (ix2, iy2) = result_img_pt(r, cw, ch, sel_rc.right, sel_rc.bottom);
+        let img_rc = RECT {
+            left: ix1.floor() as i32,
+            top: iy1.floor() as i32,
+            right: ix2.ceil() as i32,
+            bottom: iy2.ceil() as i32,
+        };
+        let idxs = lines_in_img_rect(&r.lines, img_rc);
+        let (text, is_zh) =
+            sel_text_from(&r.lines, &r.blocks, !r.show_orig, !r.bgra_zh.is_empty(), &idxs);
+        r.sel.rect = sel_rc;
+        r.sel.has_rect = true;
+        r.sel.text = text.clone();
+        r.sel.is_zh = is_zh;
+        Some((false, text, is_zh, sel_rc, cw, ch))
+    });
+    let Some((blank, text, is_zh, sel_rc, cw, ch)) = out else {
+        return;
+    };
+    let (win_rc, bgra, w, h) = SNIP_MGR.with(|m| {
+        let r = &m.borrow().result;
+        (
+            result_win_rc(r, cw, ch, &sel_rc),
+            result_active_bgra(r),
+            r.img_w,
+            r.img_h,
+        )
+    });
+    if blank || text.is_empty() {
+        if set_clipboard_bgra(&bgra, w, h) {
+            show_toast(hwnd, "已复制图片", Tone::Info);
+        }
+        unsafe { InvalidateRect(hwnd, null(), 0) };
+        return;
+    }
+    set_clipboard_text(&text);
+    let preview: String = text.chars().take(90).collect();
+    let tag = if is_zh { "已复制译文" } else { "已复制原文" };
+    let scr = unsafe { client_rect_to_screen(hwnd, win_rc) };
+    show_bubble(scr, vec![preview, tag.to_string()], Tone::Info);
+    unsafe { InvalidateRect(hwnd, null(), 0) };
+}
+
+/// 选区翻译（贴图窗/结果窗共用）：后台翻，回来弹气泡
+fn translate_selection_async(hwnd: HWND, text: String, win_rc: RECT) {
+    let cfg = SNIP_MGR.with(|m| m.borrow().cfg.clone());
+    let hwnd_main = cfg.hwnd_main;
+    if hwnd_main == 0 {
+        return;
+    }
+    show_toast(hwnd, "翻译中…", Tone::Info);
+    let target = hwnd as usize;
+    thread::spawn(move || {
+        let zh = crate::core::bing::translate_chain_ex(
+            &text,
+            crate::core::FY_EN2ZH,
+            &cfg.ai_url,
+            &cfg.ai_key,
+            &cfg.ai_model,
+            &cfg.baidu_appid,
+            &cfg.baidu_secret,
+            &cfg.baidu_url,
+            crate::core::FY_CHAIN_NO_DICT,
+        );
+        let payload = Box::into_raw(Box::new(SelTransPayload {
+            target,
+            src: text,
+            zh: zh.unwrap_or_default(),
+            rc: win_rc,
+        }));
+        unsafe {
+            PostMessageW(hwnd_main as HWND, WM_APP_SEL_TRANS, 0, payload as LPARAM);
+        }
+    });
+}
+
+/// 结果窗选中态下按 F2：翻译选中文字
+fn result_translate_selection(hwnd: HWND) -> bool {
+    let job = SNIP_MGR.with(|m| {
+        let mgr = m.borrow();
+        let r = &mgr.result;
+        if r.hwnd != hwnd || !r.sel.mode || !r.sel.has_rect || r.sel.is_zh {
+            return None;
+        }
+        let text = r.sel.text.trim().to_string();
+        if text.is_empty() {
+            return None;
+        }
+        let mut rc = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rc) };
+        Some((text, result_win_rc(r, rc.right, rc.bottom, &r.sel.rect)))
+    });
+    match job {
+        Some((text, win_rc)) => {
+            translate_selection_async(hwnd, text, win_rc);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Ctrl+左键：进入/退出选中态（贴图不关）
@@ -6067,35 +6498,7 @@ fn pin_translate_selection(hwnd: HWND) {
     let Some((text, win_rc)) = job else {
         return;
     };
-    let cfg = SNIP_MGR.with(|m| m.borrow().cfg.clone());
-    let hwnd_main = cfg.hwnd_main;
-    if hwnd_main == 0 {
-        return;
-    }
-    show_toast(hwnd, "翻译中…", Tone::Info);
-    let target = hwnd as usize;
-    thread::spawn(move || {
-        let zh = crate::core::bing::translate_chain_ex(
-            &text,
-            crate::core::FY_EN2ZH,
-            &cfg.ai_url,
-            &cfg.ai_key,
-            &cfg.ai_model,
-            &cfg.baidu_appid,
-            &cfg.baidu_secret,
-            &cfg.baidu_url,
-            0,
-        );
-        let payload = Box::into_raw(Box::new(SelTransPayload {
-            target,
-            src: text,
-            zh: zh.unwrap_or_default(),
-            rc: win_rc,
-        }));
-        unsafe {
-            PostMessageW(hwnd_main as HWND, WM_APP_SEL_TRANS, 0, payload as LPARAM);
-        }
-    });
+    translate_selection_async(hwnd, text, win_rc);
 }
 
 struct SelTransPayload {
@@ -7238,7 +7641,7 @@ mod tests {
             en_text: String::new(),
             lines: lines.clone(),
             blocks: blocks.clone(),
-            sel: PinSel::default(),
+            sel: TextSel::default(),
             zoom: 1.0,
             alpha: 255,
             hover_trans: false,
@@ -7255,6 +7658,48 @@ mod tests {
         // 同一块只取一次（两行同块）
         let (t3, _) = pin_sel_text(&pin, &[0, 0]);
         assert_eq!(t3, "另存为");
+    }
+
+    #[test]
+    fn test_result_img_roundtrip() {
+        // 结果窗：图像 400x300，缩放 1.0，窗口 480x400（含 46 底栏）
+        let mut res = ResultWinState::default();
+        res.img_w = 400;
+        res.img_h = 300;
+        res.zoom = 1.0;
+        let (cw, ch) = (480, 400);
+        let (dx, dy) = result_img_origin(&res, cw, ch);
+        assert_eq!((dx, dy), (40, 27)); // (480-400)/2=40, (400-46-300)/2=27
+        // 图像内一点 → 图像坐标
+        let (ix, iy) = result_img_pt(&res, cw, ch, 40 + 100, 27 + 50);
+        assert!((ix - 100.0).abs() < 0.01 && (iy - 50.0).abs() < 0.01);
+        // 图像矩形 → 客户区矩形，再反向取回
+        let img_rc = RECT { left: 10, top: 20, right: 110, bottom: 60 };
+        let win = result_win_rc(&res, cw, ch, &img_rc);
+        assert_eq!((win.left, win.top, win.right, win.bottom), (50, 47, 150, 87));
+        let (bx, by) = result_img_pt(&res, cw, ch, win.left, win.bottom);
+        assert!((bx - 10.0).abs() < 0.01 && (by - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_sel_text_from_zh_mapping() {
+        let lines = vec![
+            OcrLine { x: 5.0, y: 5.0, w: 60.0, h: 16.0, text: "Open".into(), need_trans: true },
+            OcrLine { x: 5.0, y: 25.0, w: 80.0, h: 16.0, text: "Recent".into(), need_trans: true },
+        ];
+        let blocks = vec![
+            SnipBlock { x: 0, y: 0, w: 100, h: 22, en: "Open".into(), zh: "打开".into(), skip_translate: false },
+            SnipBlock { x: 0, y: 22, w: 100, h: 22, en: "Recent".into(), zh: "最近".into(), skip_translate: false },
+        ];
+        // 原图态
+        let (en, is_zh) = sel_text_from(&lines, &blocks, false, true, &[0, 1]);
+        assert_eq!((en.as_str(), is_zh), ("Open\nRecent", false));
+        // 译图态
+        let (zh, is_zh2) = sel_text_from(&lines, &blocks, true, true, &[0, 1]);
+        assert_eq!((zh.as_str(), is_zh2), ("打开\n最近", true));
+        // 没有译图时即使 show_zh 也退回英文
+        let (fallback, _) = sel_text_from(&lines, &blocks, true, false, &[0]);
+        assert_eq!(fallback, "Open");
     }
 
 }
