@@ -28,7 +28,8 @@ use kuaiyi_ng::ui::modern_settings::{
     WM_SET_APPLY_SETTINGS, WM_SET_CHECK_UPDATE, WM_SET_RESET_HOTKEYS, WM_SET_SNIP_CMD,
 };
 use kuaiyi_ng::ui::snip_ui::{
-    close_all_pins, create_pin_from_clipboard, handle_pin_done_message, handle_snip_done_message,
+    close_all_pins, create_pin_from_clipboard, handle_pin_done_message, handle_pin_lines_message,
+    handle_sel_trans_message, handle_snip_done_message,
     has_active_pins, start_snip_capture, start_snip_translate, update_snip_cfg, SnipCfg,
 };
 use kuaiyi_ng::ui::win32_ui::{
@@ -51,7 +52,8 @@ use kuaiyi_ng::ui::{
     DEF_CAPTURE, DEF_COPY, DEF_HIST_DOWN, DEF_HIST_UP, DEF_PIN, DEF_SNIP, DEF_TOGGLE, HK_CAPTURE,
     HK_COPY, HK_HIST_DOWN, HK_HIST_UP, HK_PIN, HK_SNIP, HK_TOGGLE, KIND_NAMES, STYLE_CODES,
     STYLE_NAMES, WM_APP_COPY_NAMING, WM_APP_DOWNLOAD, WM_APP_FLASH_HINT, WM_APP_HIDE_MAIN,
-    WM_APP_OPEN_SETTINGS, WM_APP_PIN_DONE, WM_APP_POPUP_SELECT, WM_APP_SHOW_MAIN, WM_APP_SNIP_DONE,
+    WM_APP_OPEN_SETTINGS, WM_APP_PIN_DONE, WM_APP_PIN_LINES, WM_APP_POPUP_SELECT, WM_APP_SEL_TRANS,
+    WM_APP_SHOW_MAIN, WM_APP_SNIP_DONE,
     WM_APP_TRANSLATED, WM_APP_TRAY, WM_APP_UPDATE,
 };
 use std::cell::RefCell;
@@ -886,11 +888,19 @@ unsafe extern "system" fn main_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: L
             0
         }
         WM_APP_SNIP_DONE => {
-            handle_snip_done_message(lp);
+            handle_snip_done_message(wp, lp);
             0
         }
         WM_APP_PIN_DONE => {
             handle_pin_done_message(wp, lp);
+            0
+        }
+        WM_APP_PIN_LINES => {
+            handle_pin_lines_message(lp);
+            0
+        }
+        WM_APP_SEL_TRANS => {
+            handle_sel_trans_message(lp);
             0
         }
         WM_APP_FLASH_HINT => {

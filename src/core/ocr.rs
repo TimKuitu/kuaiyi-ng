@@ -45,6 +45,10 @@ pub struct SnipResult {
     pub en_text: String,
     /// 失败时的错误信息（UTF-8）
     pub err: String,
+    /// OCR 行框（图像像素坐标），供贴图划选取字使用
+    pub lines: Vec<OcrLine>,
+    /// 翻译块（含块级译文），译图态划选取中文用
+    pub blocks: Vec<SnipBlock>,
 }
 
 impl SnipResult {
@@ -57,7 +61,42 @@ impl SnipResult {
             zh_text: String::new(),
             en_text: String::new(),
             err: err.to_string(),
+            lines: Vec::new(),
+            blocks: Vec::new(),
         }
+    }
+}
+
+/// 一行 OCR 结果（图像像素坐标）
+#[derive(Debug, Clone)]
+pub struct OcrLine {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub text: String,
+    pub need_trans: bool,
+}
+
+/// 一个翻译块（可能由多行合并），block 级译文用于译图态划选
+#[derive(Debug, Clone)]
+pub struct SnipBlock {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub en: String,
+    pub zh: String,
+    pub skip_translate: bool,
+}
+
+impl SnipBlock {
+    /// 该块是否包含图像坐标点
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x as f32
+            && x <= (self.x + self.w) as f32
+            && y >= self.y as f32
+            && y <= (self.y + self.h) as f32
     }
 }
 
@@ -327,15 +366,8 @@ impl Drop for HStringGuard {
 
 // ---- 语言判断与文字块结构 ----
 
-#[derive(Debug, Clone)]
-struct OcrLineBox {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    text: String,
-    need_trans: bool,
-}
+/// 历史命名保留：内部一律用它，公开 API 用 [`OcrLine`]
+type OcrLineBox = OcrLine;
 
 #[derive(Debug, Clone)]
 struct TextBlock {
@@ -2426,7 +2458,39 @@ pub fn snip_translate(
         zh_text: join_block_texts(&blks, true),
         en_text: join_block_texts(&blks, false),
         err: String::new(),
+        lines,
+        blocks: blks.iter().map(SnipBlock::from).collect(),
     }
+}
+
+impl From<&TextBlock> for SnipBlock {
+    fn from(b: &TextBlock) -> Self {
+        Self {
+            x: b.x,
+            y: b.y,
+            w: b.w,
+            h: b.h,
+            en: b.en.clone(),
+            zh: b.zh.clone(),
+            skip_translate: b.skip_translate,
+        }
+    }
+}
+
+/// 只做 OCR 不翻译：贴图首次进入选字模式时懒加载行框用
+pub fn snip_ocr_lines(bgra: &[u8], width: i32, height: i32) -> Result<Vec<OcrLine>, String> {
+    if width <= 0 || height <= 0 {
+        return Err("无效图像尺寸".to_string());
+    }
+    let img_bytes = (width as usize) * (height as usize) * 4;
+    if bgra.len() < img_bytes {
+        return Err("无效图像尺寸".to_string());
+    }
+    let lines = run_winrt_ocr(&bgra[..img_bytes], width, height)?;
+    if lines.is_empty() {
+        return Err("未识别到文本".to_string());
+    }
+    Ok(lines)
 }
 
 #[cfg(test)]

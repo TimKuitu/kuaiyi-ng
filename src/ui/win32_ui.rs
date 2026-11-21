@@ -811,6 +811,7 @@ extern "system" {
         bAlpha: BYTE,
         dwFlags: DWORD,
     ) -> BOOL;
+    pub fn SetWindowRgn(hWnd: HWND, hRgn: HRGN, bRedraw: BOOL) -> i32;
     pub fn EnumWindows(lpEnumFunc: WNDENUMPROC, lParam: LPARAM) -> BOOL;
     pub fn EnumChildWindows(hWndParent: HWND, lpEnumFunc: WNDENUMPROC, lParam: LPARAM) -> BOOL;
     pub fn GetWindowTextW(hWnd: HWND, lpString: LPWSTR, nMaxCount: i32) -> i32;
@@ -929,6 +930,14 @@ extern "system" {
     pub fn MoveToEx(hdc: HDC, x: i32, y: i32, lppt: *mut POINT) -> BOOL;
     pub fn LineTo(hdc: HDC, x: i32, y: i32) -> BOOL;
     pub fn CreateRectRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> HRGN;
+    pub fn CreateRoundRectRgn(
+        x1: i32,
+        y1: i32,
+        x2: i32,
+        y2: i32,
+        w: i32,
+        h: i32,
+    ) -> HRGN;
     pub fn SelectClipRgn(hdc: HDC, hrgn: HRGN) -> i32;
     pub fn GetDeviceCaps(hdc: HDC, index: i32) -> i32;
 }
