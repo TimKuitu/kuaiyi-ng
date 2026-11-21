@@ -2386,11 +2386,29 @@ proc getHandleCenters(rc: RECT): array[8, POINT] =
   ]
 
 proc hitTestHandles(rc: RECT, mx, my: int): int =
-  let pts = getHandleCenters(rc)
-  for i, p in pts:
-    if abs(mx - int(p.x)) <= 6 and abs(my - int(p.y)) <= 6:
-      return i + 1
+  let l = int(rc.left)
+  let r = int(rc.right)
+  let t = int(rc.top)
+  let b = int(rc.bottom)
+
+  const CornerTol = 8
+  const BorderTol = 6
+
+  # 1. 优先判定四个角点（1=TL, 3=TR, 5=BR, 7=BL）
+  if abs(mx - l) <= CornerTol and abs(my - t) <= CornerTol: return 1
+  if abs(mx - r) <= CornerTol and abs(my - t) <= CornerTol: return 3
+  if abs(mx - r) <= CornerTol and abs(my - b) <= CornerTol: return 5
+  if abs(mx - l) <= CornerTol and abs(my - b) <= CornerTol: return 7
+
+  # 2. 判定四条边（2=T, 4=R, 6=B, 8=L，支持沿整个边界拖动调整尺寸）
+  if abs(my - t) <= BorderTol and mx >= l - BorderTol and mx <= r + BorderTol: return 2
+  if abs(my - b) <= BorderTol and mx >= l - BorderTol and mx <= r + BorderTol: return 6
+  if abs(mx - l) <= BorderTol and my >= t - BorderTol and my <= b + BorderTol: return 8
+  if abs(mx - r) <= BorderTol and my >= t - BorderTol and my <= b + BorderTol: return 4
+
+  # 3. 选区内部判定（9 表示选区内部）
   if ptInRect(rc, mx, my): return 9
+
   result = 0
 
 proc hitTestOvToolbar(mx, my: int): int =
@@ -3248,7 +3266,7 @@ proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string),
           of 3, 7: SetCursor(LoadCursorW(0, IDC_SIZENESW))
           of 2, 6: SetCursor(LoadCursorW(0, IDC_SIZENS))
           of 4, 8: SetCursor(LoadCursorW(0, IDC_SIZEWE))
-          of 9: SetCursor(LoadCursorW(0, IDC_SIZEALL))
+          of 9: SetCursor(LoadCursorW(0, IDC_ARROW)) # 框内不可整框拖动，显示普通指针
           else: SetCursor(LoadCursorW(0, IDC_CROSS))
           return 1
         elif g_state == osMoving:
@@ -3310,7 +3328,7 @@ proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string),
             InvalidateRect(hwnd, nil, FALSE)
             return 0
 
-          # 未选标注工具时允许 8 向缩放与移动选区
+          # 未选标注工具时允许边界缩放选区（禁用整框拖动）
           if g_curTool == atNone:
             let hit = hitTestHandles(g_selRc, mx, my)
             if hit in 1..8:
@@ -3322,11 +3340,7 @@ proc startSnipCapture*(hwndMain: HWND, cfg: SnipCfg, copyCb: proc (s: string),
               InvalidateRect(hwnd, nil, FALSE)
               return 0
             elif hit == 9:
-              g_state = osMoving
-              g_dragOrigRc = g_selRc
-              g_dragStartPt = g_ptMouse
-              SetCapture(hwnd)
-              InvalidateRect(hwnd, nil, FALSE)
+              # 选区内部：不可以拖动整个选框，拦截事件，不启动移动拖拽，也不触发重新框选
               return 0
 
         # 点选区外（未选工具或重新框选）
