@@ -235,6 +235,7 @@ pub const RDW_FRAME: UINT = 0x0400;
 pub const RDW_ALLCHILDREN: UINT = 0x0080;
 
 pub const GA_ROOT: UINT = 2;
+pub const GW_HWNDNEXT: UINT = 2;
 pub const LWA_ALPHA: DWORD = 0x0000_0002;
 pub const ULW_ALPHA: DWORD = 0x0000_0002;
 pub const CAPTUREBLT: DWORD = 0x4000_0000;
@@ -760,6 +761,9 @@ extern "system" {
     pub fn IsWindow(hWnd: HWND) -> BOOL;
     pub fn IsWindowVisible(hWnd: HWND) -> BOOL;
     pub fn IsIconic(hWnd: HWND) -> BOOL;
+    pub fn GetDesktopWindow() -> HWND;
+    pub fn GetTopWindow(hWnd: HWND) -> HWND;
+    pub fn GetWindow(hWnd: HWND, uCmd: UINT) -> HWND;
     pub fn SetFocus(hWnd: HWND) -> HWND;
     pub fn GetFocus() -> HWND;
     pub fn SetCapture(hWnd: HWND) -> HWND;

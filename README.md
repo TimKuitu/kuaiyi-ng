@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/Language-Rust%202021-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue.svg)](https://microsoft.com)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/Version-v3.0.2-brightgreen.svg)](../../releases)
+[![Release](https://img.shields.io/badge/Version-v3.0.3-brightgreen.svg)](../../releases)
 
 ---
 

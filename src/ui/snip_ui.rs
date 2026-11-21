@@ -15,19 +15,20 @@ use crate::ui::win32_ui::{
     GdiFlush, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush,
     GdipDeleteGraphics, GdipDeletePen, GdipDrawEllipse, GdipDrawLine, GdipDrawLines,
     GdipDrawRectangle, GdipFillEllipse, GdipFillRectangle, GdipSetPenEndCap, GdipSetPenLineJoin,
-    GdipSetPenStartCap, GdipSetSmoothingMode, GetAsyncKeyState, GetClassNameW, GetClientRect,
-    GetCurrentProcessId, GetCursorPos, GetDC, GetModuleHandleW, GetStockObject, GetSystemMetrics,
-    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, GpPointF, InvalidateRect, IsIconic,
-    IsWindow, IsWindowVisible, LoadCursorW, PostMessageW, RegisterClassExW, ReleaseCapture,
-    ReleaseDC, ScreenToClient, SelectClipRgn, SelectObject, SetBkMode, SetCapture, SetCursor,
-    SetFocus, SetLayeredWindowAttributes, SetStretchBltMode, SetTextColor, SetWindowPos,
-    SetWindowSubclass, ShowWindow, StretchBlt, TrackPopupMenu, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, CAPTUREBLT, CLEARTYPE_QUALITY, COLORONCOLOR, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
-    DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_TOP, DT_VCENTER, DT_WORDBREAK, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
-    DWORD_PTR, ES_AUTOHSCROLL, ES_MULTILINE, ES_WANTRETURN, FW_BOLD, FW_MEDIUM, FW_NORMAL,
+    GdipSetPenStartCap, GdipSetSmoothingMode, GetAncestor, GetAsyncKeyState, GetClassNameW,
+    GetClientRect, GetCurrentProcessId, GetCursorPos, GetDC, GetDesktopWindow, GetForegroundWindow,
+    GetModuleHandleW, GetStockObject, GetSystemMetrics, GetTopWindow, GetWindow, GetWindowLongPtrW,
+    GetWindowRect, GetWindowThreadProcessId, GpPointF, InvalidateRect, IsIconic, IsWindow,
+    IsWindowVisible, LoadCursorW, PostMessageW, RegisterClassExW, ReleaseCapture, ReleaseDC,
+    ScreenToClient, SelectClipRgn, SelectObject, SetBkMode, SetCapture, SetCursor, SetFocus,
+    SetLayeredWindowAttributes, SetStretchBltMode, SetTextColor, SetWindowPos, SetWindowSubclass,
+    ShowWindow, StretchBlt, TrackPopupMenu, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
+    CLEARTYPE_QUALITY, COLORONCOLOR, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, DEFAULT_CHARSET,
+    DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
+    DT_TOP, DT_VCENTER, DT_WORDBREAK, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWORD_PTR,
+    ES_AUTOHSCROLL, ES_MULTILINE, ES_WANTRETURN, FW_BOLD, FW_MEDIUM, FW_NORMAL, GA_ROOT,
     GP_LINE_CAP_ROUND, GP_LINE_JOIN_ROUND, GP_OK, GP_SMOOTHING_ANTIALIAS, GP_UNIT_PIXEL,
-    GWL_EXSTYLE, HALFTONE, HBITMAP, HDC, HFONT, HGDIOBJ, HWND, HWND_TOPMOST, IDC_ARROW, IDC_CROSS,
+    GWL_EXSTYLE, GW_HWNDNEXT, HALFTONE, HBITMAP, HDC, HFONT, HGDIOBJ, HWND, HWND_TOPMOST, IDC_ARROW, IDC_CROSS,
     IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, LPARAM, LRESULT, LWA_ALPHA,
     MA_NOACTIVATE, MF_CHECKED, MF_SEPARATOR, MF_STRING, MINMAXINFO, NULL_BRUSH, PAINTSTRUCT, POINT,
     PS_DASH, PS_SOLID, RECT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -1766,9 +1767,10 @@ pub fn clip_auto_window_rect(
     }
 }
 
-/// 自动识别窗口候选（含顶层窗口矩形以及该窗口内部的子窗口、顶部工具栏、标题栏、客户区等）
+/// 自动识别窗口候选（含顶层窗口句柄、顶层窗口矩形以及该窗口内部的子窗口、顶部工具栏、标题栏、客户区等）
 #[derive(Clone, Debug, Default)]
 pub struct WindowCandidate {
+    pub hwnd: isize,
     pub top_rect: RECT,
     pub sub_rects: Vec<RECT>,
 }
@@ -1776,6 +1778,7 @@ pub struct WindowCandidate {
 impl From<RECT> for WindowCandidate {
     fn from(top_rect: RECT) -> Self {
         Self {
+            hwnd: 0,
             top_rect,
             sub_rects: Vec::new(),
         }
@@ -1970,34 +1973,53 @@ unsafe fn collect_child_and_toolbar_rects(
 }
 
 unsafe fn enum_visible_windows(
+    fg_root: HWND,
     vx: i32,
     vy: i32,
     mon_rects: &[RECT],
     work_rects: &[RECT],
 ) -> Vec<WindowCandidate> {
-    struct Ctx {
-        own_pid: u32,
-        vx: i32,
-        vy: i32,
-        mon_ptr: *const RECT,
-        mon_len: usize,
-        work_ptr: *const RECT,
-        work_len: usize,
-        list: Vec<WindowCandidate>,
+    // 1. 优先按 Windows 原生 Z-order 链获取顶层窗口列表 (从最顶到底)
+    let mut z_hwnds = Vec::new();
+    let mut cur = GetTopWindow(GetDesktopWindow());
+    if cur.is_null() {
+        cur = GetTopWindow(null_mut());
     }
-    unsafe extern "system" fn enum_cb(hwnd: HWND, lp: LPARAM) -> i32 {
-        let ctx = &mut *(lp as *mut Ctx);
+    while !cur.is_null() {
+        z_hwnds.push(cur);
+        cur = GetWindow(cur, GW_HWNDNEXT);
+    }
+
+    // 2. 结合 EnumWindows 兜底补充可能未挂在直接桌面子链中的顶层窗口
+    struct EnumCtx {
+        seen: Vec<HWND>,
+    }
+    unsafe extern "system" fn append_enum_cb(hwnd: HWND, lp: LPARAM) -> i32 {
+        let ctx = &mut *(lp as *mut EnumCtx);
+        if !ctx.seen.contains(&hwnd) {
+            ctx.seen.push(hwnd);
+        }
+        1
+    }
+    let mut enum_ctx = EnumCtx { seen: z_hwnds };
+    EnumWindows(append_enum_cb, (&mut enum_ctx as *mut EnumCtx) as LPARAM);
+
+    let own_pid = GetCurrentProcessId();
+    let mut topmost_cands = Vec::new();
+    let mut normal_cands = Vec::new();
+
+    for hwnd in enum_ctx.seen {
         if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
-            return 1;
+            continue;
         }
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid == ctx.own_pid {
-            return 1;
+        if pid == own_pid {
+            continue;
         }
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
         if (ex_style & WS_EX_TRANSPARENT) != 0 {
-            return 1;
+            continue;
         }
         let mut cloaked: u32 = 0;
         if DwmGetWindowAttribute(
@@ -2008,14 +2030,14 @@ unsafe fn enum_visible_windows(
         ) == 0
             && cloaked != 0
         {
-            return 1;
+            continue;
         }
         let mut cls_buf = [0u16; 128];
         let cls_len = GetClassNameW(hwnd, cls_buf.as_mut_ptr(), cls_buf.len() as i32);
         if cls_len > 0 {
             let cls = wide_to_utf8(&cls_buf[..cls_len as usize]);
             if should_skip_auto_window_class(&cls) {
-                return 1;
+                continue;
             }
         }
         let mut rc = RECT::default();
@@ -2027,37 +2049,60 @@ unsafe fn enum_visible_windows(
         ) != 0
             && GetWindowRect(hwnd, &mut rc) == 0
         {
-            return 1;
+            continue;
         }
         let local_rc = RECT {
-            left: rc.left - ctx.vx,
-            top: rc.top - ctx.vy,
-            right: rc.right - ctx.vx,
-            bottom: rc.bottom - ctx.vy,
+            left: rc.left - vx,
+            top: rc.top - vy,
+            right: rc.right - vx,
+            bottom: rc.bottom - vy,
         };
-        let mons = std::slice::from_raw_parts(ctx.mon_ptr, ctx.mon_len);
-        let works = std::slice::from_raw_parts(ctx.work_ptr, ctx.work_len);
-        if let Some(clipped) = clip_auto_window_rect(local_rc, mons, works) {
-            let sub_rects = collect_child_and_toolbar_rects(hwnd, clipped, ctx.vx, ctx.vy);
-            ctx.list.push(WindowCandidate {
+        if let Some(clipped) = clip_auto_window_rect(local_rc, mon_rects, work_rects) {
+            let sub_rects = collect_child_and_toolbar_rects(hwnd, clipped, vx, vy);
+            let cand = WindowCandidate {
+                hwnd: hwnd as isize,
                 top_rect: clipped,
                 sub_rects,
-            });
+            };
+            if (ex_style & WS_EX_TOPMOST) != 0 {
+                topmost_cands.push(cand);
+            } else {
+                normal_cands.push(cand);
+            }
         }
-        1
     }
-    let mut ctx = Ctx {
-        own_pid: GetCurrentProcessId(),
-        vx,
-        vy,
-        mon_ptr: mon_rects.as_ptr(),
-        mon_len: mon_rects.len(),
-        work_ptr: work_rects.as_ptr(),
-        work_len: work_rects.len(),
-        list: Vec::new(),
-    };
-    EnumWindows(enum_cb, (&mut ctx as *mut Ctx) as LPARAM);
-    ctx.list
+
+    // 3. 前台窗口优先提权：若截图瞬间的前台窗口处于常规窗口列表中，将其置于常规窗口最前列
+    if !fg_root.is_null() {
+        let fg_root_isize = fg_root as isize;
+        if let Some(pos) = normal_cands.iter().position(|c| c.hwnd == fg_root_isize) {
+            let fg_cand = normal_cands.remove(pos);
+            normal_cands.insert(0, fg_cand);
+        }
+    }
+
+    // 4. 组合最终物理 Z-order 候选列表：系统置顶窗口在前，常规窗口（前台窗口首位）在后
+    let mut list = topmost_cands;
+    list.extend(normal_cands);
+
+    if !list.is_empty() {
+        let top3: Vec<String> = list
+            .iter()
+            .take(4)
+            .map(|c| {
+                format!(
+                    "0x{:x}({},{},{},{})",
+                    c.hwnd, c.top_rect.left, c.top_rect.top, c.top_rect.right, c.top_rect.bottom
+                )
+            })
+            .collect();
+        log_write(
+            "截屏",
+            &format!("物理Z-order顶层窗口 [{}]: {}", list.len(), top3.join(" -> ")),
+        );
+    }
+
+    list
 }
 
 // ---- 工具栏布局与命中 ----
@@ -2373,7 +2418,13 @@ fn start_overlay(trans_mode: bool) {
         &format!("虚拟桌面 ({vx},{vy}) {vw}x{vh} 屏幕数={}", mon_rects.len()),
     );
     unsafe { ensure_snip_classes() };
-    let win_rects = unsafe { enum_visible_windows(vx, vy, &mon_rects, &work_rects) };
+    let fg_hwnd = unsafe { GetForegroundWindow() };
+    let fg_root = if !fg_hwnd.is_null() {
+        unsafe { GetAncestor(fg_hwnd, GA_ROOT) }
+    } else {
+        null_mut()
+    };
+    let win_rects = unsafe { enum_visible_windows(fg_root, vx, vy, &mon_rects, &work_rects) };
 
     let mut cur = POINT::default();
     unsafe { GetCursorPos(&mut cur) };
@@ -5724,6 +5775,7 @@ mod tests {
 
         // 5. 顶部工具栏与子窗口精细选取：大窗口内部包含顶部工具栏与内容区
         let win_ide = WindowCandidate {
+            hwnd: 0,
             top_rect: RECT {
                 left: 100,
                 top: 100,
@@ -5781,6 +5833,47 @@ mod tests {
         assert_eq!(
             (hit_whole.left, hit_whole.top, hit_whole.right, hit_whole.bottom),
             (100, 100, 1300, 900)
+        );
+
+        // 6. 前台应用（浏览器）与后台应用（文件夹小分区）的严格前后层级遮挡判定：
+        // 浏览器在前 (200, 50, 1600, 950)，带顶部标签工具栏 (200, 50, 1600, 90)；
+        // 文件夹在后 (100, 100, 1500, 1000)，内部有更小的子分区：左侧树 (100, 150, 300, 950)、文件列表 (300, 150, 1500, 950)
+        let front_browser = WindowCandidate {
+            hwnd: 0x1001,
+            top_rect: RECT { left: 200, top: 50, right: 1600, bottom: 950 },
+            sub_rects: vec![
+                RECT { left: 200, top: 50, right: 1600, bottom: 90 }, // 顶部标签栏
+            ],
+        };
+        let back_explorer = WindowCandidate {
+            hwnd: 0x1002,
+            top_rect: RECT { left: 100, top: 100, right: 1500, bottom: 1000 },
+            sub_rects: vec![
+                RECT { left: 100, top: 150, right: 300, bottom: 950 },  // 左侧导航树
+                RECT { left: 300, top: 150, right: 1500, bottom: 950 }, // 文件列表视图 (面积更小更诱人)
+            ],
+        };
+        let z_browser_first = [front_browser, back_explorer];
+
+        // A. 鼠标停在浏览器网页内容区 (500, 400)：虽然此点落在后台文件夹的文件列表中，但绝不可穿透，必须命中前置浏览器整窗
+        let hit_browser_body = pick_hover_window_rect(&z_browser_first, &works, 500, 400);
+        assert_eq!(
+            (hit_browser_body.left, hit_browser_body.top, hit_browser_body.right, hit_browser_body.bottom),
+            (200, 50, 1600, 950)
+        );
+
+        // B. 鼠标停在浏览器顶部标签栏 (500, 70)：精确命中浏览器的顶部标签栏
+        let hit_browser_tab = pick_hover_window_rect(&z_browser_first, &works, 500, 70);
+        assert_eq!(
+            (hit_browser_tab.left, hit_browser_tab.top, hit_browser_tab.right, hit_browser_tab.bottom),
+            (200, 50, 1600, 90)
+        );
+
+        // C. 鼠标停在未被浏览器遮挡的文件夹左侧外露区域 (150, 200)：正常命中后台文件夹露出的左侧导航树
+        let hit_explorer_tree = pick_hover_window_rect(&z_browser_first, &works, 150, 200);
+        assert_eq!(
+            (hit_explorer_tree.left, hit_explorer_tree.top, hit_explorer_tree.right, hit_explorer_tree.bottom),
+            (100, 150, 300, 950)
         );
     }
 
