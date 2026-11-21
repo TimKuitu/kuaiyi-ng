@@ -1559,6 +1559,11 @@ struct OverlayState {
     has_sel: bool,
     sel_rc: RECT,
     hover_win_rc: RECT,
+    hover_win_hwnd: isize,
+    hover_depth: usize,
+    hover_whole_idx: usize,
+    hover_levels_len: usize,
+    hover_lock_whole: bool,
 
     cur_tool: AnnotTool,
     cur_size_idx: usize,
@@ -1785,6 +1790,188 @@ impl From<RECT> for WindowCandidate {
     }
 }
 
+/// 当前鼠标坐标下按面积从小到大排列的嵌套候选层级链
+#[derive(Clone, Debug, Default)]
+pub struct HoverHierarchy {
+    pub win_hwnd: isize,
+    pub levels: Vec<RECT>,
+    pub whole_win_idx: usize,
+}
+
+/// 判断坐标是否位于窗口左、右、下外框边缘热区（保留顶部工具栏，靠左/右/下边时自然选中整窗）
+pub fn is_on_window_frame_edge(whole_rc: RECT, x: i32, y: i32) -> bool {
+    const EDGE_BAND: i32 = 10;
+    let w = whole_rc.right - whole_rc.left;
+    let h = whole_rc.bottom - whole_rc.top;
+    if w <= EDGE_BAND * 4 || h <= EDGE_BAND * 4 {
+        return false;
+    }
+    x <= whole_rc.left + EDGE_BAND
+        || x >= whole_rc.right - EDGE_BAND
+        || y >= whole_rc.bottom - EDGE_BAND
+}
+
+/// 收集指定坐标 (x, y) 处的嵌套识别层级：
+/// 严格按 Z-order 仅锁定最前方命中的顶级窗口；在该窗口内收集由小到大的子分区与整窗矩形，
+/// 末尾附加显示器工作区以便滚轮切换扩大选区。
+pub fn collect_hover_hierarchy(
+    candidates: &[WindowCandidate],
+    work_rects: &[RECT],
+    x: i32,
+    y: i32,
+) -> HoverHierarchy {
+    let cur_work = work_rects.iter().copied().find(|&r| pt_in_rect(r, x, y));
+    if !work_rects.is_empty() && cur_work.is_none() {
+        return HoverHierarchy::default();
+    }
+
+    let clamp_work = |mut r: RECT| -> RECT {
+        if let Some(wk) = cur_work {
+            r.top = r.top.max(wk.top);
+            r.bottom = r.bottom.min(wk.bottom);
+        }
+        r
+    };
+
+    for cand in candidates {
+        if pt_in_rect(cand.top_rect, x, y) {
+            let whole_rc = clamp_work(cand.top_rect);
+            if whole_rc.right <= whole_rc.left || whole_rc.bottom <= whole_rc.top {
+                continue;
+            }
+            let whole_area = ((whole_rc.right - whole_rc.left) as i64)
+                * ((whole_rc.bottom - whole_rc.top) as i64);
+
+            let mut sub_items: Vec<(i64, RECT)> = Vec::new();
+            for &sub in &cand.sub_rects {
+                if pt_in_rect(sub, x, y) {
+                    let s = clamp_work(sub);
+                    let w = s.right - s.left;
+                    let h = s.bottom - s.top;
+                    if w >= 24 && h >= 14 {
+                        let area = (w as i64) * (h as i64);
+                        if area < whole_area {
+                            sub_items.push((area, s));
+                        }
+                    }
+                }
+            }
+            sub_items.sort_by_key(|item| item.0);
+
+            let mut levels: Vec<RECT> = Vec::new();
+            for (_, s) in sub_items {
+                let dup = levels.iter().any(|&ex| {
+                    (ex.left - s.left).abs() <= 2
+                        && (ex.top - s.top).abs() <= 2
+                        && (ex.right - s.right).abs() <= 2
+                        && (ex.bottom - s.bottom).abs() <= 2
+                });
+                if !dup {
+                    levels.push(s);
+                }
+            }
+
+            let whole_win_idx = levels.len();
+            levels.push(whole_rc);
+
+            if let Some(wk) = cur_work {
+                let wk_area = ((wk.right - wk.left) as i64) * ((wk.bottom - wk.top) as i64);
+                if wk_area > whole_area {
+                    levels.push(wk);
+                }
+            }
+
+            return HoverHierarchy {
+                win_hwnd: cand.hwnd,
+                levels,
+                whole_win_idx,
+            };
+        }
+    }
+
+    if let Some(wk) = cur_work {
+        HoverHierarchy {
+            win_hwnd: 0,
+            levels: vec![wk],
+            whole_win_idx: 0,
+        }
+    } else {
+        HoverHierarchy::default()
+    }
+}
+
+/// 根据层级状态与修饰键刷新 Overlay 悬停窗口高亮框
+fn update_overlay_hover_state(ov: &mut OverlayState, x: i32, y: i32, shift_down: bool) {
+    let hier = collect_hover_hierarchy(&ov.win_rects, &ov.work_rects, x, y);
+    if hier.levels.is_empty() {
+        ov.hover_win_rc = RECT::default();
+        ov.hover_win_hwnd = 0;
+        ov.hover_depth = 0;
+        ov.hover_whole_idx = 0;
+        ov.hover_levels_len = 0;
+        ov.hover_lock_whole = false;
+        return;
+    }
+
+    if hier.win_hwnd != ov.hover_win_hwnd {
+        ov.hover_win_hwnd = hier.win_hwnd;
+        ov.hover_depth = 0;
+        ov.hover_lock_whole = false;
+    }
+
+    let whole_rc = hier.levels[hier.whole_win_idx];
+    let idx = if ov.hover_lock_whole {
+        if ov.hover_depth > ov.hover_whole_idx {
+            hier.levels.len() - 1
+        } else {
+            hier.whole_win_idx
+        }
+    } else if shift_down || is_on_window_frame_edge(whole_rc, x, y) {
+        hier.whole_win_idx
+    } else {
+        ov.hover_depth.min(hier.levels.len() - 1)
+    };
+
+    ov.hover_depth = idx;
+    ov.hover_whole_idx = hier.whole_win_idx;
+    ov.hover_levels_len = hier.levels.len();
+    ov.hover_win_rc = hier.levels[idx];
+}
+
+/// 通过滚轮步进 (delta != 0) 或 Tab 键 (toggle_whole) 切换子分区与整窗层级
+fn step_overlay_hover_level(ov: &mut OverlayState, delta: isize, toggle_whole: bool) -> bool {
+    if ov.has_sel {
+        return false;
+    }
+    let hier = collect_hover_hierarchy(&ov.win_rects, &ov.work_rects, ov.mouse_pt.x, ov.mouse_pt.y);
+    if hier.levels.len() <= 1 {
+        return false;
+    }
+    let max_idx = hier.levels.len() - 1;
+    let cur_idx = ov.hover_depth.min(max_idx);
+    let next_idx = if toggle_whole {
+        if cur_idx < hier.whole_win_idx {
+            hier.whole_win_idx
+        } else {
+            0
+        }
+    } else if delta > 0 {
+        (cur_idx + (delta as usize)).min(max_idx)
+    } else if delta < 0 {
+        cur_idx.saturating_sub((-delta) as usize)
+    } else {
+        cur_idx
+    };
+
+    ov.hover_win_hwnd = hier.win_hwnd;
+    ov.hover_depth = next_idx;
+    ov.hover_whole_idx = hier.whole_win_idx;
+    ov.hover_levels_len = hier.levels.len();
+    ov.hover_lock_whole = next_idx >= hier.whole_win_idx;
+    ov.hover_win_rc = hier.levels[next_idx];
+    next_idx != cur_idx
+}
+
 /// 按 Z-order 与所在显示器工作区选取鼠标悬停的自动识别框。
 /// 优先命中当前最顶层应用；在该应用内进一步匹配更精准的子区域（如顶部工具栏、功能区面板、客户区），
 /// 鼠标在空白边缘时自动回退为整窗大界面；鼠标在任务栏上不高亮，空白桌面回退所在显示器工作区。
@@ -1794,41 +1981,8 @@ pub fn pick_hover_window_rect(
     x: i32,
     y: i32,
 ) -> RECT {
-    let cur_work = work_rects.iter().copied().find(|&r| pt_in_rect(r, x, y));
-    if !work_rects.is_empty() && cur_work.is_none() {
-        return RECT::default();
-    }
-    for cand in candidates {
-        if pt_in_rect(cand.top_rect, x, y) {
-            let mut best_rc = cand.top_rect;
-            let mut best_area = ((cand.top_rect.right - cand.top_rect.left) as i64)
-                * ((cand.top_rect.bottom - cand.top_rect.top) as i64);
-
-            for &sub in &cand.sub_rects {
-                if pt_in_rect(sub, x, y) {
-                    let w = sub.right - sub.left;
-                    let h = sub.bottom - sub.top;
-                    if w >= 24 && h >= 14 {
-                        let area = (w as i64) * (h as i64);
-                        if area < best_area {
-                            best_area = area;
-                            best_rc = sub;
-                        }
-                    }
-                }
-            }
-
-            let mut out = best_rc;
-            if let Some(wk) = cur_work {
-                out.top = out.top.max(wk.top);
-                out.bottom = out.bottom.min(wk.bottom);
-            }
-            if out.right > out.left && out.bottom > out.top {
-                return out;
-            }
-        }
-    }
-    cur_work.unwrap_or_default()
+    let hier = collect_hover_hierarchy(candidates, work_rects, x, y);
+    hier.levels.first().copied().unwrap_or_default()
 }
 
 /// 收集顶级窗口内部的子窗口以及推导出的顶部栏（标题栏/工具栏/标签栏）与客户区
@@ -2465,6 +2619,7 @@ fn start_overlay(trans_mode: bool) {
             mouse_pt: init_mouse,
             ..Default::default()
         };
+        update_overlay_hover_state(&mut mgr.overlay, init_mouse.x, init_mouse.y, false);
     });
 
     unsafe {
@@ -2977,7 +3132,7 @@ unsafe fn draw_overlay_magnifier(
     }
     const BOX_W: i32 = 132;
     const MAG_H: i32 = 96;
-    const INFO_H: i32 = 60;
+    const INFO_H: i32 = 76;
     const BOX_H: i32 = MAG_H + INFO_H;
 
     let mon = monitor_bounds_for_point(&ov.mon_rects, ov.vw, ov.vh, mx, my);
@@ -3099,7 +3254,16 @@ unsafe fn draw_overlay_magnifier(
         right: bx + BOX_W - 4,
         bottom: by + BOX_H - 4,
     };
-    let wt2 = utf8_to_wide(&format!("RGB({r_v},{g_v},{b_v})\n按 C 复制色值"));
+    let hint_line = if !ov.has_sel && ov.hover_levels_len > 1 {
+        if ov.hover_depth < ov.hover_whole_idx {
+            "\n滚轮/Tab 选整窗"
+        } else {
+            "\n滚轮/Tab 选分区"
+        }
+    } else {
+        ""
+    };
+    let wt2 = utf8_to_wide(&format!("RGB({r_v},{g_v},{b_v})\n按 C 复制色值{hint_line}"));
     DrawTextW(
         hdc_back,
         wt2.as_ptr(),
@@ -3778,7 +3942,8 @@ unsafe extern "system" fn overlay_wnd_proc(
                 }
 
                 if !ov.has_sel {
-                    ov.hover_win_rc = pick_hover_window_rect(&ov.win_rects, &ov.work_rects, x, y);
+                    let shift_down = (GetAsyncKeyState(VK_SHIFT) as u16 & 0x8000) != 0;
+                    update_overlay_hover_state(ov, x, y, shift_down);
                     prev_pt.x != x || prev_pt.y != y
                 } else {
                     let prev_hover_btn = ov.hover_btn;
@@ -4318,7 +4483,30 @@ unsafe extern "system" fn overlay_wnd_proc(
                         }
                         return 0;
                     }
+                    0x09 => {
+                        let changed = SNIP_MGR.with(|m| {
+                            let ov = &mut m.borrow_mut().overlay;
+                            step_overlay_hover_level(ov, 0, true)
+                        });
+                        if changed {
+                            InvalidateRect(hwnd, null(), 0);
+                        }
+                        return 0;
+                    }
                     _ => {}
+                }
+            }
+            0
+        }
+        WM_MOUSEWHEEL => {
+            let notches = wheel_delta(wp) / 120;
+            if notches != 0 {
+                let changed = SNIP_MGR.with(|m| {
+                    let ov = &mut m.borrow_mut().overlay;
+                    step_overlay_hover_level(ov, notches as isize, false)
+                });
+                if changed {
+                    InvalidateRect(hwnd, null(), 0);
                 }
             }
             0
@@ -5905,5 +6093,93 @@ mod tests {
         assert_eq!(hotkey_to_annot_tool(0x64), AnnotTool::Arrow);
         assert_eq!(hotkey_to_annot_tool(0x30), AnnotTool::Blur);
         assert_eq!(hotkey_to_annot_tool(0x41), AnnotTool::None);
+    }
+
+    #[test]
+    fn test_hover_hierarchy_wheel_tab_and_frame_edge() {
+        let works = [RECT {
+            left: 0,
+            top: 0,
+            right: 2560,
+            bottom: 1400,
+        }];
+        let folder = WindowCandidate {
+            hwnd: 0x2001,
+            top_rect: RECT { left: 100, top: 100, right: 1200, bottom: 900 },
+            sub_rects: vec![
+                RECT { left: 100, top: 100, right: 1200, bottom: 140 }, // 顶部地址/工具栏
+                RECT { left: 300, top: 140, right: 1200, bottom: 900 }, // 右侧主面板
+                RECT { left: 320, top: 200, right: 900, bottom: 800 },  // 更小的文件列表视图
+            ],
+        };
+        let mut ov = OverlayState {
+            work_rects: works.to_vec(),
+            win_rects: vec![folder],
+            mouse_pt: POINT { x: 500, y: 400 },
+            ..Default::default()
+        };
+
+        // 1. 初始默认选中最小分区（文件列表视图）
+        update_overlay_hover_state(&mut ov, 500, 400, false);
+        assert_eq!(
+            (ov.hover_win_rc.left, ov.hover_win_rc.top, ov.hover_win_rc.right, ov.hover_win_rc.bottom),
+            (320, 200, 900, 800)
+        );
+
+        // 2. 向上滚轮一次：放大到右侧主面板
+        assert!(step_overlay_hover_level(&mut ov, 1, false));
+        assert_eq!(
+            (ov.hover_win_rc.left, ov.hover_win_rc.top, ov.hover_win_rc.right, ov.hover_win_rc.bottom),
+            (300, 140, 1200, 900)
+        );
+
+        // 3. 再向上滚轮一次：放大到整个文件夹窗口，并自动记忆整窗锁定
+        assert!(step_overlay_hover_level(&mut ov, 1, false));
+        assert_eq!(
+            (ov.hover_win_rc.left, ov.hover_win_rc.top, ov.hover_win_rc.right, ov.hover_win_rc.bottom),
+            (100, 100, 1200, 900)
+        );
+        assert!(ov.hover_lock_whole);
+
+        // 4. 在同一文件夹内部移动鼠标到 (520, 420)，依然稳稳锁定整个文件夹窗口
+        ov.mouse_pt = POINT { x: 520, y: 420 };
+        update_overlay_hover_state(&mut ov, 520, 420, false);
+        assert_eq!(
+            (ov.hover_win_rc.left, ov.hover_win_rc.top, ov.hover_win_rc.right, ov.hover_win_rc.bottom),
+            (100, 100, 1200, 900)
+        );
+
+        // 5. 按 Tab 键一键切回最小分区
+        assert!(step_overlay_hover_level(&mut ov, 0, true));
+        assert_eq!(
+            (ov.hover_win_rc.left, ov.hover_win_rc.top, ov.hover_win_rc.right, ov.hover_win_rc.bottom),
+            (320, 200, 900, 800)
+        );
+        assert!(!ov.hover_lock_whole);
+
+        // 6. 再按 Tab 键一键切到整窗
+        assert!(step_overlay_hover_level(&mut ov, 0, true));
+        assert_eq!(
+            (ov.hover_win_rc.left, ov.hover_win_rc.top, ov.hover_win_rc.right, ov.hover_win_rc.bottom),
+            (100, 100, 1200, 900)
+        );
+
+        // 7. 解除锁定后，按住 Shift 悬停或靠左/右/下边缘 (104, 400) 直接命中整窗；而在顶部工具栏 (500, 115) 仍命中顶部栏
+        assert!(step_overlay_hover_level(&mut ov, -2, false));
+        update_overlay_hover_state(&mut ov, 500, 400, true);
+        assert_eq!(
+            (ov.hover_win_rc.left, ov.hover_win_rc.top, ov.hover_win_rc.right, ov.hover_win_rc.bottom),
+            (100, 100, 1200, 900)
+        );
+        update_overlay_hover_state(&mut ov, 104, 400, false);
+        assert_eq!(
+            (ov.hover_win_rc.left, ov.hover_win_rc.top, ov.hover_win_rc.right, ov.hover_win_rc.bottom),
+            (100, 100, 1200, 900)
+        );
+        update_overlay_hover_state(&mut ov, 500, 115, false);
+        assert_eq!(
+            (ov.hover_win_rc.left, ov.hover_win_rc.top, ov.hover_win_rc.right, ov.hover_win_rc.bottom),
+            (100, 100, 1200, 140)
+        );
     }
 }
