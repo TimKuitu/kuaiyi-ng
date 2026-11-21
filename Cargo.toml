@@ -1,6 +1,6 @@
 [package]
 name = "kuaiyi-ng"
-version = "3.1.0"
+version = "3.1.1"
 edition = "2021"
 description = "快译NG 纯 Rust 重构版（Windows 轻量翻译与标识符命名工具）"
 license = "MIT"

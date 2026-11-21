@@ -2967,11 +2967,19 @@ fn finish_selection_action(action: i32) {
             create_pin_window_bgra_at(Some((sx, sy)), cw, ch, flat_bgra, String::new(), String::new());
         }
         BTN_TRANS => {
-            // 先把原图摆出来，OCR 结果回来再原地替换：这就是「在截出来的图片里翻译」
-            open_result_window(cw, ch, Vec::new(), flat_bgra.clone(), String::new(), String::new());
-            let target = SNIP_MGR.with(|m| m.borrow().result.hwnd);
-            if !target.is_null() {
-                start_result_translate(target, cw, ch, flat_bgra, cfg);
+            // 翻译产物就是一张 F3 贴图：原地贴出原图，OCR 回来后原地换译文，
+            // 没有底部按钮栏；复制/保存/切原图都走贴图的右键菜单与 F2。
+            create_pin_window_bgra_at(
+                Some((sx, sy)),
+                cw,
+                ch,
+                flat_bgra,
+                String::new(),
+                String::new(),
+            );
+            let pin = SNIP_MGR.with(|m| m.borrow().pins.last().map(|p| p.hwnd));
+            if let Some(h) = pin {
+                start_pin_translate(h);
             }
         }
         _ => {}
