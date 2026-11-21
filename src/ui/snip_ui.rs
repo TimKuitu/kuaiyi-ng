@@ -1664,6 +1664,10 @@ pub fn update_snip_cfg(cfg: SnipCfg) {
     SNIP_MGR.with(|m| m.borrow_mut().cfg = cfg);
 }
 
+pub fn update_snip_cfg_sub_win(enabled: bool) {
+    SNIP_MGR.with(|m| m.borrow_mut().cfg.sub_window = enabled);
+}
+
 pub fn has_active_pins() -> bool {
     SNIP_MGR.with(|m| !m.borrow().pins.is_empty())
 }

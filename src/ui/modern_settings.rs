@@ -296,13 +296,21 @@ pub fn page_cards_logical(page_idx: usize) -> Vec<(i32, i32, i32, i32)> {
         8 => vec![
             (SET_PAD_L, 12, SET_CONT_W, 148),
             (SET_PAD_L, 168, SET_CONT_W, 106),
-            (SET_PAD_L, 282, SET_CONT_W, 212),
+            (SET_PAD_L, 282, SET_CONT_W, 244),
         ],
         9 => vec![(SET_PAD_L, 12, SET_CONT_W, 436)],
         10 => vec![(SET_PAD_L, 14, SET_CONT_W, 150)],
         11 => vec![(SET_PAD_L, 14, SET_CONT_W, 186)],
         _ => Vec::new(),
     }
+}
+
+/// 计算各子页面的实际内容逻辑总高度（用于上下滑动垂直滚动）
+pub fn page_content_logical_height(page_idx: usize) -> i32 {
+    let cards = page_cards_logical(page_idx);
+    let max_card_bottom = cards.iter().map(|(_, y, _, h)| y + h).max().unwrap_or(0);
+    // 留出 14px 的底部呼吸感内边距
+    (max_card_bottom + 14).max(SET_PAGE_H)
 }
 
 #[derive(Default)]
@@ -312,6 +320,10 @@ struct SettingsUiState {
     hwnd_tip: HWND,
     page_hwnds: [HWND; 12],
     cur_page: usize,
+    page_scroll_y: [i32; 12],
+    scroll_dragging: bool,
+    drag_start_y: i32,
+    drag_start_scroll: i32,
     scale: f64,
     is_dark: bool,
     anim_enabled: bool,
@@ -652,6 +664,13 @@ unsafe extern "system" fn modern_btn_subclass(
             paint_modern_btn(hwnd);
             0
         }
+        WM_MOUSEWHEEL => {
+            let parent = crate::ui::win32_ui::GetParent(hwnd);
+            if !parent.is_null() {
+                PostMessageW(parent, WM_MOUSEWHEEL, wp, lp);
+            }
+            0
+        }
         _ => DefSubclassProc(hwnd, msg, wp, lp),
     }
 }
@@ -900,6 +919,13 @@ unsafe extern "system" fn modern_chk_subclass(
             paint_modern_chk(hwnd);
             0
         }
+        WM_MOUSEWHEEL => {
+            let parent = crate::ui::win32_ui::GetParent(hwnd);
+            if !parent.is_null() {
+                PostMessageW(parent, WM_MOUSEWHEEL, wp, lp);
+            }
+            0
+        }
         _ => DefSubclassProc(hwnd, msg, wp, lp),
     }
 }
@@ -1126,6 +1152,13 @@ unsafe extern "system" fn hotkey_edit_subclass(
                 InvalidateRect(p, null(), 0);
             }
         }
+        WM_MOUSEWHEEL => {
+            let parent = crate::ui::win32_ui::GetParent(hwnd);
+            if !parent.is_null() {
+                PostMessageW(parent, WM_MOUSEWHEEL, wp, lp);
+            }
+            return 0;
+        }
         _ => {}
     }
     DefSubclassProc(hwnd, msg, wp, lp)
@@ -1144,6 +1177,12 @@ unsafe extern "system" fn edit_focus_subclass(
         if !p.is_null() {
             InvalidateRect(p, null(), 0);
         }
+    } else if msg == WM_MOUSEWHEEL {
+        let parent = crate::ui::win32_ui::GetParent(hwnd);
+        if !parent.is_null() {
+            PostMessageW(parent, WM_MOUSEWHEEL, wp, lp);
+        }
+        return 0;
     }
     DefSubclassProc(hwnd, msg, wp, lp)
 }
@@ -1495,6 +1534,67 @@ pub fn collect_settings_from_ui(base: &mut AppSettings) {
     SET_UI.with(|st| st.borrow_mut().cur_settings = Some(base.clone()));
 }
 
+/// 对指定子页面应用垂直滚动偏移，并同步调整其上所有子控件的物理坐标
+pub unsafe fn apply_page_scroll(page_idx: usize, new_scroll: i32) {
+    let (page_hwnd, sc, ctrls_to_move, combos_to_move) = SET_UI.with(|st| {
+        let mut s = st.borrow_mut();
+        let max_s = (page_content_logical_height(page_idx) - SET_PAGE_H).max(0);
+        let clamped = new_scroll.clamp(0, max_s);
+        if s.page_scroll_y[page_idx] == clamped {
+            return (null_mut(), 1.0, Vec::new(), Vec::new());
+        }
+        s.page_scroll_y[page_idx] = clamped;
+        let phwnd = s.page_hwnds[page_idx];
+        let scale = s.scale;
+        let c_list: Vec<(HWND, (i32, i32, i32, i32))> = s
+            .ctrls
+            .iter()
+            .filter(|c| c.page_idx == page_idx)
+            .map(|c| (c.hwnd, c.logic_rect))
+            .collect();
+        let cmb_list: Vec<(HWND, (i32, i32, i32, i32))> = s
+            .combos
+            .iter()
+            .filter(|(h, _)| crate::ui::win32_ui::GetParent(*h) == phwnd)
+            .cloned()
+            .collect();
+        (phwnd, scale, c_list, cmb_list)
+    });
+
+    if page_hwnd.is_null() {
+        return;
+    }
+
+    let scroll_y = SET_UI.with(|st| st.borrow().page_scroll_y[page_idx]);
+    for (hwnd, (lx, ly, lw, lh)) in ctrls_to_move {
+        if !hwnd.is_null() && lw > 0 {
+            SetWindowPos(
+                hwnd,
+                null_mut(),
+                spx(lx, sc),
+                spx(ly - scroll_y, sc),
+                spx(lw, sc),
+                spx(lh, sc),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+    for (hwnd, (lx, ly, lw, lh)) in combos_to_move {
+        if !hwnd.is_null() && lw > 0 {
+            SetWindowPos(
+                hwnd,
+                null_mut(),
+                spx(lx, sc),
+                spx(ly - scroll_y, sc),
+                spx(lw, sc),
+                spx(lh, sc),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+    InvalidateRect(page_hwnd, null(), 0);
+}
+
 /// 切换设置窗口显示页（支持直接带动画跳转）
 pub fn select_settings_tab(target_page: usize) {
     let target = target_page.min(11);
@@ -1509,7 +1609,7 @@ pub fn select_settings_tab(target_page: usize) {
             s.nav_pill_y,
         )
     });
-    if hwnd_set.is_null() {
+    if hwnd_set.is_null() || target == old_page {
         return;
     }
 
@@ -1562,9 +1662,14 @@ pub fn select_settings_tab(target_page: usize) {
     unsafe {
         if anim {
             crate::ui::win32_ui::timeBeginPeriod(1);
-            SetTimer(hwnd_set, ANIM_TIMER_ID, 8, null());
+            SetTimer(hwnd_set, ANIM_TIMER_ID, 16, null());
         }
-        InvalidateRect(hwnd_set, null(), 0);
+        let nav_w = spx(SET_NAV_W, sc) + 2;
+        let top_h = spx(SET_PAGE_Y, sc);
+        let mut r1 = RECT { left: 0, top: 0, right: nav_w, bottom: 2000 };
+        let mut r2 = RECT { left: 0, top: 0, right: 2000, bottom: top_h };
+        InvalidateRect(hwnd_set, &mut r1, 0);
+        InvalidateRect(hwnd_set, &mut r2, 0);
     }
 }
 
@@ -1613,8 +1718,8 @@ pub fn refresh_settings_appearance(scale: f64, is_dark: bool, anim_enabled: bool
             s.sub_pill_tw = s.sub_pill_w;
         }
         let hf_main = s.hfont_main;
-        let ctrl_rects: Vec<(HWND, (i32, i32, i32, i32))> =
-            s.ctrls.iter().map(|c| (c.hwnd, c.logic_rect)).collect();
+        let ctrl_rects: Vec<(HWND, usize, (i32, i32, i32, i32))> =
+            s.ctrls.iter().map(|c| (c.hwnd, c.page_idx, c.logic_rect)).collect();
         let cmb_rects = s.combos.clone();
         (s.hwnd_set, s.page_hwnds, hf_main, (ctrl_rects, cmb_rects))
     });
@@ -1660,12 +1765,14 @@ pub fn refresh_settings_appearance(scale: f64, is_dark: bool, anim_enabled: bool
                 InvalidateRect(p, null(), 1);
             }
         }
-        for (h, (lx, ly, lw, lh)) in ctrls_and_combos.0 {
+        let scroll_arr = SET_UI.with(|st| st.borrow().page_scroll_y);
+        for (h, p_idx, (lx, ly, lw, lh)) in ctrls_and_combos.0 {
             if !h.is_null() && lw > 0 {
+                let sy = scroll_arr.get(p_idx).copied().unwrap_or(0);
                 MoveWindow(
                     h,
                     spx(lx, scale),
-                    spx(ly, scale),
+                    spx(ly - sy, scale),
                     spx(lw, scale),
                     spx(lh, scale),
                     1,
@@ -1674,10 +1781,13 @@ pub fn refresh_settings_appearance(scale: f64, is_dark: bool, anim_enabled: bool
         }
         for (h, (lx, ly, lw, lh)) in ctrls_and_combos.1 {
             if !h.is_null() {
+                let parent = crate::ui::win32_ui::GetParent(h);
+                let p_idx = pages.iter().position(|&p| p == parent).unwrap_or(0);
+                let sy = scroll_arr.get(p_idx).copied().unwrap_or(0);
                 MoveWindow(
                     h,
                     spx(lx, scale),
-                    spx(ly, scale),
+                    spx(ly - sy, scale),
                     spx(lw, scale),
                     spx(lh, scale),
                     1,
@@ -2173,7 +2283,7 @@ unsafe fn page_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM) -> LRESUL
             let hdc = BeginPaint(hwnd, &mut ps);
             let mut rc = RECT::default();
             GetClientRect(hwnd, &mut rc);
-            if let Some((page_idx, sc, dark, edits)) = SET_UI.with(|st| {
+            if let Some((page_idx, sc, dark, scroll_y, edits)) = SET_UI.with(|st| {
                 let s = st.try_borrow().ok()?;
                 let idx = s.page_hwnds.iter().position(|&p| p == hwnd).unwrap_or(0);
                 let ed: Vec<(HWND, bool)> = s
@@ -2182,7 +2292,7 @@ unsafe fn page_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM) -> LRESUL
                     .filter(|c| c.page_idx == idx && c.is_edit_or_hk)
                     .map(|c| (c.hwnd, c.border_err))
                     .collect();
-                Some((idx, s.scale, s.is_dark, ed))
+                Some((idx, s.scale, s.is_dark, s.page_scroll_y[idx], ed))
             }) {
                 let w = rc.right - rc.left;
                 let h = rc.bottom - rc.top;
@@ -2213,7 +2323,7 @@ unsafe fn page_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM) -> LRESUL
                             gp_round_card(
                                 g,
                                 spx(cx, sc) as f32,
-                                spx(cy, sc) as f32,
+                                spx(cy - scroll_y, sc) as f32,
                                 spx(cw, sc) as f32,
                                 spx(ch, sc) as f32,
                                 spx(8, sc) as f32,
@@ -2266,6 +2376,34 @@ unsafe fn page_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM) -> LRESUL
                                 bg_e,
                                 bd,
                                 if focused || is_err { 1.4 } else { 1.0 },
+                            );
+                        }
+
+                        let total_h = page_content_logical_height(page_idx);
+                        if total_h > SET_PAGE_H && !(5..=7).contains(&page_idx) {
+                            let max_s = total_h - SET_PAGE_H;
+                            let track_w = spx(4, sc).max(3);
+                            let track_x = (rc.right - rc.left) - track_w - spx(3, sc);
+                            let thumb_h = ((h as f32) * (SET_PAGE_H as f32) / (total_h as f32)).round() as i32;
+                            let thumb_h = thumb_h.clamp(spx(24, sc), h - spx(8, sc));
+                            let travel = (h - thumb_h).max(1);
+                            let thumb_y = ((travel as f32) * (scroll_y as f32) / (max_s as f32)).round() as i32;
+
+                            let bar_col = if dark {
+                                argb(140, 160, 190, 80)
+                            } else {
+                                argb(100, 120, 150, 80)
+                            };
+                            gp_round_card(
+                                g,
+                                track_x as f32,
+                                thumb_y as f32,
+                                track_w as f32,
+                                thumb_h as f32,
+                                (track_w as f32) / 2.0,
+                                bar_col,
+                                0,
+                                0.0,
                             );
                         }
 
@@ -2327,6 +2465,76 @@ unsafe fn page_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM) -> LRESUL
                         }
                     }
                 });
+                return 0;
+            }
+            let delta = (wp >> 16) as i16;
+            let step = if delta > 0 { -36 } else { 36 };
+            let cur_s = SET_UI.with(|st| st.borrow().page_scroll_y[page_idx]);
+            apply_page_scroll(page_idx, cur_s + step);
+            0
+        }
+        WM_LBUTTONDOWN => {
+            let (x, y) = lparam_xy(lp);
+            let mut rc = RECT::default();
+            GetClientRect(hwnd, &mut rc);
+            let (idx, sc, cur_s) = SET_UI.with(|st| {
+                let s = st.borrow();
+                let i = s.page_hwnds.iter().position(|&p| p == hwnd).unwrap_or(0);
+                (i, s.scale, s.page_scroll_y[i])
+            });
+            if !(5..=7).contains(&idx) {
+                let total_h = page_content_logical_height(idx);
+                if total_h > SET_PAGE_H {
+                    let track_w = spx(14, sc).max(10);
+                    let track_x = (rc.right - rc.left) - track_w;
+                    if x >= track_x {
+                        crate::ui::win32_ui::SetCapture(hwnd);
+                        SET_UI.with(|st| {
+                            let mut s = st.borrow_mut();
+                            s.scroll_dragging = true;
+                            s.drag_start_y = y;
+                            s.drag_start_scroll = cur_s;
+                        });
+                        return 0;
+                    }
+                }
+            }
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
+        WM_MOUSEMOVE => {
+            let is_drag = SET_UI.with(|st| st.borrow().scroll_dragging);
+            if is_drag {
+                let (_, y) = lparam_xy(lp);
+                let (idx, sc, start_y, start_s) = SET_UI.with(|st| {
+                    let s = st.borrow();
+                    let i = s.page_hwnds.iter().position(|&p| p == hwnd).unwrap_or(0);
+                    (i, s.scale, s.drag_start_y, s.drag_start_scroll)
+                });
+                let mut rc = RECT::default();
+                GetClientRect(hwnd, &mut rc);
+                let view_h = rc.bottom - rc.top;
+                let total_h = page_content_logical_height(idx);
+                let max_s = (total_h - SET_PAGE_H).max(1);
+                let thumb_h = ((view_h as f32) * (SET_PAGE_H as f32) / (total_h as f32)).round() as i32;
+                let thumb_h = thumb_h.clamp(spx(24, sc), view_h - spx(8, sc));
+                let travel = (view_h - thumb_h).max(1);
+
+                let dy = y - start_y;
+                let d_scroll = ((dy as f32) * (max_s as f32) / (travel as f32)).round() as i32;
+                apply_page_scroll(idx, start_s + d_scroll);
+                return 0;
+            }
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
+        WM_LBUTTONUP => {
+            let is_drag = SET_UI.with(|st| {
+                let mut s = st.borrow_mut();
+                let was = s.scroll_dragging;
+                s.scroll_dragging = false;
+                was
+            });
+            if is_drag {
+                crate::ui::win32_ui::ReleaseCapture();
                 return 0;
             }
             DefWindowProcW(hwnd, msg, wp, lp)
@@ -2396,13 +2604,24 @@ unsafe fn handle_page_command(_page_hwnd: HWND, wp: WPARAM, _lp: LPARAM) {
     match id {
         ID_CHK_TOP | ID_CHK_CLOSE_EXIT | ID_CHK_AUTO_START | ID_CHK_AUTO_HIDE | ID_CHK_SUMMON
         | ID_CHK_SUMMON_CLEAR | ID_CHK_DBL_CLEAR | ID_CHK_AI | ID_CHK_BAIDU | ID_CHK_SNIP_SUB_WIN => {
+            if id == ID_CHK_SNIP_SUB_WIN {
+                let val = SET_UI.with(|st| {
+                    let s = st.borrow();
+                    s.ctrls
+                        .iter()
+                        .find(|c| c.hwnd == s.chk_snip_sub_win)
+                        .map(|m| m.checked)
+                        .unwrap_or(true)
+                });
+                crate::ui::snip_ui::update_snip_cfg_sub_win(val);
+            }
             if !hwnd_main.is_null() {
-                PostMessageW(hwnd_main, WM_SET_APPLY_SETTINGS, 0, 0);
+                SetTimer(hwnd_set, DEBOUNCE_TIMER_ID, 200, null());
             }
         }
         ID_CHK_ANIM => {
             if !hwnd_main.is_null() {
-                PostMessageW(hwnd_main, WM_SET_APPLY_SETTINGS, 0, 0);
+                SetTimer(hwnd_set, DEBOUNCE_TIMER_ID, 200, null());
             }
         }
         ID_CMB_THEME => {
@@ -2715,14 +2934,14 @@ unsafe fn settings_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM) -> LR
                     let dw = s.sub_pill_tw - s.sub_pill_w;
                     let mut active = false;
                     if dy.abs() > 0.4 {
-                        s.nav_pill_y += dy * 0.28;
+                        s.nav_pill_y += dy * 0.32;
                         active = true;
                     } else {
                         s.nav_pill_y = s.nav_pill_target_y;
                     }
                     if dx.abs() > 0.4 || dw.abs() > 0.4 {
-                        s.sub_pill_x += dx * 0.28;
-                        s.sub_pill_w += dw * 0.28;
+                        s.sub_pill_x += dx * 0.32;
+                        s.sub_pill_w += dw * 0.32;
                         active = true;
                     } else {
                         s.sub_pill_x = s.sub_pill_tx;
@@ -2730,7 +2949,13 @@ unsafe fn settings_wnd_proc(hwnd: HWND, msg: UINT, wp: WPARAM, lp: LPARAM) -> LR
                     }
                     active
                 });
-                InvalidateRect(hwnd, null(), 0);
+                let sc = SET_UI.with(|st| st.borrow().scale);
+                let nav_w = spx(SET_NAV_W, sc) + 2;
+                let top_h = spx(SET_PAGE_Y, sc);
+                let mut r1 = RECT { left: 0, top: 0, right: nav_w, bottom: 2000 };
+                let mut r2 = RECT { left: 0, top: 0, right: 2000, bottom: top_h };
+                InvalidateRect(hwnd, &mut r1, 0);
+                InvalidateRect(hwnd, &mut r2, 0);
                 if !more {
                     KillTimer(hwnd, ANIM_TIMER_ID);
                     crate::ui::win32_ui::timeEndPeriod(1);
@@ -3767,36 +3992,36 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
         "立即截屏 (F1)",
         ID_BTN_TRY_CAPTURE,
         cx,
-        434,
+        438,
         200,
-        30,
+        32,
         BtnKind::Primary,
     );
     let btn_try_pin = p8.btn(
         "剪贴板贴图 (F3)",
         ID_BTN_TRY_PIN,
         cx + 214,
-        434,
+        438,
         200,
-        30,
+        32,
         BtnKind::Normal,
     );
     p8.btn(
         "直接截屏翻译",
         ID_BTN_TRY_SNIP,
         cx,
-        456,
+        478,
         200,
-        30,
+        32,
         BtnKind::Normal,
     );
     p8.btn(
         "关闭所有贴图",
         ID_BTN_CLOSE_PINS,
         cx + 214,
-        456,
+        478,
         200,
-        30,
+        32,
         BtnKind::Danger,
     );
     p8.flush();
@@ -3963,7 +4188,8 @@ mod tests {
                 assert!(x >= SET_PAD_L);
                 assert!(x + w <= SET_PAGE_W);
                 assert!(y >= 8);
-                assert!(y + h <= SET_PAGE_H, "page {p} card exceeds page height");
+                let max_h = page_content_logical_height(p);
+                assert!(y + h <= max_h, "page {p} card exceeds page content height");
             }
         }
         let r0 = nav_item_rect(0, 1.0);
