@@ -5653,9 +5653,8 @@ unsafe fn paint_pin_window(hwnd: HWND) {
                         bottom: (l.y + l.h).ceil() as i32,
                     },
                 );
-                let hb = CreateSolidBrush(rgb(59, 130, 246));
                 let hr = lr;
-                // 半透明蓝高亮：用 25% 抖动近似（GDI 无 alpha，直接用浅色叠加）
+                // GDI 没有 alpha：用调过的深蓝近似「25% 蓝叠加」
                 let light = CreateSolidBrush(rgb(46, 74, 122));
                 FillRect(hdc_buf, &hr, light);
                 DeleteObject(light);
@@ -5666,7 +5665,6 @@ unsafe fn paint_pin_window(hwnd: HWND) {
                 SelectObject(hdc_buf, ob_h);
                 SelectObject(hdc_buf, op_h);
                 DeleteObject(pen_h);
-                let _ = hb;
             }
         }
     }
