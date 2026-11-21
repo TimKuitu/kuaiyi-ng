@@ -102,6 +102,7 @@ const ID_EDT_BAIDU_URL: i32 = 1030;
 
 const ID_EDT_MAX_WORDS: i32 = 1040;
 const ID_EDT_MAX_CHARS: i32 = 1041;
+const ID_CHK_SNIP_SUB_WIN: i32 = 1045;
 
 const ID_HK_SNIP_CAPTURE: i32 = 1050;
 const ID_HK_SNIP_PIN: i32 = 1051;
@@ -376,6 +377,7 @@ struct SettingsUiState {
     edt_max_words: HWND,
     edt_max_chars: HWND,
 
+    chk_snip_sub_win: HWND,
     edt_snip_dir: HWND,
     lbl_snip_hk_status: [HWND; 3],
     lbl_hk_status: [HWND; 7],
@@ -1287,6 +1289,7 @@ pub fn load_settings_into_ui(cfg: &AppSettings) {
             (s.chk_dbl_clear, cfg.input_dbl_clear),
             (s.chk_ai, cfg.ai_enabled),
             (s.chk_baidu, cfg.baidu_enabled),
+            (s.chk_snip_sub_win, cfg.snip_sub_window),
         ];
         for (h, v) in chk_handles {
             set_chk(&mut s.ctrls, h, v);
@@ -1419,6 +1422,7 @@ pub fn collect_settings_from_ui(base: &mut AppSettings) {
             s.cmb_theme,
             s.cmb_scale,
             s.hotkeys.clone(),
+            is_chk(s.chk_snip_sub_win),
         )
     });
 
@@ -1457,6 +1461,7 @@ pub fn collect_settings_from_ui(base: &mut AppSettings) {
     if !snip_dir.is_empty() {
         base.snip_save_dir = snip_dir;
     }
+    base.snip_sub_window = snap.25;
     let cache_dir = get_window_text(snap.19).trim().to_string();
     if !cache_dir.is_empty() {
         base.cache_dir = cache_dir;
@@ -2390,7 +2395,7 @@ unsafe fn handle_page_command(_page_hwnd: HWND, wp: WPARAM, _lp: LPARAM) {
 
     match id {
         ID_CHK_TOP | ID_CHK_CLOSE_EXIT | ID_CHK_AUTO_START | ID_CHK_AUTO_HIDE | ID_CHK_SUMMON
-        | ID_CHK_SUMMON_CLEAR | ID_CHK_DBL_CLEAR | ID_CHK_AI | ID_CHK_BAIDU => {
+        | ID_CHK_SUMMON_CLEAR | ID_CHK_DBL_CLEAR | ID_CHK_AI | ID_CHK_BAIDU | ID_CHK_SNIP_SUB_WIN => {
             if !hwnd_main.is_null() {
                 PostMessageW(hwnd_main, WM_SET_APPLY_SETTINGS, 0, 0);
             }
@@ -3713,40 +3718,48 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
         28,
         BtnKind::Normal,
     );
-    p8.sec_title("操作与标注说明", 292);
+    p8.sec_title("截屏选项与操作说明", 292);
+    let chk_snip_sub_win = p8.chk(
+        "自动识别窗口子分区（顶部工具栏/分区与整窗切换）",
+        ID_CHK_SNIP_SUB_WIN,
+        cx,
+        318,
+        INNER_W,
+        Some("启用后截屏可自动识别窗口内部工具栏与各子分区，随时可通过滚轮或Tab键切换整窗；取消勾选则只选取大窗口"),
+    );
     p8.static_txt(
         "• 截屏选区：自动识窗、8向调框、放大镜取色（单按 C 复制色值）",
         cx,
-        320,
+        344,
         INNER_W,
-        22,
+        20,
+        true,
+        TextRole::Hint,
+    );
+    p8.static_txt(
+        "• 快捷操作：滚轮或Tab切换整窗与分区、Ctrl+C复制、Ctrl+S保存",
+        cx,
+        364,
+        INNER_W,
+        20,
         true,
         TextRole::Hint,
     );
     p8.static_txt(
         "• 标注工具：框/圆/线/箭头/画笔/荧光笔/序号/文字/马赛克/模糊",
         cx,
-        344,
+        384,
         INNER_W,
-        22,
-        true,
-        TextRole::Hint,
-    );
-    p8.static_txt(
-        "• 快捷操作：Ctrl+C 复制、Ctrl+S 另存为、Ctrl+Shift+S 存到默认目录",
-        cx,
-        368,
-        INNER_W,
-        22,
+        20,
         true,
         TextRole::Hint,
     );
     p8.static_txt(
         "• 屏幕贴图：支持图文贴图、多图置顶、滚轮缩放与透明度调节",
         cx,
-        392,
+        404,
         INNER_W,
-        22,
+        20,
         true,
         TextRole::Hint,
     );
@@ -3754,7 +3767,7 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
         "立即截屏 (F1)",
         ID_BTN_TRY_CAPTURE,
         cx,
-        420,
+        434,
         200,
         30,
         BtnKind::Primary,
@@ -3763,7 +3776,7 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
         "剪贴板贴图 (F3)",
         ID_BTN_TRY_PIN,
         cx + 214,
-        420,
+        434,
         200,
         30,
         BtnKind::Normal,
@@ -3925,6 +3938,7 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
         s.edt_baidu_url = edt_baidu_url;
         s.edt_max_words = edt_max_words;
         s.edt_max_chars = edt_max_chars;
+        s.chk_snip_sub_win = chk_snip_sub_win;
         s.edt_snip_dir = edt_snip_dir;
         s.lbl_snip_hk_status = lbl_snip_hk_status;
         s.lbl_hk_status = lbl_hk_status;

@@ -324,6 +324,7 @@ fn sync_snip_cfg_from_rt() {
         save_dir: rt.set.snip_save_dir.clone(),
         pin_mods: rt.set.hk_pin.0,
         pin_vk: rt.set.hk_pin.1,
+        sub_window: rt.set.snip_sub_window,
     }) {
         update_snip_cfg(cfg);
     }

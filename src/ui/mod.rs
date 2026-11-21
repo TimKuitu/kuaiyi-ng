@@ -19,7 +19,7 @@ use std::path::Path;
 use std::ptr::null_mut;
 
 pub const APP_TITLE: &str = "快译NG";
-pub const APP_VERSION: &str = "3.0.3";
+pub const APP_VERSION: &str = "3.0.4";
 pub const APP_REPO_URL: &str = "https://github.com/TimKuitu/kuaiyi-ng";
 
 // 避开保留自定义消息区，统一使用 WM_APP + 0x0200..0x021F
@@ -142,6 +142,7 @@ pub struct AppSettings {
     pub ui_scale: i32,
     pub theme_mode: i32,
     pub anim_enabled: bool,
+    pub snip_sub_window: bool,
 }
 
 impl AppSettings {
@@ -183,6 +184,7 @@ impl AppSettings {
             ui_scale: 100,
             theme_mode: 0,
             anim_enabled: true,
+            snip_sub_window: true,
         }
     }
 
@@ -223,6 +225,7 @@ impl AppSettings {
         if !snip_dir.is_empty() {
             s.snip_save_dir = snip_dir;
         }
+        s.snip_sub_window = cfg_int("通用设置", "截屏识别子分区", 1) != 0;
 
         let wf = cfg_int("通用设置", "命名格式", FY_FMT_CAMEL);
         s.word_fmt = if wf == FY_FMT_SNAKE || wf == FY_FMT_CAMEL {
@@ -295,6 +298,7 @@ impl AppSettings {
         cfg.set("通用设置", "双击清空输入", b(self.input_dbl_clear));
         cfg.set("通用设置", "缓存目录", &self.cache_dir);
         cfg.set("通用设置", "截图保存目录", &self.snip_save_dir);
+        cfg.set("通用设置", "截屏识别子分区", b(self.snip_sub_window));
         cfg.set("通用设置", "命名格式", &self.word_fmt.to_string());
         cfg.set("通用设置", "命名对象", &self.name_kind.to_string());
         cfg.set("通用设置", "窗口宽", &self.win_w.to_string());
@@ -624,6 +628,7 @@ mod tests {
         s.ui_scale = 125;
         s.theme_mode = 2;
         s.anim_enabled = false;
+        s.snip_sub_window = false;
         s.win_w = 640;
         s.win_h = 460;
 
@@ -646,6 +651,7 @@ mod tests {
         assert_eq!(loaded.ui_scale, 125);
         assert_eq!(loaded.theme_mode, 2);
         assert!(!loaded.anim_enabled);
+        assert!(!loaded.snip_sub_window);
         assert_eq!(loaded.win_w, 640);
         assert_eq!(loaded.win_h, 460);
 

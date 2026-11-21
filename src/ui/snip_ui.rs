@@ -70,7 +70,7 @@ pub const ANNOT_COLORS: [(u8, u8, u8); 8] = [
 const SIZE_WIDTHS: [i32; 3] = [2, 4, 7];
 
 /// 截屏外部配置参数
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SnipCfg {
     pub hwnd_main: isize,
     pub ai_url: String,
@@ -83,6 +83,26 @@ pub struct SnipCfg {
     pub save_dir: String,
     pub pin_mods: i32,
     pub pin_vk: i32,
+    pub sub_window: bool,
+}
+
+impl Default for SnipCfg {
+    fn default() -> Self {
+        Self {
+            hwnd_main: 0,
+            ai_url: String::new(),
+            ai_key: String::new(),
+            ai_model: String::new(),
+            baidu_appid: String::new(),
+            baidu_secret: String::new(),
+            baidu_url: String::new(),
+            cache_dir: String::new(),
+            save_dir: String::new(),
+            pin_mods: 0,
+            pin_vk: 0,
+            sub_window: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2132,6 +2152,7 @@ unsafe fn enum_visible_windows(
     vy: i32,
     mon_rects: &[RECT],
     work_rects: &[RECT],
+    sub_window_enabled: bool,
 ) -> Vec<WindowCandidate> {
     // 1. 优先按 Windows 原生 Z-order 链获取顶层窗口列表 (从最顶到底)
     let mut z_hwnds = Vec::new();
@@ -2212,7 +2233,11 @@ unsafe fn enum_visible_windows(
             bottom: rc.bottom - vy,
         };
         if let Some(clipped) = clip_auto_window_rect(local_rc, mon_rects, work_rects) {
-            let sub_rects = collect_child_and_toolbar_rects(hwnd, clipped, vx, vy);
+            let sub_rects = if sub_window_enabled {
+                collect_child_and_toolbar_rects(hwnd, clipped, vx, vy)
+            } else {
+                Vec::new()
+            };
             let cand = WindowCandidate {
                 hwnd: hwnd as isize,
                 top_rect: clipped,
@@ -2578,7 +2603,17 @@ fn start_overlay(trans_mode: bool) {
     } else {
         null_mut()
     };
-    let win_rects = unsafe { enum_visible_windows(fg_root, vx, vy, &mon_rects, &work_rects) };
+    let sub_win_enabled = SNIP_MGR.with(|m| m.borrow().cfg.sub_window);
+    let win_rects = unsafe {
+        enum_visible_windows(
+            fg_root,
+            vx,
+            vy,
+            &mon_rects,
+            &work_rects,
+            sub_win_enabled,
+        )
+    };
 
     let mut cur = POINT::default();
     unsafe { GetCursorPos(&mut cur) };
