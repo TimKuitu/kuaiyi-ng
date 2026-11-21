@@ -7,10 +7,11 @@ use crate::ui::win32_ui::{
     argb, ensure_gdiplus, enum_display_monitors_info, get_clipboard_bgra, get_clipboard_text,
     get_window_text, gp_fill_round_rect, gp_round_card, lparam_xy, rgb, save_bgra_as_png,
     save_file_dialog_png, set_clipboard_bgra, set_clipboard_text, wheel_delta,
-    work_area_from_point, AppendMenuW, BeginPaint, BitBlt, CreateCompatibleBitmap,
+    work_area_from_point, AppendMenuW, BeginPaint, BitBlt, ClientToScreen, CreateCompatibleBitmap,
     CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen, CreatePopupMenu, CreateRectRgn,
     CreateSolidBrush, CreateWindowExW, DefSubclassProc, DefWindowProcW, DeleteDC, DeleteObject,
-    DestroyMenu, DestroyWindow, DrawTextW, DwmGetWindowAttribute, EndPaint, EnumWindows, FillRect,
+    DestroyMenu, DestroyWindow, DrawTextW, DwmGetWindowAttribute, EndPaint, EnumChildWindows,
+    EnumWindows, FillRect,
     GdiFlush, GdipCreateFromHDC, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush,
     GdipDeleteGraphics, GdipDeletePen, GdipDrawEllipse, GdipDrawLine, GdipDrawLines,
     GdipDrawRectangle, GdipFillEllipse, GdipFillRectangle, GdipSetPenEndCap, GdipSetPenLineJoin,
@@ -1548,7 +1549,7 @@ struct OverlayState {
     orig_bgra: Vec<u8>,
     gdi: OverlayGdiCache,
     filter_caches: Vec<FilterLayerCache>,
-    win_rects: Vec<RECT>,
+    win_rects: Vec<WindowCandidate>,
 
     dragging_sel: bool,
     drag_mode: i32, // 0=无, 1=新建, 2=移动, 10..17=8手柄
@@ -1765,15 +1766,56 @@ pub fn clip_auto_window_rect(
     }
 }
 
-/// 按 Z-order 与所在显示器工作区选取鼠标悬停的自动识别框（鼠标在任务栏上不高亮，空白桌面回退工作区）
-pub fn pick_hover_window_rect(win_rects: &[RECT], work_rects: &[RECT], x: i32, y: i32) -> RECT {
+/// 自动识别窗口候选（含顶层窗口矩形以及该窗口内部的子窗口、顶部工具栏、标题栏、客户区等）
+#[derive(Clone, Debug, Default)]
+pub struct WindowCandidate {
+    pub top_rect: RECT,
+    pub sub_rects: Vec<RECT>,
+}
+
+impl From<RECT> for WindowCandidate {
+    fn from(top_rect: RECT) -> Self {
+        Self {
+            top_rect,
+            sub_rects: Vec::new(),
+        }
+    }
+}
+
+/// 按 Z-order 与所在显示器工作区选取鼠标悬停的自动识别框。
+/// 优先命中当前最顶层应用；在该应用内进一步匹配更精准的子区域（如顶部工具栏、功能区面板、客户区），
+/// 鼠标在空白边缘时自动回退为整窗大界面；鼠标在任务栏上不高亮，空白桌面回退所在显示器工作区。
+pub fn pick_hover_window_rect(
+    candidates: &[WindowCandidate],
+    work_rects: &[RECT],
+    x: i32,
+    y: i32,
+) -> RECT {
     let cur_work = work_rects.iter().copied().find(|&r| pt_in_rect(r, x, y));
     if !work_rects.is_empty() && cur_work.is_none() {
         return RECT::default();
     }
-    for &wrc in win_rects {
-        if pt_in_rect(wrc, x, y) {
-            let mut out = wrc;
+    for cand in candidates {
+        if pt_in_rect(cand.top_rect, x, y) {
+            let mut best_rc = cand.top_rect;
+            let mut best_area = ((cand.top_rect.right - cand.top_rect.left) as i64)
+                * ((cand.top_rect.bottom - cand.top_rect.top) as i64);
+
+            for &sub in &cand.sub_rects {
+                if pt_in_rect(sub, x, y) {
+                    let w = sub.right - sub.left;
+                    let h = sub.bottom - sub.top;
+                    if w >= 24 && h >= 14 {
+                        let area = (w as i64) * (h as i64);
+                        if area < best_area {
+                            best_area = area;
+                            best_rc = sub;
+                        }
+                    }
+                }
+            }
+
+            let mut out = best_rc;
             if let Some(wk) = cur_work {
                 out.top = out.top.max(wk.top);
                 out.bottom = out.bottom.min(wk.bottom);
@@ -1786,12 +1828,153 @@ pub fn pick_hover_window_rect(win_rects: &[RECT], work_rects: &[RECT], x: i32, y
     cur_work.unwrap_or_default()
 }
 
+/// 收集顶级窗口内部的子窗口以及推导出的顶部栏（标题栏/工具栏/标签栏）与客户区
+unsafe fn collect_child_and_toolbar_rects(
+    hwnd: HWND,
+    top_rc: RECT,
+    vx: i32,
+    vy: i32,
+) -> Vec<RECT> {
+    let mut out = Vec::new();
+
+    // 1. 通过 GetClientRect 和 ClientToScreen 计算顶部非客户区（标题栏、菜单栏、顶部工具条）与客户区
+    let mut cl_rc = RECT::default();
+    if GetClientRect(hwnd, &mut cl_rc) != 0 && cl_rc.right > 0 && cl_rc.bottom > 0 {
+        let mut pt = POINT { x: 0, y: 0 };
+        ClientToScreen(hwnd, &mut pt);
+        let cl_screen_left = pt.x - vx;
+        let cl_screen_top = pt.y - vy;
+        let cl_screen_right = cl_screen_left + (cl_rc.right - cl_rc.left);
+        let cl_screen_bottom = cl_screen_top + (cl_rc.bottom - cl_rc.top);
+        let cl_local = RECT {
+            left: cl_screen_left,
+            top: cl_screen_top,
+            right: cl_screen_right,
+            bottom: cl_screen_bottom,
+        };
+        let client_inter = intersect_rects(top_rc, cl_local);
+
+        // 如果客户区顶部高于顶级窗口顶部至少 16px，说明上方有标题栏/菜单栏/顶部工具条
+        if client_inter.top - top_rc.top >= 16 && client_inter.top - top_rc.top <= 200 {
+            let top_bar = RECT {
+                left: top_rc.left,
+                top: top_rc.top,
+                right: top_rc.right,
+                bottom: client_inter.top,
+            };
+            out.push(top_bar);
+        }
+        // 客户区自身也是有效候选区域（若尺寸合理）
+        if client_inter.right - client_inter.left >= 32
+            && client_inter.bottom - client_inter.top >= 24
+        {
+            out.push(client_inter);
+        }
+    }
+
+    // 2. 枚举所有可见子窗口（包括工具栏 ToolbarWindow32、ReBarWindow32、各类子控件和子面板）
+    struct ChildCtx {
+        top_rc: RECT,
+        vx: i32,
+        vy: i32,
+        sub_list: Vec<RECT>,
+    }
+    unsafe extern "system" fn child_cb(chwnd: HWND, lp: LPARAM) -> i32 {
+        let ctx = &mut *(lp as *mut ChildCtx);
+        if IsWindowVisible(chwnd) == 0 {
+            return 1;
+        }
+        let ex_style = GetWindowLongPtrW(chwnd, GWL_EXSTYLE) as u32;
+        if (ex_style & WS_EX_TRANSPARENT) != 0 {
+            return 1;
+        }
+        let mut rc = RECT::default();
+        if GetWindowRect(chwnd, &mut rc) == 0 {
+            return 1;
+        }
+        let cw = rc.right - rc.left;
+        let ch = rc.bottom - rc.top;
+        if cw < 24 || ch < 14 {
+            return 1;
+        }
+        let local = RECT {
+            left: rc.left - ctx.vx,
+            top: rc.top - ctx.vy,
+            right: rc.right - ctx.vx,
+            bottom: rc.bottom - ctx.vy,
+        };
+        let inter = intersect_rects(local, ctx.top_rc);
+        let iw = inter.right - inter.left;
+        let ih = inter.bottom - inter.top;
+        if iw >= 24 && ih >= 14 {
+            ctx.sub_list.push(inter);
+
+            // 如果该子窗口顶部在顶级窗口下方 16~200px 处，且宽度占顶级窗口大部（>=70%）：
+            // 典型为浏览器内容渲染窗口、IDE/代码编辑器视图。
+            // 那么它上方的横条区域即为该软件的顶部标签栏/地址栏/工具栏区！
+            let top_gap = inter.top - ctx.top_rc.top;
+            let top_w = ctx.top_rc.right - ctx.top_rc.left;
+            if top_gap >= 16 && top_gap <= 200 && iw * 10 >= top_w * 7 {
+                let derived_top_bar = RECT {
+                    left: ctx.top_rc.left,
+                    top: ctx.top_rc.top,
+                    right: ctx.top_rc.right,
+                    bottom: inter.top,
+                };
+                ctx.sub_list.push(derived_top_bar);
+            }
+        }
+        if ctx.sub_list.len() >= 64 {
+            0
+        } else {
+            1
+        }
+    }
+
+    let mut child_ctx = ChildCtx {
+        top_rc,
+        vx,
+        vy,
+        sub_list: Vec::new(),
+    };
+    EnumChildWindows(hwnd, child_cb, (&mut child_ctx as *mut ChildCtx) as LPARAM);
+    out.extend(child_ctx.sub_list);
+
+    // 3. 去重与规范化
+    let mut cleaned = Vec::new();
+    for r in out {
+        let rw = r.right - r.left;
+        let rh = r.bottom - r.top;
+        let tw = top_rc.right - top_rc.left;
+        let th = top_rc.bottom - top_rc.top;
+        if (rw - tw).abs() <= 2 && (rh - th).abs() <= 2 {
+            continue;
+        }
+        if rw < 24 || rh < 14 {
+            continue;
+        }
+        let dup = cleaned.iter().any(|&c: &RECT| {
+            (c.left - r.left).abs() <= 2
+                && (c.top - r.top).abs() <= 2
+                && (c.right - r.right).abs() <= 2
+                && (c.bottom - r.bottom).abs() <= 2
+        });
+        if !dup {
+            cleaned.push(r);
+        }
+    }
+    if cleaned.len() > 40 {
+        cleaned.truncate(40);
+    }
+    cleaned
+}
+
 unsafe fn enum_visible_windows(
     vx: i32,
     vy: i32,
     mon_rects: &[RECT],
     work_rects: &[RECT],
-) -> Vec<RECT> {
+) -> Vec<WindowCandidate> {
     struct Ctx {
         own_pid: u32,
         vx: i32,
@@ -1800,7 +1983,7 @@ unsafe fn enum_visible_windows(
         mon_len: usize,
         work_ptr: *const RECT,
         work_len: usize,
-        list: Vec<RECT>,
+        list: Vec<WindowCandidate>,
     }
     unsafe extern "system" fn enum_cb(hwnd: HWND, lp: LPARAM) -> i32 {
         let ctx = &mut *(lp as *mut Ctx);
@@ -1855,7 +2038,11 @@ unsafe fn enum_visible_windows(
         let mons = std::slice::from_raw_parts(ctx.mon_ptr, ctx.mon_len);
         let works = std::slice::from_raw_parts(ctx.work_ptr, ctx.work_len);
         if let Some(clipped) = clip_auto_window_rect(local_rc, mons, works) {
-            ctx.list.push(clipped);
+            let sub_rects = collect_child_and_toolbar_rects(hwnd, clipped, ctx.vx, ctx.vy);
+            ctx.list.push(WindowCandidate {
+                top_rect: clipped,
+                sub_rects,
+            });
         }
         1
     }
@@ -5498,7 +5685,10 @@ mod tests {
             right: 3100,
             bottom: 500,
         };
-        let z_list = [win_front, win_back_small];
+        let z_list = [
+            WindowCandidate::from(win_front),
+            WindowCandidate::from(win_back_small),
+        ];
         let hit_overlap = pick_hover_window_rect(&z_list, &works, 2900, 300);
         assert_eq!(
             (
@@ -5530,6 +5720,67 @@ mod tests {
                 hit_taskbar.bottom
             ),
             (0, 0, 0, 0)
+        );
+
+        // 5. 顶部工具栏与子窗口精细选取：大窗口内部包含顶部工具栏与内容区
+        let win_ide = WindowCandidate {
+            top_rect: RECT {
+                left: 100,
+                top: 100,
+                right: 1300,
+                bottom: 900,
+            },
+            sub_rects: vec![
+                // 顶部工具栏 (高 36px)
+                RECT {
+                    left: 100,
+                    top: 100,
+                    right: 1300,
+                    bottom: 136,
+                },
+                // 主编辑内容区 (高 764px)
+                RECT {
+                    left: 100,
+                    top: 136,
+                    right: 1300,
+                    bottom: 900,
+                },
+            ],
+        };
+        let cands = [win_ide];
+        // 鼠标停在顶部工具栏上时，精确命中顶部工具栏而不是整个大界面
+        let hit_toolbar = pick_hover_window_rect(&cands, &works, 500, 118);
+        assert_eq!(
+            (
+                hit_toolbar.left,
+                hit_toolbar.top,
+                hit_toolbar.right,
+                hit_toolbar.bottom
+            ),
+            (100, 100, 1300, 136)
+        );
+        // 鼠标停在内容区时，命中内容区
+        let hit_editor = pick_hover_window_rect(&cands, &works, 500, 400);
+        assert_eq!(
+            (
+                hit_editor.left,
+                hit_editor.top,
+                hit_editor.right,
+                hit_editor.bottom
+            ),
+            (100, 136, 1300, 900)
+        );
+        // 鼠标停在没有子区域覆盖的边缘时，回退到大窗口自身
+        let win_simple = WindowCandidate::from(RECT {
+            left: 100,
+            top: 100,
+            right: 1300,
+            bottom: 900,
+        });
+        let hit_whole = pick_hover_window_rect(&[win_simple], &works, 500, 118);
+        assert_eq!(
+            (hit_whole.left, hit_whole.top, hit_whole.right, hit_whole.bottom),
+            (100, 100, 1300, 900)
         );
     }
 
