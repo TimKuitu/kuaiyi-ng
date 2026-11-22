@@ -10,8 +10,8 @@ use kuaiyi_ng::core::str_util::{has_cjk, utf8_to_wide};
 use kuaiyi_ng::core::update::{check_update, download_update};
 use kuaiyi_ng::core::{last_engine, last_error, FY_AUTO, FY_FMT_SNAKE};
 use kuaiyi_ng::naming_reducer::{
-    load_custom_abbreviations, load_custom_ignore, load_custom_preferred, reduce_name_with_kind,
-    NameKind, NamingStyle,
+    load_custom_abbreviations, load_custom_ignore, load_custom_preferred,
+    reduce_name_with_options, NameKind, NamingOptions, NamingStyle, VerbForm, WordOrder,
 };
 use kuaiyi_ng::ui::modern_main::{
     create_modern_main_window, focus_and_select_input, get_input_text, get_result_text,
@@ -429,19 +429,31 @@ fn perform_naming_copy(from_result: bool) {
     let in_txt = get_input_text();
     let res_txt = get_result_text();
 
-    let Some((word_fmt, name_kind, max_w, max_c, last_to_en, res_ok, hwnd_main, copy_hk)) =
-        with_rt(|rt| {
-            (
-                rt.set.word_fmt,
-                rt.set.name_kind,
-                rt.set.max_words,
-                rt.set.max_chars,
-                rt.last_to_en,
-                rt.result_valid,
-                rt.hwnd_main,
-                rt.set.hk_copy,
-            )
-        })
+    let Some((
+        word_fmt,
+        name_kind,
+        max_w,
+        max_c,
+        word_order,
+        verb_form,
+        last_to_en,
+        res_ok,
+        hwnd_main,
+        copy_hk,
+    )) = with_rt(|rt| {
+        (
+            rt.set.word_fmt,
+            rt.set.name_kind,
+            rt.set.max_words,
+            rt.set.max_chars,
+            rt.set.word_order,
+            rt.set.verb_form,
+            rt.last_to_en,
+            rt.result_valid,
+            rt.hwnd_main,
+            rt.set.hk_copy,
+        )
+    })
     else {
         return;
     };
@@ -472,7 +484,11 @@ fn perform_naming_copy(from_result: bool) {
         NamingStyle::Camel
     };
     let kind = NameKind::from_index(name_kind);
-    let r = reduce_name_with_kind(first_line, style, kind, max_w, max_c);
+    let opts = NamingOptions {
+        word_order: WordOrder::from_index(word_order),
+        verb_form: VerbForm::from_index(verb_form),
+    };
+    let r = reduce_name_with_options(first_line, style, kind, max_w, max_c, opts);
     if r.ok {
         set_clipboard_text(&r.name);
         set_result_text(&r.name);

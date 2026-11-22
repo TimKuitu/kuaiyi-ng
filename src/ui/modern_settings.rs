@@ -33,9 +33,12 @@ use crate::ui::win32_ui::{
     WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_MINIMIZEBOX,
     WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
+use crate::naming_reducer::{
+    reduce_name_with_options, NameKind, NamingOptions, NamingStyle, VerbForm, WordOrder,
+};
 use crate::ui::{
     compute_def_win_size, format_hotkey_text, AppSettings, AI_PRESETS, APP_REPO_URL, APP_VERSION,
-    THEME_PRESETS, UI_SCALE_PRESETS,
+    THEME_PRESETS, UI_SCALE_PRESETS, VERB_FORM_PRESETS, WORD_ORDER_PRESETS,
 };
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -102,6 +105,8 @@ const ID_EDT_BAIDU_URL: i32 = 1030;
 
 const ID_EDT_MAX_WORDS: i32 = 1040;
 const ID_EDT_MAX_CHARS: i32 = 1041;
+const ID_CMB_WORD_ORDER: i32 = 1042;
+const ID_CMB_VERB_FORM: i32 = 1043;
 const ID_CHK_SNIP_SUB_WIN: i32 = 1045;
 
 const ID_HK_SNIP_CAPTURE: i32 = 1050;
@@ -157,7 +162,7 @@ pub const DEFAULT_NAV_CATS: [NavCatDef; 7] = [
         name: "命名",
         icon: 0xE8EC,
         subtitle: "",
-        sub_names: &["缩减预算", "缩略词", "忽略词", "常用词"],
+        sub_names: &["命名规则", "缩略词", "忽略词", "常用词"],
         page_indices: &[4, 5, 6, 7],
     },
     NavCatDef {
@@ -289,8 +294,9 @@ pub fn page_cards_logical(page_idx: usize) -> Vec<(i32, i32, i32, i32)> {
             (SET_PAD_L, 326, SET_CONT_W, 108),
         ],
         4 => vec![
-            (SET_PAD_L, 14, SET_CONT_W, 152),
-            (SET_PAD_L, 180, SET_CONT_W, 128),
+            (SET_PAD_L, 14, SET_CONT_W, 186),
+            (SET_PAD_L, 212, SET_CONT_W, 138),
+            (SET_PAD_L, 362, SET_CONT_W, 118),
         ],
         5..=7 => vec![(SET_PAD_L, 8, SET_CONT_W, 76)],
         8 => vec![
@@ -388,6 +394,10 @@ struct SettingsUiState {
 
     edt_max_words: HWND,
     edt_max_chars: HWND,
+    cmb_word_order: HWND,
+    cmb_verb_form: HWND,
+    lbl_naming_preview_1: HWND,
+    lbl_naming_preview_2: HWND,
 
     chk_snip_sub_win: HWND,
     edt_snip_dir: HWND,
@@ -666,7 +676,7 @@ unsafe extern "system" fn modern_btn_subclass(
         }
         WM_MOUSEWHEEL => {
             let parent = crate::ui::win32_ui::GetParent(hwnd);
-            if !parent.is_null() {
+            if !parent.is_null() && parent != hwnd {
                 PostMessageW(parent, WM_MOUSEWHEEL, wp, lp);
             }
             0
@@ -921,7 +931,7 @@ unsafe extern "system" fn modern_chk_subclass(
         }
         WM_MOUSEWHEEL => {
             let parent = crate::ui::win32_ui::GetParent(hwnd);
-            if !parent.is_null() {
+            if !parent.is_null() && parent != hwnd {
                 PostMessageW(parent, WM_MOUSEWHEEL, wp, lp);
             }
             0
@@ -1154,7 +1164,7 @@ unsafe extern "system" fn hotkey_edit_subclass(
         }
         WM_MOUSEWHEEL => {
             let parent = crate::ui::win32_ui::GetParent(hwnd);
-            if !parent.is_null() {
+            if !parent.is_null() && parent != hwnd {
                 PostMessageW(parent, WM_MOUSEWHEEL, wp, lp);
             }
             return 0;
@@ -1179,7 +1189,7 @@ unsafe extern "system" fn edit_focus_subclass(
         }
     } else if msg == WM_MOUSEWHEEL {
         let parent = crate::ui::win32_ui::GetParent(hwnd);
-        if !parent.is_null() {
+        if !parent.is_null() && parent != hwnd {
             PostMessageW(parent, WM_MOUSEWHEEL, wp, lp);
         }
         return 0;
@@ -1303,6 +1313,65 @@ pub fn set_about_update_status(text: &str, checking: bool) {
     }
 }
 
+/// 刷新命名规则实时示例预览
+pub fn update_naming_preview_ui(word_order: i32, verb_form: i32) {
+    let (lbl1, lbl2) = SET_UI.with(|st| {
+        let s = st.borrow();
+        (s.lbl_naming_preview_1, s.lbl_naming_preview_2)
+    });
+    if lbl1.is_null() && lbl2.is_null() {
+        return;
+    }
+    let opts = NamingOptions {
+        word_order: WordOrder::from_index(word_order),
+        verb_form: VerbForm::from_index(verb_form),
+    };
+    let ex1 = reduce_name_with_options(
+        "接受的数据",
+        NamingStyle::Camel,
+        NameKind::Local,
+        4,
+        40,
+        opts,
+    )
+    .name;
+    let ex2 = reduce_name_with_options(
+        "串口接收的数据",
+        NamingStyle::Camel,
+        NameKind::Local,
+        4,
+        40,
+        opts,
+    )
+    .name;
+    let ex3 = reduce_name_with_options(
+        "读取温度",
+        NamingStyle::Camel,
+        NameKind::Func,
+        4,
+        40,
+        opts,
+    )
+    .name;
+    let ex4 = reduce_name_with_options(
+        "接收缓冲区",
+        NamingStyle::Camel,
+        NameKind::Local,
+        4,
+        40,
+        opts,
+    )
+    .name;
+    if !lbl1.is_null() {
+        set_window_text(lbl1, &format!("示例：接受的数据 → {ex1}  |  串口接收的数据 → {ex2}"));
+        unsafe { InvalidateRect(lbl1, null(), 1) };
+    }
+    if !lbl2.is_null() {
+        set_window_text(lbl2, &format!("函数/容器：读取温度 → {ex3}  |  接收缓冲区 → {ex4}"));
+        unsafe { InvalidateRect(lbl2, null(), 1) };
+    }
+}
+
 /// 从 `AppSettings` 将配置同步回填设置界面
 pub fn load_settings_into_ui(cfg: &AppSettings) {
     SET_UI.with(|st| {
@@ -1367,6 +1436,8 @@ pub fn load_settings_into_ui(cfg: &AppSettings) {
             s.edt_cache,
             hks,
             s.page_hwnds,
+            s.cmb_word_order,
+            s.cmb_verb_form,
         )
     });
 
@@ -1398,6 +1469,8 @@ pub fn load_settings_into_ui(cfg: &AppSettings) {
         set_window_text(handles.10, &cfg.baidu_url);
         set_window_text(handles.11, &cfg.max_words.to_string());
         set_window_text(handles.12, &cfg.max_chars.to_string());
+        SendMessageW(handles.17, CB_SETCURSEL, cfg.word_order.clamp(0, 2) as WPARAM, 0);
+        SendMessageW(handles.18, CB_SETCURSEL, cfg.verb_form.clamp(0, 2) as WPARAM, 0);
         set_window_text(handles.13, &cfg.snip_save_dir);
         set_window_text(handles.14, &cfg.cache_dir);
 
@@ -1410,6 +1483,7 @@ pub fn load_settings_into_ui(cfg: &AppSettings) {
             }
         }
     }
+    update_naming_preview_ui(cfg.word_order, cfg.verb_form);
 
     SET_UI.with(|st| {
         st.borrow_mut().loading_guard = false;
@@ -1462,6 +1536,8 @@ pub fn collect_settings_from_ui(base: &mut AppSettings) {
             s.cmb_scale,
             s.hotkeys.clone(),
             is_chk(s.chk_snip_sub_win),
+            s.cmb_word_order,
+            s.cmb_verb_form,
         )
     });
 
@@ -1524,6 +1600,14 @@ pub fn collect_settings_from_ui(base: &mut AppSettings) {
         let sidx = SendMessageW(snap.23, CB_GETCURSEL, 0, 0) as usize;
         if let Some(&pct) = UI_SCALE_PRESETS.get(sidx) {
             base.ui_scale = pct;
+        }
+        let widx = SendMessageW(snap.26, CB_GETCURSEL, 0, 0) as i32;
+        if (0..=2).contains(&widx) {
+            base.word_order = widx;
+        }
+        let vidx = SendMessageW(snap.27, CB_GETCURSEL, 0, 0) as i32;
+        if (0..=2).contains(&vidx) {
+            base.verb_form = vidx;
         }
     }
 
@@ -2634,6 +2718,20 @@ unsafe fn handle_page_command(_page_hwnd: HWND, wp: WPARAM, _lp: LPARAM) {
                 PostMessageW(hwnd_main, WM_SET_APPLY_SCALE_OR_THEME, 1, 0);
             }
         }
+        ID_CMB_WORD_ORDER | ID_CMB_VERB_FORM => {
+            if code == CBN_SELCHANGE {
+                let (cmb_w, cmb_v) = SET_UI.with(|st| {
+                    let s = st.borrow();
+                    (s.cmb_word_order, s.cmb_verb_form)
+                });
+                let widx = SendMessageW(cmb_w, CB_GETCURSEL, 0, 0) as i32;
+                let vidx = SendMessageW(cmb_v, CB_GETCURSEL, 0, 0) as i32;
+                update_naming_preview_ui(widx, vidx);
+                if !hwnd_main.is_null() {
+                    PostMessageW(hwnd_main, WM_SET_APPLY_SETTINGS, 0, 0);
+                }
+            }
+        }
         ID_BTN_RESET_SIZE => {
             if !hwnd_main.is_null() {
                 PostMessageW(hwnd_main, WM_SET_APPLY_SCALE_OR_THEME, 2, 0);
@@ -3662,36 +3760,77 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
     );
     p3.flush();
 
-    // ---- Page 4: 命名 - 缩减预算 ----
+    // ---- Page 4: 命名 - 命名规则 ----
     let mut p4 = PageBuilder::new(pages[4], 4, sc, is_dark, hwnd_tip);
-    p4.sec_title("命名缩减预算", 26);
-    p4.static_txt("最大词数", cx, 64, 96, 22, true, TextRole::Normal);
-    let edt_max_words = p4.edit(ID_EDT_MAX_WORDS, cx + 104, 60, 72, 28, ES_NUMBER, None);
+    p4.sec_title("词序与动词风格", 26);
+    p4.static_txt("词序模式", cx, 62, 82, 22, true, TextRole::Normal);
+    let cmb_word_order = p4.combo(
+        ID_CMB_WORD_ORDER,
+        cx + 90,
+        58,
+        282,
+        &WORD_ORDER_PRESETS,
+        Some("控制变量与函数命名中名词与动词/状态的排列顺序"),
+    );
+    p4.static_txt("切换立即生效", cx + 382, 62, 130, 22, true, TextRole::Hint);
+    p4.static_txt("动词缩写", cx, 104, 82, 22, true, TextRole::Normal);
+    let cmb_verb_form = p4.combo(
+        ID_CMB_VERB_FORM,
+        cx + 90,
+        100,
+        282,
+        &VERB_FORM_PRESETS,
+        Some("选择动词与完成态缩写风格，可在「缩略词」页微调"),
+    );
+    p4.static_txt("缩略词页可微调", cx + 382, 104, 130, 22, true, TextRole::Hint);
+    let lbl_naming_preview_1 = p4.static_txt(
+        "示例：接受的数据 → dataRcvd  |  串口接收的数据 → uartDataRcvd",
+        cx,
+        144,
+        INNER_W,
+        22,
+        true,
+        TextRole::Hint,
+    );
+    let lbl_naming_preview_2 = p4.static_txt(
+        "函数/容器：读取温度 → tempRead  |  接收缓冲区 → recvBuf",
+        cx,
+        168,
+        INNER_W,
+        22,
+        true,
+        TextRole::Hint,
+    );
+
+    p4.sec_title("命名缩减预算", 224);
+    p4.static_txt("最大词数", cx, 264, 96, 22, true, TextRole::Normal);
+    let edt_max_words = p4.edit(ID_EDT_MAX_WORDS, cx + 104, 260, 72, 28, ES_NUMBER, None);
     p4.static_txt(
         "默认 4，超出自动按优先级裁剪（1~16）",
         cx + 190,
-        64,
+        264,
         316,
         22,
         true,
         TextRole::Hint,
     );
-    p4.static_txt("最大字符数", cx, 106, 96, 22, true, TextRole::Normal);
-    let edt_max_chars = p4.edit(ID_EDT_MAX_CHARS, cx + 104, 102, 72, 28, ES_NUMBER, None);
+    p4.static_txt("最大字符数", cx, 306, 96, 22, true, TextRole::Normal);
+    let edt_max_chars = p4.edit(ID_EDT_MAX_CHARS, cx + 104, 302, 72, 28, ES_NUMBER, None);
     p4.static_txt(
         "默认 40，超长时优先触发词尾缩写（8~128）",
         cx + 190,
-        106,
+        306,
         316,
         22,
         true,
         TextRole::Hint,
     );
-    p4.sec_title("规则优先级说明", 192);
+
+    p4.sec_title("规则优先级说明", 374);
     p4.static_txt(
         "优先级：自定义忽略词 ＞ 自定义缩略词 ＞ 常用词库 ＞ 内置规则",
         cx,
-        226,
+        408,
         INNER_W,
         22,
         true,
@@ -3700,7 +3839,7 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
     p4.static_txt(
         "命名风格（snake_case / 驼峰法）与命名对象请在主窗口工具栏直接切换。",
         cx,
-        256,
+        436,
         INNER_W,
         22,
         true,
@@ -3767,6 +3906,17 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
                 ..Default::default()
             });
         }
+        for lbl in [dl_abbr.lbl_status, dl_abbr.lbl_eq] {
+            if !lbl.is_null() {
+                s.ctrls.push(CtrlStyleMeta {
+                    hwnd: lbl,
+                    page_idx: 5,
+                    in_card: false,
+                    role: TextRole::Hint,
+                    ..Default::default()
+                });
+            }
+        }
     });
     DICT_VIEWS.with(|dv| dv.borrow_mut()[0] = Some(dl_abbr));
 
@@ -3825,6 +3975,15 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
                 page_idx: 6,
                 in_card: false,
                 btn_kind: BtnKind::Danger,
+                ..Default::default()
+            });
+        }
+        if !dl_ignore.lbl_status.is_null() {
+            s.ctrls.push(CtrlStyleMeta {
+                hwnd: dl_ignore.lbl_status,
+                page_idx: 6,
+                in_card: false,
+                role: TextRole::Hint,
                 ..Default::default()
             });
         }
@@ -3888,6 +4047,17 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
                 btn_kind: BtnKind::Danger,
                 ..Default::default()
             });
+        }
+        for lbl in [dl_pref.lbl_status, dl_pref.lbl_eq] {
+            if !lbl.is_null() {
+                s.ctrls.push(CtrlStyleMeta {
+                    hwnd: lbl,
+                    page_idx: 7,
+                    in_card: false,
+                    role: TextRole::Hint,
+                    ..Default::default()
+                });
+            }
         }
     });
     DICT_VIEWS.with(|dv| dv.borrow_mut()[2] = Some(dl_pref));
@@ -4163,6 +4333,10 @@ unsafe fn build_all_pages(pages: &[HWND; 12], hwnd_tip: HWND, sc: f64, is_dark: 
         s.edt_baidu_url = edt_baidu_url;
         s.edt_max_words = edt_max_words;
         s.edt_max_chars = edt_max_chars;
+        s.cmb_word_order = cmb_word_order;
+        s.cmb_verb_form = cmb_verb_form;
+        s.lbl_naming_preview_1 = lbl_naming_preview_1;
+        s.lbl_naming_preview_2 = lbl_naming_preview_2;
         s.chk_snip_sub_win = chk_snip_sub_win;
         s.edt_snip_dir = edt_snip_dir;
         s.lbl_snip_hk_status = lbl_snip_hk_status;

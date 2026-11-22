@@ -11,11 +11,11 @@ use crate::naming_reducer::{
 use crate::ui::win32_ui::{
     get_window_text, set_control_theme, set_window_text, wheel_delta, CreateWindowExW,
     DefSubclassProc, MoveWindow, SendMessageW, SetScrollInfo, SetWindowPos, SetWindowSubclass,
-    ShowWindow, BOOL, DWORD, DWORD_PTR, EN_CHANGE, ES_AUTOHSCROLL, HWND, HWND_TOP, LPARAM, LRESULT,
-    SBS_VERT, SB_CTL, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION,
-    SB_THUMBTRACK, SCROLLINFO, SIF_ALL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SW_HIDE, SW_SHOW, UINT, UINT_PTR, WM_MOUSEWHEEL, WM_SETFONT, WPARAM, WS_BORDER, WS_CHILD,
-    WS_TABSTOP, WS_VISIBLE,
+    ShowWindow, BN_CLICKED, BOOL, DWORD, DWORD_PTR, EN_CHANGE, ES_AUTOHSCROLL, HWND, HWND_TOP,
+    LPARAM, LRESULT, SBS_VERT, SB_CTL, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP,
+    SB_THUMBPOSITION, SB_THUMBTRACK, SCROLLINFO, SIF_ALL, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, UINT, UINT_PTR, WM_MOUSEWHEEL, WM_SETFONT, WPARAM,
+    WS_BORDER, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -565,15 +565,16 @@ unsafe extern "system" fn dict_wheel_subclass(
     _id: UINT_PTR,
     parent_hwnd_raw: DWORD_PTR,
 ) -> LRESULT {
-    if msg == WM_MOUSEWHEEL && parent_hwnd_raw != 0 {
-        crate::ui::win32_ui::PostMessageW(parent_hwnd_raw as HWND, WM_MOUSEWHEEL, wp, lp);
+    let target = parent_hwnd_raw as HWND;
+    if msg == WM_MOUSEWHEEL && !target.is_null() && target != hwnd {
+        crate::ui::win32_ui::PostMessageW(target, WM_MOUSEWHEEL, wp, lp);
         return 0;
     }
     DefSubclassProc(hwnd, msg, wp, lp)
 }
 
 unsafe fn hook_wheel(hwnd: HWND, page_hwnd: HWND) {
-    if !hwnd.is_null() {
+    if !hwnd.is_null() && !page_hwnd.is_null() && hwnd != page_hwnd {
         SetWindowSubclass(
             hwnd,
             dict_wheel_subclass,
@@ -712,7 +713,7 @@ impl DictListView {
             base_id + 35,
         );
 
-        hook_wheel(parent, parent);
+        // 父页面自身在 page_wnd_proc 中直接处理 WM_MOUSEWHEEL，不可对 parent 安装转发子类（否则会自投递死循环）
         view.model.load_merged(false);
         view.relayout(scale);
         view.sync_slots();
@@ -958,9 +959,11 @@ impl DictListView {
                 (true, None)
             }
             20..=29 => {
-                let slot = (rel - 20) as usize;
-                if self.model.delete_slot(slot) {
-                    self.sync_slots();
+                if code == BN_CLICKED {
+                    let slot = (rel - 20) as usize;
+                    if self.model.delete_slot(slot) {
+                        self.sync_slots();
+                    }
                 }
                 (true, None)
             }
@@ -973,12 +976,19 @@ impl DictListView {
                 (true, None)
             }
             31 => {
-                set_window_text(self.edt_search, "");
-                self.model.set_filter("", false);
-                self.sync_slots();
+                if code == BN_CLICKED {
+                    self.sync_guard = true;
+                    set_window_text(self.edt_search, "");
+                    self.sync_guard = false;
+                    self.model.set_filter("", false);
+                    self.sync_slots();
+                }
                 (true, None)
             }
             34 => {
+                if code != BN_CLICKED {
+                    return (true, None);
+                }
                 let k = get_window_text(self.edt_add_k);
                 let v = if self.edt_add_v.is_null() {
                     String::new()
@@ -987,11 +997,13 @@ impl DictListView {
                 };
                 match self.model.add_item(&k, &v) {
                     Ok(_) => {
+                        self.sync_guard = true;
                         set_window_text(self.edt_add_k, "");
                         if !self.edt_add_v.is_null() {
                             set_window_text(self.edt_add_v, "");
                         }
                         set_window_text(self.edt_search, "");
+                        self.sync_guard = false;
                         self.sync_slots();
                         (true, None)
                     }
@@ -1002,6 +1014,9 @@ impl DictListView {
                 }
             }
             35 => {
+                if code != BN_CLICKED {
+                    return (true, None);
+                }
                 let res = self.model.save_to_disk(app_dir);
                 match &res {
                     Ok(msg) => {
@@ -1035,8 +1050,11 @@ impl DictListView {
             SB_THUMBTRACK | SB_THUMBPOSITION => pos = track_pos,
             _ => return,
         }
+        let old = self.model.scroll_top;
         self.model.set_scroll_pos(pos);
-        self.sync_slots();
+        if self.model.scroll_top != old {
+            self.sync_slots();
+        }
     }
 
     /// 响应鼠标滚轮消息（每格滚动 3 行）
@@ -1046,8 +1064,11 @@ impl DictListView {
     pub unsafe fn handle_wheel(&mut self, wp: WPARAM) {
         let notches = wheel_delta(wp) / 120;
         if notches != 0 {
+            let old = self.model.scroll_top;
             self.model.scroll_by(notches);
-            self.sync_slots();
+            if self.model.scroll_top != old {
+                self.sync_slots();
+            }
         }
     }
 }
@@ -1126,5 +1147,133 @@ mod tests {
         assert!(save_pref_items(&bad_pref, &dir).is_err());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dict_list_wheel_no_self_post_loop() {
+        use crate::ui::win32_ui::{
+            DefWindowProcW, DestroyWindow, DispatchMessageW, GetModuleHandleW, PeekMessageW,
+            PostMessageW, RegisterClassExW, TranslateMessage, MSG, WNDCLASSEXW, WS_POPUP,
+        };
+        use std::cell::RefCell;
+
+        thread_local! {
+            static TEST_DL: RefCell<Option<DictListView>> = const { RefCell::new(None) };
+            static TEST_WHEEL_HITS: RefCell<usize> = const { RefCell::new(0) };
+        }
+
+        unsafe extern "system" fn test_wnd_proc(
+            hwnd: HWND,
+            msg: UINT,
+            wp: WPARAM,
+            lp: LPARAM,
+        ) -> LRESULT {
+            if msg == WM_MOUSEWHEEL {
+                TEST_WHEEL_HITS.with(|h| *h.borrow_mut() += 1);
+                TEST_DL.with(|dl| {
+                    if let Ok(mut guard) = dl.try_borrow_mut() {
+                        if let Some(view) = guard.as_mut() {
+                            view.handle_wheel(wp);
+                        }
+                    }
+                });
+                return 0;
+            }
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
+
+        let _global_guard = crate::core::TEST_GLOBAL_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        TEST_WHEEL_HITS.with(|h| *h.borrow_mut() = 0);
+
+        unsafe {
+            let h_inst = GetModuleHandleW(null_mut());
+            let cls_name = utf8_to_wide("KuaiYiNGDictWheelTestWnd");
+            let mut wc: WNDCLASSEXW = std::mem::zeroed();
+            wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as UINT;
+            wc.lpfnWndProc = Some(test_wnd_proc);
+            wc.hInstance = h_inst;
+            wc.lpszClassName = cls_name.as_ptr();
+            RegisterClassExW(&wc);
+
+            let parent = CreateWindowExW(
+                0,
+                cls_name.as_ptr(),
+                cls_name.as_ptr(),
+                WS_POPUP,
+                0,
+                0,
+                600,
+                500,
+                null_mut(),
+                null_mut(),
+                h_inst,
+                null_mut(),
+            );
+            assert!(!parent.is_null(), "创建测试父窗口失败");
+
+            let dl = DictListView::create(
+                parent,
+                2100,
+                DictKind::Ignore,
+                "",
+                "",
+                "搜索忽略词…",
+                "英文单词",
+                "",
+                1.0,
+                true,
+            );
+            let edt_add_k = dl.edt_add_k;
+            TEST_DL.with(|cell| *cell.borrow_mut() = Some(dl));
+
+            // 向下滚动 1 格（-120），分别投递到添加输入框子控件与父页面窗口
+            let wp_down = ((-120i16 as u16) as WPARAM) << 16;
+            assert_ne!(PostMessageW(edt_add_k, WM_MOUSEWHEEL, wp_down, 0), 0);
+            assert_ne!(PostMessageW(parent, WM_MOUSEWHEEL, wp_down, 0), 0);
+
+            let mut msg: MSG = std::mem::zeroed();
+            let mut dispatched = 0usize;
+            while dispatched < 64 && PeekMessageW(&mut msg, null_mut(), 0, 0, 1) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+                dispatched += 1;
+            }
+
+            assert!(dispatched < 64, "检测到 WM_MOUSEWHEEL 消息循环未能排空");
+            assert_eq!(TEST_WHEEL_HITS.with(|h| *h.borrow()), 2);
+
+            let dir = std::env::temp_dir().join("ky_rust_dict_wheel_test");
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("mkdir");
+
+            TEST_DL.with(|cell| {
+                let mut guard = cell.borrow_mut();
+                let view = guard.as_mut().expect("测试视图存在");
+                assert_eq!(view.model.scroll_top, 6);
+
+                let before_len = view.model.items.len();
+                set_window_text(view.edt_add_k, "customhangtest");
+
+                // 非 BN_CLICKED 通知码不得触发添加
+                let _ = view.handle_command(2134, 5, &dir);
+                assert_eq!(view.model.items.len(), before_len);
+
+                // BN_CLICKED 正常添加并清空输入框
+                let _ = view.handle_command(2134, BN_CLICKED, &dir);
+                assert_eq!(view.model.items.len(), before_len + 1);
+                assert_eq!(get_window_text(view.edt_add_k), "");
+            });
+
+            TEST_DL.with(|cell| *cell.borrow_mut() = None);
+            DestroyWindow(parent);
+            while PeekMessageW(&mut msg, null_mut(), 0, 0, 1) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 }

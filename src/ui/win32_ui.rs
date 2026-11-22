@@ -91,6 +91,7 @@ pub const ES_NUMBER: DWORD = 0x2000;
 pub const EN_CHANGE: WORD = 0x0300;
 pub const EN_SETFOCUS: WORD = 0x0100;
 pub const EN_KILLFOCUS: WORD = 0x0200;
+pub const BN_CLICKED: WORD = 0;
 
 pub const CBS_DROPDOWNLIST: DWORD = 0x0003;
 pub const CBS_HASSTRINGS: DWORD = 0x0200;

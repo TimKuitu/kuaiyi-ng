@@ -20,7 +20,7 @@ use std::path::Path;
 use std::ptr::null_mut;
 
 pub const APP_TITLE: &str = "快译NG";
-pub const APP_VERSION: &str = "3.1.2";
+pub const APP_VERSION: &str = "3.2.0";
 pub const APP_REPO_URL: &str = "https://github.com/TimKuitu/kuaiyi-ng";
 
 // 避开保留自定义消息区，统一使用 WM_APP + 0x0200..0x021F
@@ -71,6 +71,16 @@ pub const KIND_NAMES: [&str; 7] = [
 
 pub const UI_SCALE_PRESETS: [i32; 7] = [75, 100, 110, 125, 150, 175, 200];
 pub const THEME_PRESETS: [&str; 3] = ["跟随系统", "白色", "黑色"];
+pub const WORD_ORDER_PRESETS: [&str; 3] = [
+    "保持原序（兼容旧版）",
+    "名词 + 动词（主体前置）",
+    "按对象智能区分（变量名+动 / 函数动+名）",
+];
+pub const VERB_FORM_PRESETS: [&str; 3] = [
+    "精炼分词（如 dataRcvd）",
+    "动词原形（如 dataRecv）",
+    "嵌入式极简（如 dataRx / rxBuf）",
+];
 pub const ROW_HEIGHT_LOGICAL: i32 = 32;
 
 /// AI 预设接口描述
@@ -140,6 +150,8 @@ pub struct AppSettings {
     pub hk_pin: (i32, i32),
     pub max_words: usize,
     pub max_chars: usize,
+    pub word_order: i32,
+    pub verb_form: i32,
     pub win_w: i32,
     pub win_h: i32,
     pub ui_scale: i32,
@@ -182,6 +194,8 @@ impl AppSettings {
             hk_pin: DEF_PIN,
             max_words: 4,
             max_chars: 40,
+            word_order: 1,
+            verb_form: 0,
             win_w: 0,
             win_h: 0,
             ui_scale: 100,
@@ -279,6 +293,8 @@ impl AppSettings {
 
         s.max_words = cfg_int("复制单词", "最大词数", 4).max(1) as usize;
         s.max_chars = cfg_int("复制单词", "最大字符数", 40).max(4) as usize;
+        s.word_order = cfg_int("复制单词", "词序模式", 1).clamp(0, 2);
+        s.verb_form = cfg_int("复制单词", "动词词形", 0).clamp(0, 2);
 
         s.win_w = cfg_int("通用设置", "窗口宽", 0);
         s.win_h = cfg_int("通用设置", "窗口高", 0);
@@ -337,6 +353,8 @@ impl AppSettings {
 
         cfg.set("复制单词", "最大词数", &self.max_words.to_string());
         cfg.set("复制单词", "最大字符数", &self.max_chars.to_string());
+        cfg.set("复制单词", "词序模式", &self.word_order.to_string());
+        cfg.set("复制单词", "动词词形", &self.verb_form.to_string());
 
         cfg.save()
     }
@@ -657,6 +675,20 @@ mod tests {
         assert!(!loaded.snip_sub_window);
         assert_eq!(loaded.win_w, 640);
         assert_eq!(loaded.win_h, 460);
+
+        assert_eq!(loaded.word_order, 1);
+        assert_eq!(loaded.verb_form, 0);
+
+        s.word_order = 2;
+        s.verb_form = 2;
+        {
+            let mut cfg = Config::open(&cfg_path);
+            s.save_to_cfg(&mut cfg).expect("save cfg 2");
+        }
+        let cfg3 = Config::open(&cfg_path);
+        let loaded3 = AppSettings::load_from_cfg(&cfg3, &dir);
+        assert_eq!(loaded3.word_order, 2);
+        assert_eq!(loaded3.verb_form, 2);
 
         let _ = fs::remove_dir_all(&dir);
     }

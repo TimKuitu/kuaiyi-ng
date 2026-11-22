@@ -28,6 +28,80 @@ pub enum NamingStyle {
     Kebab,
 }
 
+/// 词序重排模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WordOrder {
+    /// 保持原序（兼容旧版）
+    Preserve = 0,
+    /// 名词 + 动词/状态（主体前置，推荐默认）
+    NounFirst = 1,
+    /// 按命名对象智能区分：变量/类型/宏用「名+态/动」，函数用「动+名」（或「模块+动+名」）
+    SmartByKind = 2,
+}
+
+impl WordOrder {
+    /// 从配置索引转换（越界回退为 `NounFirst`）
+    pub fn from_index(idx: i32) -> Self {
+        match idx {
+            0 => Self::Preserve,
+            1 => Self::NounFirst,
+            2 => Self::SmartByKind,
+            _ => Self::NounFirst,
+        }
+    }
+}
+
+/// 动词与状态词形风格
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum VerbForm {
+    /// 精炼分词缩写（如 dataRcvd、msgSent、paramCfgd）
+    ParticipleAbbr = 0,
+    /// 动词原形简写（如 dataRecv、msgSend、paramConfig）
+    BaseVerb = 1,
+    /// 嵌入式极简 RX/TX 流派（如 dataRx、msgTx、rxBuf、bufClr）
+    EmbeddedShort = 2,
+}
+
+impl VerbForm {
+    /// 从配置索引转换（越界回退为 `ParticipleAbbr`）
+    pub fn from_index(idx: i32) -> Self {
+        match idx {
+            0 => Self::ParticipleAbbr,
+            1 => Self::BaseVerb,
+            2 => Self::EmbeddedShort,
+            _ => Self::ParticipleAbbr,
+        }
+    }
+}
+
+/// 命名重排选项
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NamingOptions {
+    pub word_order: WordOrder,
+    pub verb_form: VerbForm,
+}
+
+impl Default for NamingOptions {
+    fn default() -> Self {
+        Self {
+            word_order: WordOrder::NounFirst,
+            verb_form: VerbForm::ParticipleAbbr,
+        }
+    }
+}
+
+impl NamingOptions {
+    /// 兼容旧版的默认行为（保持原序 + 原形词表）
+    pub const fn legacy() -> Self {
+        Self {
+            word_order: WordOrder::Preserve,
+            verb_form: VerbForm::BaseVerb,
+        }
+    }
+}
+
 /// 命名对象：决定前缀与大小写套路，枚举值对应主窗口「命名对象」下拉选项序号
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -248,6 +322,37 @@ pub const ABBREVIATIONS: &[(&str, &str)] = &[
     ("temperature", "temp"),
     ("humidity", "humi"),
     ("frequency", "freq"),
+    // 主流嵌入式与工程过去分词惯用缩写（短词 sent/read/saved/parsed 等保留原词）
+    ("received", "rcvd"),
+    ("transmitted", "txd"),
+    ("initialized", "inited"),
+    ("deinitialized", "deinited"),
+    ("configured", "cfgd"),
+    ("completed", "done"),
+    ("connected", "conn"),
+    ("disconnected", "disconn"),
+    ("calibrated", "calib"),
+    ("calculated", "calc"),
+    ("converted", "conv"),
+    ("compressed", "comp"),
+    ("decompressed", "decomp"),
+    ("encrypted", "enc"),
+    ("decrypted", "dec"),
+    ("allocated", "alloc"),
+    ("validated", "valid"),
+    ("generated", "gen"),
+    ("formatted", "fmt"),
+    ("synchronized", "sync"),
+    ("transferred", "xfer"),
+    ("acknowledged", "ack"),
+    ("filtered", "flt"),
+    ("measured", "meas"),
+    ("detected", "det"),
+    ("selected", "sel"),
+    ("processed", "proc"),
+    ("sampled", "smpl"),
+    ("captured", "cap"),
+    ("triggered", "trig"),
 ];
 
 /// 保留字（C/C++/C#/Java/JS/Python/Go/Rust/Nim 常用保留字去重合集）
@@ -880,6 +985,87 @@ pub const ZH_TERMS: &[(&str, &str)] = &[
     ("开机", "start"),
     ("关机", "shutdown"),
     ("光标", "cursor"),
+    // 同义词与高频嵌入式/数据词
+    ("接受", "receive"),
+    ("收到", "received"),
+    ("接收到", "received"),
+    ("接受到", "received"),
+    ("收取", "receive"),
+    ("发出", "sent"),
+    ("发来", "received"),
+    ("收集", "collect"),
+    ("回收", "recycle"),
+    ("采集", "sample"),
+    ("采样", "sample"),
+    ("滤波", "filter"),
+    ("去抖", "debounce"),
+    ("消抖", "debounce"),
+    ("传输", "transfer"),
+    ("传送", "transfer"),
+    ("转发", "forward"),
+    ("应答", "ack"),
+    ("确认", "ack"),
+    ("响应", "response"),
+    ("请求", "request"),
+    ("电压", "volt"),
+    ("电流", "curr"),
+    ("功率", "power"),
+    ("电量", "battery"),
+    ("波形", "wave"),
+    ("信号", "signal"),
+    ("数据包", "packet"),
+    ("报文", "frame"),
+    ("帧", "frame"),
+    ("字节", "byte"),
+    ("比特", "bit"),
+    ("寄存器", "reg"),
+    ("任务", "task"),
+    ("事件", "event"),
+    ("信号量", "sem"),
+    ("互斥锁", "mutex"),
+    ("锁", "lock"),
+    ("就绪", "ready"),
+    ("完成", "done"),
+    ("结束", "done"),
+    ("忙", "busy"),
+    ("空闲", "idle"),
+    ("有效", "valid"),
+    ("无效", "invalid"),
+    ("溢出", "overflow"),
+    ("故障", "fault"),
+    ("报警", "alarm"),
+    ("告警", "alarm"),
+    ("检测", "detect"),
+    ("触发", "trigger"),
+    ("捕获", "capture"),
+    ("锁存", "latch"),
+    ("唤醒", "wake"),
+    ("休眠", "sleep"),
+    ("睡眠", "sleep"),
+    ("挂载", "mount"),
+    ("卸载", "unmount"),
+    ("缓冲", "buffer"),
+    ("缓存区", "buffer"),
+    ("原始", "raw"),
+    ("实际", "actual"),
+    ("期望", "expect"),
+    ("基准", "ref"),
+    ("参考", "ref"),
+    ("偏移", "offset"),
+    ("增益", "gain"),
+    ("只读", "readonly"),
+    ("读写", "rw"),
+    ("可读", "readable"),
+    ("可写", "writable"),
+    ("读出", "read"),
+    ("读入", "read"),
+    ("写出", "write"),
+    ("读", "read"),
+    ("写", "write"),
+    ("已读", "read"),
+    ("未读", "unread"),
+    ("已收", "received"),
+    ("未收", "unreceived"),
 ];
 
 const EXTRA_VERBS: &[&str] = &[
@@ -887,7 +1073,249 @@ const EXTRA_VERBS: &[&str] = &[
     "remove", "create", "add", "check", "gen", "calc", "exec", "run", "open", "close", "start",
     "stop", "copy", "fetch", "build", "make", "find", "query", "send", "recv", "flush", "clear",
     "reset", "sync", "login", "logout", "download", "upload", "encode", "decode", "encrypt",
-    "decrypt", "compress", "format", "print", "draw", "handle",
+    "decrypt", "compress", "format", "print", "draw", "handle", "collect", "recycle", "sample",
+    "filter", "debounce", "transfer", "ack", "detect", "trigger", "capture", "latch", "wake",
+    "mount", "unmount", "unlock", "lock",
+];
+
+const EXTRA_SCOPE_NOUNS: &[&str] = &[
+    "http", "tcp", "ip", "net", "network", "server", "client", "db", "database", "file", "sys",
+    "system", "disk", "mem", "memory", "user", "app", "dev", "device", "bus", "reg",
+];
+
+const PURPOSE_MODIFIER_VERBS: &[&str] = &[
+    "receive", "recv", "send", "transmit", "transfer", "display", "show", "input", "output",
+    "switch", "filter", "cache", "log", "record", "test", "debug", "control", "monitor",
+    "trigger", "lock", "scan", "capture", "sample", "parse", "format", "sync", "encode", "decode",
+    "encrypt", "decrypt", "compress", "decompress",
+];
+
+const CONTAINER_OR_ATTR_NOUNS: &[&str] = &[
+    "buf", "buffer", "queue", "fifo", "ring", "pool", "cache", "flag", "state", "status", "mode",
+    "level", "pin", "port", "channel", "irq", "exti", "dma", "timer", "rate", "speed", "freq",
+    "frequency", "period", "duty", "time", "timeout", "cnt", "count", "len", "length", "size",
+    "idx", "index", "pos", "position", "addr", "address", "ptr", "callback", "err", "error",
+    "code", "mask", "bit", "reg", "cfg", "config", "configuration", "param", "parameter", "arg",
+    "threshold", "limit", "dir", "direction", "path", "log", "event", "task", "thread", "lock",
+    "sem", "mutex", "type", "id", "name", "list", "table", "array", "str", "string", "key", "btn",
+    "button", "switch", "led",
+];
+
+const ADJ_ED_GUARD: &[&str] = &[
+    "advanced", "fixed", "signed", "unsigned", "embedded", "dedicated", "shared", "limited",
+    "detailed", "related", "expected", "required", "desired", "allowed", "reserved", "protected",
+    "deprecated", "combined", "united", "based", "named", "mixed", "defined", "nested", "aligned",
+    "packed", "pinned", "boxed", "owned", "borrowed",
+];
+
+const BOOL_AUX_VERBS: &[&str] = &["is", "has", "can", "should"];
+
+const VERB_TO_PARTICIPLE: &[(&str, &str)] = &[
+    ("receive", "received"),
+    ("recv", "received"),
+    ("send", "sent"),
+    ("transmit", "transmitted"),
+    ("transfer", "transferred"),
+    ("read", "read"),
+    ("write", "written"),
+    ("save", "saved"),
+    ("parse", "parsed"),
+    ("load", "loaded"),
+    ("set", "set"),
+    ("get", "got"),
+    ("find", "found"),
+    ("clear", "cleared"),
+    ("reset", "reset"),
+    ("init", "initialized"),
+    ("initialize", "initialized"),
+    ("deinit", "deinitialized"),
+    ("config", "configured"),
+    ("configure", "configured"),
+    ("update", "updated"),
+    ("filter", "filtered"),
+    ("measure", "measured"),
+    ("sample", "sampled"),
+    ("detect", "detected"),
+    ("select", "selected"),
+    ("calibrate", "calibrated"),
+    ("calculate", "calculated"),
+    ("convert", "converted"),
+    ("compress", "compressed"),
+    ("decompress", "decompressed"),
+    ("encrypt", "encrypted"),
+    ("decrypt", "decrypted"),
+    ("encode", "encoded"),
+    ("decode", "decoded"),
+    ("validate", "validated"),
+    ("generate", "generated"),
+    ("format", "formatted"),
+    ("allocate", "allocated"),
+    ("connect", "connected"),
+    ("disconnect", "disconnected"),
+    ("complete", "completed"),
+    ("enable", "enabled"),
+    ("disable", "disabled"),
+    ("open", "opened"),
+    ("close", "closed"),
+    ("start", "started"),
+    ("stop", "stopped"),
+    ("pause", "paused"),
+    ("lock", "locked"),
+    ("unlock", "unlocked"),
+    ("check", "checked"),
+    ("scan", "scanned"),
+    ("capture", "captured"),
+    ("trigger", "triggered"),
+    ("latch", "latched"),
+    ("ack", "acknowledged"),
+    ("handle", "handled"),
+    ("process", "processed"),
+    ("copy", "copied"),
+    ("merge", "merged"),
+    ("sort", "sorted"),
+    ("delete", "deleted"),
+    ("remove", "removed"),
+    ("add", "added"),
+    ("create", "created"),
+    ("sync", "synchronized"),
+    ("display", "displayed"),
+    ("show", "shown"),
+    ("hide", "hidden"),
+    ("flush", "flushed"),
+    ("toggle", "toggled"),
+    ("mount", "mounted"),
+    ("unmount", "unmounted"),
+    ("wake", "woken"),
+    ("collect", "collected"),
+];
+
+const PARTICIPLE_TO_BASE: &[(&str, &str)] = &[
+    ("received", "receive"),
+    ("rcvd", "receive"),
+    ("sent", "send"),
+    ("transmitted", "transmit"),
+    ("txd", "transmit"),
+    ("transferred", "transfer"),
+    ("written", "write"),
+    ("saved", "save"),
+    ("parsed", "parse"),
+    ("loaded", "load"),
+    ("got", "get"),
+    ("found", "find"),
+    ("cleared", "clear"),
+    ("initialized", "init"),
+    ("inited", "init"),
+    ("deinitialized", "deinit"),
+    ("deinited", "deinit"),
+    ("configured", "config"),
+    ("cfgd", "config"),
+    ("updated", "update"),
+    ("filtered", "filter"),
+    ("measured", "measure"),
+    ("sampled", "sample"),
+    ("detected", "detect"),
+    ("selected", "select"),
+    ("calibrated", "calibrate"),
+    ("calculated", "calculate"),
+    ("converted", "convert"),
+    ("compressed", "compress"),
+    ("decompressed", "decompress"),
+    ("encrypted", "encrypt"),
+    ("decrypted", "decrypt"),
+    ("encoded", "encode"),
+    ("decoded", "decode"),
+    ("validated", "validate"),
+    ("generated", "generate"),
+    ("formatted", "format"),
+    ("allocated", "allocate"),
+    ("connected", "connect"),
+    ("disconnected", "disconnect"),
+    ("completed", "complete"),
+    ("enabled", "enable"),
+    ("disabled", "disable"),
+    ("opened", "open"),
+    ("closed", "close"),
+    ("started", "start"),
+    ("stopped", "stop"),
+    ("paused", "pause"),
+    ("locked", "lock"),
+    ("unlocked", "unlock"),
+    ("checked", "check"),
+    ("scanned", "scan"),
+    ("captured", "capture"),
+    ("triggered", "trigger"),
+    ("latched", "latch"),
+    ("acknowledged", "ack"),
+    ("handled", "handle"),
+    ("processed", "process"),
+    ("copied", "copy"),
+    ("merged", "merge"),
+    ("sorted", "sort"),
+    ("deleted", "delete"),
+    ("removed", "remove"),
+    ("added", "add"),
+    ("created", "create"),
+    ("synchronized", "sync"),
+    ("displayed", "display"),
+    ("shown", "show"),
+    ("hidden", "hide"),
+    ("flushed", "flush"),
+    ("toggled", "toggle"),
+    ("mounted", "mount"),
+    ("unmounted", "unmount"),
+    ("woken", "wake"),
+    ("collected", "collect"),
+];
+
+const EMBEDDED_SHORT_MAP: &[(&str, &str)] = &[
+    ("receive", "rx"),
+    ("received", "rx"),
+    ("recv", "rx"),
+    ("send", "tx"),
+    ("sent", "tx"),
+    ("transmit", "tx"),
+    ("transmitted", "tx"),
+    ("transfer", "xfer"),
+    ("transferred", "xfer"),
+    ("read", "rd"),
+    ("write", "wr"),
+    ("written", "wr"),
+    ("clear", "clr"),
+    ("cleared", "clr"),
+    ("reset", "rst"),
+    ("enable", "en"),
+    ("enabled", "en"),
+    ("disable", "dis"),
+    ("disabled", "dis"),
+    ("config", "cfg"),
+    ("configure", "cfg"),
+    ("configured", "cfg"),
+    ("initialize", "init"),
+    ("initialized", "init"),
+    ("deinitialize", "deinit"),
+    ("deinitialized", "deinit"),
+    ("filter", "flt"),
+    ("filtered", "flt"),
+    ("measure", "meas"),
+    ("measured", "meas"),
+    ("detect", "det"),
+    ("detected", "det"),
+    ("calibrate", "calib"),
+    ("calibrated", "calib"),
+    ("calculate", "calc"),
+    ("calculated", "calc"),
+    ("convert", "conv"),
+    ("converted", "conv"),
+    ("sample", "smpl"),
+    ("sampled", "smpl"),
+    ("capture", "cap"),
+    ("captured", "cap"),
+    ("trigger", "trig"),
+    ("triggered", "trig"),
+    ("completed", "done"),
+    ("acknowledged", "ack"),
+    ("connected", "conn"),
+    ("disconnected", "disconn"),
 ];
 
 struct BuiltinTables {
@@ -898,6 +1326,14 @@ struct BuiltinTables {
     pref_verbs: HashSet<&'static str>,
     verbs: HashSet<&'static str>,
     reserved: HashSet<&'static str>,
+    scope_nouns: HashSet<&'static str>,
+    purpose_verbs: HashSet<&'static str>,
+    container_nouns: HashSet<&'static str>,
+    adj_ed_guard: HashSet<&'static str>,
+    bool_aux: HashSet<&'static str>,
+    verb_to_part: HashMap<&'static str, &'static str>,
+    part_to_base: HashMap<&'static str, &'static str>,
+    emb_short: HashMap<&'static str, &'static str>,
 }
 
 static BUILTIN: LazyLock<BuiltinTables> = LazyLock::new(|| {
@@ -915,6 +1351,10 @@ static BUILTIN: LazyLock<BuiltinTables> = LazyLock::new(|| {
     let pref_verbs: HashSet<&'static str> = PREFERRED_VERBS.iter().copied().collect();
     let verbs: HashSet<&'static str> = EXTRA_VERBS.iter().copied().collect();
     let reserved: HashSet<&'static str> = RESERVED_WORDS.iter().copied().collect();
+    let mut scope_nouns: HashSet<&'static str> = PREFERRED_NOUNS.iter().copied().collect();
+    for &w in EXTRA_SCOPE_NOUNS {
+        scope_nouns.insert(w);
+    }
     BuiltinTables {
         stop,
         abbrev,
@@ -923,6 +1363,14 @@ static BUILTIN: LazyLock<BuiltinTables> = LazyLock::new(|| {
         pref_verbs,
         verbs,
         reserved,
+        scope_nouns,
+        purpose_verbs: PURPOSE_MODIFIER_VERBS.iter().copied().collect(),
+        container_nouns: CONTAINER_OR_ATTR_NOUNS.iter().copied().collect(),
+        adj_ed_guard: ADJ_ED_GUARD.iter().copied().collect(),
+        bool_aux: BOOL_AUX_VERBS.iter().copied().collect(),
+        verb_to_part: VERB_TO_PARTICIPLE.iter().copied().collect(),
+        part_to_base: PARTICIPLE_TO_BASE.iter().copied().collect(),
+        emb_short: EMBEDDED_SHORT_MAP.iter().copied().collect(),
     }
 });
 
@@ -1636,31 +2084,597 @@ pub fn validate_ident(name: &str) -> bool {
     validate_ident_with_reserved(name, &BUILTIN.reserved)
 }
 
-// ---------------- 主入口 ----------------
+// ---------------- 结构感知拆词与语义重排 ----------------
 
-/// 短语 → 合法标识符（默认 `NameKind::Local`）
-pub fn reduce_name(
-    phrase: &str,
-    style: NamingStyle,
-    max_words: usize,
-    max_chars: usize,
-) -> ReduceResult {
-    reduce_name_with_kind(phrase, style, NameKind::Local, max_words, max_chars)
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StructuredToken {
+    Word(String),
+    MarkerDe,
+    MarkerDone,
+    MarkerNot,
+    MarkerPend,
 }
 
-/// 短语 → 合法标识符。`kind` 按命名对象套用 C 惯例：
-/// 全局/静态/指针加前缀（`g_`/`s_`/`p_` 或 `g`/`s`/`p` + 帕斯卡），宏恒全大写，
-/// 类型帕斯卡（snake 风格时补 `_t`）。任何失败都带原因返回，绝不静默截断。
-pub fn reduce_name_with_kind(
-    phrase: &str,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerbAspect {
+    Plain,
+    PassiveDone,
+    Negated,
+    Pending,
+}
+
+fn split_structured_tokens(phrase: &str) -> Vec<StructuredToken> {
+    let s = phrase.trim();
+    if s.is_empty() {
+        return Vec::new();
+    }
+    if s.is_ascii() {
+        return split_ascii_words(s)
+            .into_iter()
+            .map(StructuredToken::Word)
+            .collect();
+    }
+
+    let state = STATE.read().unwrap_or_else(|e| e.into_inner());
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
+    let mut ascii_buf = String::new();
+    let mut term = String::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+        if c.len_utf8() >= 3 {
+            if !ascii_buf.is_empty() {
+                for w in split_ascii_words(&ascii_buf) {
+                    out.push(StructuredToken::Word(w));
+                }
+                ascii_buf.clear();
+            }
+
+            // 1) 优先尝试词表长词（8..=2 字）
+            let mut matched = false;
+            for len in (2..=8).rev() {
+                if i + len <= chars.len() {
+                    term.clear();
+                    for &ch in &chars[i..i + len] {
+                        term.push(ch);
+                    }
+                    let en: Option<&str> = if let Some(custom_en) = state.custom_zh.get(&term) {
+                        Some(custom_en.as_str())
+                    } else if let Some(&builtin_en) = BUILTIN.zh.get(term.as_str()) {
+                        if !state.zh_off.contains(&term) {
+                            Some(builtin_en)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(mapped) = en {
+                        if !mapped.is_empty() {
+                            for w in mapped.split(' ') {
+                                if !w.is_empty() {
+                                    out.push(StructuredToken::Word(w.to_string()));
+                                }
+                            }
+                            i += len;
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if matched {
+                continue;
+            }
+
+            // 2) 检查 2 字结构标记（如 后的 / 完的 / 过的 / 已经 / 没有 / 等待 / 准备）
+            if i + 2 <= chars.len() {
+                term.clear();
+                term.push(chars[i]);
+                term.push(chars[i + 1]);
+                match term.as_str() {
+                    "后的" | "完的" | "过的" => {
+                        out.push(StructuredToken::MarkerDone);
+                        out.push(StructuredToken::MarkerDe);
+                        i += 2;
+                        continue;
+                    }
+                    "已经" => {
+                        out.push(StructuredToken::MarkerDone);
+                        i += 2;
+                        continue;
+                    }
+                    "没有" => {
+                        out.push(StructuredToken::MarkerNot);
+                        i += 2;
+                        continue;
+                    }
+                    "等待" | "准备" => {
+                        out.push(StructuredToken::MarkerPend);
+                        i += 2;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+
+            // 3) 尝试单字词表映射
+            term.clear();
+            term.push(c);
+            let single_en: Option<&str> = if let Some(custom_en) = state.custom_zh.get(&term) {
+                Some(custom_en.as_str())
+            } else if let Some(&builtin_en) = BUILTIN.zh.get(term.as_str()) {
+                if !state.zh_off.contains(&term) {
+                    Some(builtin_en)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(mapped) = single_en {
+                if !mapped.is_empty() {
+                    for w in mapped.split(' ') {
+                        if !w.is_empty() {
+                            out.push(StructuredToken::Word(w.to_string()));
+                        }
+                    }
+                    i += 1;
+                    continue;
+                }
+            }
+
+            // 4) 单字结构标记
+            match c {
+                '的' => out.push(StructuredToken::MarkerDe),
+                '已' | '被' | '完' | '过' => out.push(StructuredToken::MarkerDone),
+                '未' | '没' => out.push(StructuredToken::MarkerNot),
+                '待' => out.push(StructuredToken::MarkerPend),
+                _ => out.push(StructuredToken::Word(c.to_string())),
+            }
+            i += 1;
+        } else {
+            if c.is_ascii() {
+                ascii_buf.push(c);
+            } else {
+                ascii_buf.push(' ');
+            }
+            i += 1;
+        }
+    }
+
+    if !ascii_buf.is_empty() {
+        for w in split_ascii_words(&ascii_buf) {
+            out.push(StructuredToken::Word(w));
+        }
+    }
+    out
+}
+
+fn is_scope_noun(w: &str, state: &CustomState) -> bool {
+    let norm = lookup_abbrev_with_state(w, state);
+    BUILTIN.scope_nouns.contains(w) || BUILTIN.scope_nouns.contains(norm.as_str())
+}
+
+fn is_known_verb(w: &str) -> bool {
+    BUILTIN.verbs.contains(w)
+        || BUILTIN.pref_verbs.contains(w)
+        || BUILTIN.verb_to_part.contains_key(w)
+        || BUILTIN.part_to_base.contains_key(w)
+}
+
+fn is_participle_word(w: &str) -> bool {
+    if BUILTIN.adj_ed_guard.contains(w) {
+        return false;
+    }
+    if BUILTIN.part_to_base.contains_key(w) {
+        return true;
+    }
+    w.len() > 4 && w.ends_with("ed")
+}
+
+fn is_container_or_attr_tail(words: &[&str], state: &CustomState) -> bool {
+    let Some(&last) = words.last() else {
+        return false;
+    };
+    let norm = lookup_abbrev_with_state(last, state);
+    BUILTIN.container_nouns.contains(last) || BUILTIN.container_nouns.contains(norm.as_str())
+}
+
+fn reduce_single_word(w: &str, opts: NamingOptions, state: &CustomState) -> Option<String> {
+    if w.is_empty() || !w.is_ascii() {
+        return None;
+    }
+    if state.custom_ignore.contains(w) {
+        return None;
+    }
+    if state.custom_abbr.contains_key(w) {
+        return Some(lookup_abbrev_with_state(w, state));
+    }
+    if opts.verb_form == VerbForm::EmbeddedShort {
+        if let Some(&short) = BUILTIN.emb_short.get(w) {
+            return Some(short.to_string());
+        }
+    } else if w == "receive" {
+        return Some("recv".to_string());
+    }
+    if BUILTIN.preferred.contains(w) || state.preferred_custom.contains(w) {
+        return Some(w.to_string());
+    }
+    if BUILTIN.stop.contains(w) && !state.custom_keep.contains(w) {
+        return None;
+    }
+    Some(lookup_abbrev_with_state(w, state))
+}
+
+fn reduce_word_slice(words: &[&str], opts: NamingOptions, state: &CustomState) -> Vec<String> {
+    let mut out = Vec::new();
+    for &w in words {
+        if let Some(r) = reduce_single_word(w, opts, state) {
+            push_dedup(&mut out, r);
+        }
+    }
+    out
+}
+
+fn to_base_verb<'a>(w: &'a str) -> &'a str {
+    BUILTIN.part_to_base.get(w).copied().unwrap_or(w)
+}
+
+fn to_participle(w: &str) -> String {
+    if is_participle_word(w) {
+        return w.to_string();
+    }
+    if let Some(&p) = BUILTIN.verb_to_part.get(w) {
+        return p.to_string();
+    }
+    let base = to_base_verb(w);
+    if let Some(&p) = BUILTIN.verb_to_part.get(base) {
+        return p.to_string();
+    }
+    if base.ends_with('e') {
+        format!("{base}d")
+    } else {
+        format!("{base}ed")
+    }
+}
+
+fn format_verb_tokens(
+    raw_verb: &str,
+    aspect: VerbAspect,
+    force_base_for_func: bool,
+    opts: NamingOptions,
+    state: &CustomState,
+) -> Vec<String> {
+    let base = to_base_verb(raw_verb);
+    if force_base_for_func && matches!(aspect, VerbAspect::Plain | VerbAspect::PassiveDone) {
+        if let Some(r) = reduce_single_word(base, opts, state) {
+            return vec![r];
+        }
+        return vec![base.to_string()];
+    }
+
+    match aspect {
+        VerbAspect::Plain => {
+            if let Some(r) = reduce_single_word(raw_verb, opts, state) {
+                vec![r]
+            } else {
+                vec![raw_verb.to_string()]
+            }
+        }
+        VerbAspect::PassiveDone => match opts.verb_form {
+            VerbForm::ParticipleAbbr => {
+                let part = to_participle(raw_verb);
+                vec![lookup_abbrev_with_state(&part, state)]
+            }
+            VerbForm::BaseVerb => {
+                let v = if base == "receive" && !state.custom_abbr.contains_key("receive") {
+                    "recv".to_string()
+                } else {
+                    reduce_single_word(base, opts, state).unwrap_or_else(|| base.to_string())
+                };
+                vec![v]
+            }
+            VerbForm::EmbeddedShort => {
+                let part = to_participle(raw_verb);
+                if state.custom_abbr.contains_key(&part) {
+                    vec![lookup_abbrev_with_state(&part, state)]
+                } else if state.custom_abbr.contains_key(base) {
+                    vec![lookup_abbrev_with_state(base, state)]
+                } else if let Some(&short) = BUILTIN
+                    .emb_short
+                    .get(part.as_str())
+                    .or_else(|| BUILTIN.emb_short.get(base))
+                {
+                    vec![short.to_string()]
+                } else {
+                    vec![lookup_abbrev_with_state(&part, state)]
+                }
+            }
+        },
+        VerbAspect::Negated => {
+            if raw_verb == "unread" || raw_verb == "unsent" || raw_verb == "unreceived" {
+                let mapped = if raw_verb == "unreceived" {
+                    if opts.verb_form == VerbForm::EmbeddedShort {
+                        "unrx"
+                    } else {
+                        "unrcvd"
+                    }
+                } else {
+                    raw_verb
+                };
+                return vec![mapped.to_string()];
+            }
+            let neg = match base {
+                "read" => "unread".to_string(),
+                "send" | "sent" => "unsent".to_string(),
+                "receive" | "recv" => {
+                    if opts.verb_form == VerbForm::EmbeddedShort {
+                        "unrx".to_string()
+                    } else {
+                        "unrcvd".to_string()
+                    }
+                }
+                "init" | "initialize" => "uninit".to_string(),
+                "valid" | "validate" => "invalid".to_string(),
+                "lock" => "unlocked".to_string(),
+                _ => {
+                    let part = to_participle(base);
+                    let abbr = lookup_abbrev_with_state(&part, state);
+                    format!("un{abbr}")
+                }
+            };
+            vec![neg]
+        }
+        VerbAspect::Pending => {
+            if raw_verb == "pending"
+                || matches!(base, "handle" | "process" | "execute" | "exec" | "run")
+            {
+                vec!["pending".to_string()]
+            } else if opts.verb_form == VerbForm::EmbeddedShort {
+                let v = BUILTIN.emb_short.get(base).copied().unwrap_or(base);
+                vec![v.to_string(), "pend".to_string()]
+            } else {
+                let v = if base == "receive" && !state.custom_abbr.contains_key("receive") {
+                    "recv".to_string()
+                } else {
+                    reduce_single_word(base, opts, state).unwrap_or_else(|| base.to_string())
+                };
+                vec!["to".to_string(), v]
+            }
+        }
+    }
+}
+
+fn assemble_reordered(
+    scope: &[&str],
+    verb_tokens: Vec<String>,
+    noun_words: &[&str],
+    verb_first: bool,
+    opts: NamingOptions,
+    state: &CustomState,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for w in reduce_word_slice(scope, opts, state) {
+        push_dedup(&mut out, w);
+    }
+    let noun_reduced = reduce_word_slice(noun_words, opts, state);
+    if verb_first {
+        for w in verb_tokens {
+            push_dedup(&mut out, w);
+        }
+        for w in noun_reduced {
+            push_dedup(&mut out, w);
+        }
+    } else {
+        for w in noun_reduced {
+            push_dedup(&mut out, w);
+        }
+        for w in verb_tokens {
+            push_dedup(&mut out, w);
+        }
+    }
+    out
+}
+
+fn apply_reduction_with_options(
+    tokens: &[StructuredToken],
+    kind: NameKind,
+    opts: NamingOptions,
+) -> Vec<String> {
+    let state = STATE.read().unwrap_or_else(|e| e.into_inner());
+    let should_noun_first = match opts.word_order {
+        WordOrder::Preserve => false,
+        WordOrder::NounFirst => true,
+        WordOrder::SmartByKind => kind != NameKind::Func,
+    };
+    let is_func_smart = opts.word_order == WordOrder::SmartByKind && kind == NameKind::Func;
+
+    // 1) 若存在「的」（MarkerDe），按最后一个「的」拆分为修饰语 left 与中心语 right
+    if let Some(de_idx) = tokens.iter().rposition(|t| *t == StructuredToken::MarkerDe) {
+        let left = &tokens[..de_idx];
+        let right: Vec<&str> = tokens[de_idx + 1..]
+            .iter()
+            .filter_map(|t| match t {
+                StructuredToken::Word(w) if w.is_ascii() => Some(w.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        // 提取 left 中的有效词与状态标记
+        let mut left_words: Vec<&str> = Vec::new();
+        let mut left_aspect = VerbAspect::Plain;
+        for t in left {
+            match t {
+                StructuredToken::Word(w) if w.is_ascii() => left_words.push(w.as_str()),
+                StructuredToken::MarkerDone => {
+                    if left_aspect == VerbAspect::Plain {
+                        left_aspect = VerbAspect::PassiveDone;
+                    }
+                }
+                StructuredToken::MarkerNot => left_aspect = VerbAspect::Negated,
+                StructuredToken::MarkerPend => left_aspect = VerbAspect::Pending,
+                _ => {}
+            }
+        }
+
+        // 查找 left_words 中的动词（跳过前置 scope 名词，且排除 bool 助动词和 -ed 纯形容词）
+        let mut scope_end = 0;
+        while scope_end + 1 < left_words.len() && is_scope_noun(left_words[scope_end], &state) {
+            scope_end += 1;
+        }
+        if !right.is_empty() && scope_end < left_words.len() {
+            let mut candidate = left_words[scope_end];
+            if candidate == "configuration" {
+                candidate = "config";
+            }
+            if !BUILTIN.bool_aux.contains(candidate)
+                && !BUILTIN.adj_ed_guard.contains(candidate)
+                && (is_known_verb(candidate) || is_participle_word(candidate))
+                && scope_end + 1 == left_words.len()
+            {
+                let aspect = if left_aspect == VerbAspect::Plain {
+                    VerbAspect::PassiveDone
+                } else {
+                    left_aspect
+                };
+                let verb_tokens =
+                    format_verb_tokens(candidate, aspect, is_func_smart, opts, &state);
+                let scope = &left_words[..scope_end];
+                return assemble_reordered(
+                    scope,
+                    verb_tokens,
+                    &right,
+                    !should_noun_first,
+                    opts,
+                    &state,
+                );
+            }
+        }
+
+        // 纯属格（无动词，如「温度传感器的数值」）→ 直接拼接不倒装
+        let mut merged = left_words;
+        merged.extend(right);
+        return reduce_word_slice(&merged, opts, &state);
+    }
+
+    // 2) 无「的」：提取前缀状态标记与词序列
+    let mut words: Vec<&str> = Vec::new();
+    let mut marker_aspect = VerbAspect::Plain;
+    let mut marker_pos: Option<usize> = None;
+    for t in tokens {
+        match t {
+            StructuredToken::Word(w) if w.is_ascii() => words.push(w.as_str()),
+            StructuredToken::MarkerDone => {
+                if marker_aspect == VerbAspect::Plain {
+                    marker_aspect = VerbAspect::PassiveDone;
+                    marker_pos = Some(words.len());
+                }
+            }
+            StructuredToken::MarkerNot => {
+                marker_aspect = VerbAspect::Negated;
+                marker_pos = Some(words.len());
+            }
+            StructuredToken::MarkerPend => {
+                marker_aspect = VerbAspect::Pending;
+                marker_pos = Some(words.len());
+            }
+            StructuredToken::MarkerDe | StructuredToken::Word(_) => {}
+        }
+    }
+
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    // 剥离前导 scope 名词（如「串口接收数据」中的「串口」），仅在后面还有词时剥离
+    let mut scope_end = 0;
+    while scope_end + 1 < words.len() && is_scope_noun(words[scope_end], &state) {
+        if marker_pos == Some(scope_end) {
+            break;
+        }
+        scope_end += 1;
+    }
+
+    if scope_end + 1 < words.len() {
+        let head = words[scope_end];
+        let rest = &words[scope_end + 1..];
+        let rest_starts_with_verb = rest
+            .first()
+            .is_some_and(|&w| is_known_verb(w) || is_participle_word(w));
+
+        // 2a) 特殊状态词或英文过去分词在前：Received data / Sent message / Unread message / Pending task
+        let is_special_state_word = matches!(head, "unread" | "unsent" | "unreceived" | "pending");
+        if (is_special_state_word || is_participle_word(head)) && !rest_starts_with_verb {
+            let aspect = if matches!(head, "unread" | "unsent" | "unreceived") {
+                VerbAspect::Negated
+            } else if head == "pending" {
+                VerbAspect::Pending
+            } else if marker_aspect != VerbAspect::Plain {
+                marker_aspect
+            } else {
+                VerbAspect::PassiveDone
+            };
+            let verb_tokens = format_verb_tokens(head, aspect, is_func_smart, opts, &state);
+            return assemble_reordered(
+                &words[..scope_end],
+                verb_tokens,
+                rest,
+                !should_noun_first,
+                opts,
+                &state,
+            );
+        }
+
+        // 2b) 主动动词在前（如「读取温度」「初始化串口」「串口发送数据」「已发送消息」「待发送数据」）
+        if is_known_verb(head) && !BUILTIN.bool_aux.contains(head) {
+            let has_explicit_marker = marker_aspect != VerbAspect::Plain;
+            let is_container_purpose = !has_explicit_marker
+                && BUILTIN.purpose_verbs.contains(head)
+                && is_container_or_attr_tail(rest, &state);
+
+            if is_container_purpose {
+                // 容器/属性用途定语护栏（接收缓冲区 -> recvBuf / rxBuf），不倒装
+                let verb_tokens =
+                    format_verb_tokens(head, VerbAspect::Plain, false, opts, &state);
+                return assemble_reordered(
+                    &words[..scope_end],
+                    verb_tokens,
+                    rest,
+                    true,
+                    opts,
+                    &state,
+                );
+            }
+
+            let aspect = if has_explicit_marker {
+                marker_aspect
+            } else {
+                VerbAspect::Plain
+            };
+            let verb_tokens = format_verb_tokens(head, aspect, is_func_smart, opts, &state);
+            return assemble_reordered(
+                &words[..scope_end],
+                verb_tokens,
+                rest,
+                !should_noun_first,
+                opts,
+                &state,
+            );
+        }
+    }
+
+    reduce_word_slice(&words, opts, &state)
+}
+
+// ---------------- 主入口 ----------------
+
+fn resolve_kind_affix(
     style: NamingStyle,
     kind: NameKind,
-    max_words: usize,
-    max_chars: usize,
-) -> ReduceResult {
-    let mw = max_words.max(1);
-    let mc = max_chars.max(2);
-
+) -> (NamingStyle, &'static str, &'static str) {
     let mut eff = style;
     let mut prefix = "";
     let mut suffix = "";
@@ -1694,18 +2708,21 @@ pub fn reduce_name_with_kind(
             }
         }
     }
+    (eff, prefix, suffix)
+}
 
-    // 预算扣掉前后缀，防止前缀把名字挤超长；用有符号整数避免下溢
-    let inner_max = (mc as isize) - (prefix.len() as isize) - (suffix.len() as isize);
-
-    let words = split_words(phrase);
-    if words.is_empty() {
-        return ReduceResult::fail("空输入");
-    }
-    let reduced = apply_reduction(&words);
+fn finalize_ident(
+    reduced: Vec<String>,
+    eff: NamingStyle,
+    prefix: &str,
+    suffix: &str,
+    mw: usize,
+    mc: usize,
+) -> ReduceResult {
     if reduced.is_empty() {
         return ReduceResult::fail("全部为泛词或未收录词");
     }
+    let inner_max = (mc as isize) - (prefix.len() as isize) - (suffix.len() as isize);
     let trimmed = trim_to_budget(&reduced, mw, inner_max, eff);
     if trimmed.is_empty() {
         return ReduceResult::fail("无法在约束内缩减");
@@ -1725,6 +2742,59 @@ pub fn reduce_name_with_kind(
         return ReduceResult::success(fallback);
     }
     ReduceResult::fail("保留字冲突且无法加后缀")
+}
+
+/// 短语 → 合法标识符（默认 `NameKind::Local`，兼容旧版原序逻辑）
+pub fn reduce_name(
+    phrase: &str,
+    style: NamingStyle,
+    max_words: usize,
+    max_chars: usize,
+) -> ReduceResult {
+    reduce_name_with_kind(phrase, style, NameKind::Local, max_words, max_chars)
+}
+
+/// 短语 → 合法标识符（兼容旧版原序逻辑）。`kind` 按命名对象套用 C 惯例：
+/// 全局/静态/指针加前缀（`g_`/`s_`/`p_` 或 `g`/`s`/`p` + 帕斯卡），宏恒全大写，
+/// 类型帕斯卡（snake 风格时补 `_t`）。任何失败都带原因返回，绝不静默截断。
+pub fn reduce_name_with_kind(
+    phrase: &str,
+    style: NamingStyle,
+    kind: NameKind,
+    max_words: usize,
+    max_chars: usize,
+) -> ReduceResult {
+    let mw = max_words.max(1);
+    let mc = max_chars.max(2);
+    let (eff, prefix, suffix) = resolve_kind_affix(style, kind);
+
+    let words = split_words(phrase);
+    if words.is_empty() {
+        return ReduceResult::fail("空输入");
+    }
+    let reduced = apply_reduction(&words);
+    finalize_ident(reduced, eff, prefix, suffix, mw, mc)
+}
+
+/// 短语 → 合法标识符（支持词序模式与动词词形切换）
+pub fn reduce_name_with_options(
+    phrase: &str,
+    style: NamingStyle,
+    kind: NameKind,
+    max_words: usize,
+    max_chars: usize,
+    opts: NamingOptions,
+) -> ReduceResult {
+    let mw = max_words.max(1);
+    let mc = max_chars.max(2);
+    let (eff, prefix, suffix) = resolve_kind_affix(style, kind);
+
+    let tokens = split_structured_tokens(phrase);
+    if tokens.is_empty() {
+        return ReduceResult::fail("空输入");
+    }
+    let reduced = apply_reduction_with_options(&tokens, kind, opts);
+    finalize_ident(reduced, eff, prefix, suffix, mw, mc)
 }
 
 #[cfg(test)]
@@ -2249,5 +3319,137 @@ mod tests {
         let _ = fs::remove_file(abbr);
         let _ = fs::remove_file(ign);
         let _ = fs::remove_file(tmp);
+    }
+
+    fn check_opt(
+        phrase: &str,
+        style: NamingStyle,
+        kind: NameKind,
+        opts: NamingOptions,
+        expect: &str,
+    ) {
+        let r = reduce_name_with_options(phrase, style, kind, 4, 40, opts);
+        assert!(
+            r.ok && r.name == expect,
+            "[{kind} {:?}/{:?}] phrase={phrase:?} -> got ok={} name={:?} reason={:?}, want {expect:?}",
+            opts.word_order,
+            opts.verb_form,
+            r.ok,
+            r.name,
+            r.reason
+        );
+    }
+
+    #[test]
+    fn test_semantic_word_order_and_verb_forms() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (abbr, ign, pref) = reset_all_custom_state("semantic");
+
+        let noun_part = NamingOptions {
+            word_order: WordOrder::NounFirst,
+            verb_form: VerbForm::ParticipleAbbr,
+        };
+        let noun_base = NamingOptions {
+            word_order: WordOrder::NounFirst,
+            verb_form: VerbForm::BaseVerb,
+        };
+        let noun_emb = NamingOptions {
+            word_order: WordOrder::NounFirst,
+            verb_form: VerbForm::EmbeddedShort,
+        };
+        let smart_part = NamingOptions {
+            word_order: WordOrder::SmartByKind,
+            verb_form: VerbForm::ParticipleAbbr,
+        };
+        let pres_part = NamingOptions {
+            word_order: WordOrder::Preserve,
+            verb_form: VerbForm::ParticipleAbbr,
+        };
+        let pres_base = NamingOptions {
+            word_order: WordOrder::Preserve,
+            verb_form: VerbForm::BaseVerb,
+        };
+        let pres_emb = NamingOptions {
+            word_order: WordOrder::Preserve,
+            verb_form: VerbForm::EmbeddedShort,
+        };
+
+        // 1. NounFirst + ParticipleAbbr (默认推荐方案)
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Local, noun_part, "dataRcvd");
+        check_opt("接受的数据", NamingStyle::Snake, NameKind::Local, noun_part, "data_rcvd");
+        check_opt("接收的数据", NamingStyle::Camel, NameKind::Local, noun_part, "dataRcvd");
+        check_opt("Received data", NamingStyle::Camel, NameKind::Local, noun_part, "dataRcvd");
+        check_opt("串口接收的数据", NamingStyle::Camel, NameKind::Local, noun_part, "uartDataRcvd");
+        check_opt("UART received data", NamingStyle::Camel, NameKind::Local, noun_part, "uartDataRcvd");
+        check_opt("已发送的消息", NamingStyle::Camel, NameKind::Local, noun_part, "msgSent");
+        check_opt("Sent message", NamingStyle::Camel, NameKind::Local, noun_part, "msgSent");
+        check_opt("待发送的数据", NamingStyle::Camel, NameKind::Local, noun_part, "dataToSend");
+        check_opt("待处理任务", NamingStyle::Camel, NameKind::Local, noun_part, "taskPending");
+        check_opt("未读消息", NamingStyle::Camel, NameKind::Local, noun_part, "msgUnread");
+        check_opt("Unread message", NamingStyle::Camel, NameKind::Local, noun_part, "msgUnread");
+        check_opt("解析后的命令", NamingStyle::Camel, NameKind::Local, noun_part, "cmdParsed");
+        check_opt("Parsed command", NamingStyle::Camel, NameKind::Local, noun_part, "cmdParsed");
+        check_opt("读取的温度", NamingStyle::Camel, NameKind::Local, noun_part, "tempRead");
+        check_opt("Read temperature", NamingStyle::Camel, NameKind::Local, noun_part, "tempRead");
+        check_opt("滤波后的温度", NamingStyle::Camel, NameKind::Local, noun_part, "tempFlt");
+        check_opt("Filtered temperature", NamingStyle::Camel, NameKind::Local, noun_part, "tempFlt");
+        check_opt("配置的参数", NamingStyle::Camel, NameKind::Local, noun_part, "paramCfgd");
+        check_opt("初始化串口", NamingStyle::Camel, NameKind::Local, noun_part, "uartInit");
+        check_opt("设置电机速度", NamingStyle::Camel, NameKind::Local, noun_part, "motorSpeedSet");
+        check_opt("清空缓冲区", NamingStyle::Camel, NameKind::Local, noun_part, "bufClear");
+
+        // 2. 护栏用例（不误倒装）
+        check_opt("接收缓冲区", NamingStyle::Camel, NameKind::Local, noun_part, "recvBuf");
+        check_opt("发送标志", NamingStyle::Camel, NameKind::Local, noun_part, "sendFlag");
+        check_opt("显示模式", NamingStyle::Camel, NameKind::Local, noun_part, "displayMode");
+        check_opt("温度传感器", NamingStyle::Camel, NameKind::Local, noun_part, "tempSensor");
+        check_opt("最大长度", NamingStyle::Camel, NameKind::Local, noun_part, "maxLen");
+        check_opt("数值是否超时", NamingStyle::Snake, NameKind::Local, noun_part, "value_is_timeout");
+        check_opt("高级设置", NamingStyle::Camel, NameKind::Local, noun_part, "advancedSet");
+
+        // 3. 命名对象前缀/后缀
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Global, noun_part, "gDataRcvd");
+        check_opt("接受的数据", NamingStyle::Snake, NameKind::Global, noun_part, "g_data_rcvd");
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Pointer, noun_part, "pDataRcvd");
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Macro, noun_part, "DATA_RCVD");
+
+        // 4. SmartByKind
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Local, smart_part, "dataRcvd");
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Func, smart_part, "recvData");
+        check_opt("读取温度", NamingStyle::Camel, NameKind::Local, smart_part, "tempRead");
+        check_opt("读取温度", NamingStyle::Camel, NameKind::Func, smart_part, "readTemp");
+        check_opt("串口发送数据", NamingStyle::Camel, NameKind::Func, smart_part, "uartSendData");
+        check_opt("设置电机速度", NamingStyle::Camel, NameKind::Func, smart_part, "setMotorSpeed");
+
+        // 5. Preserve 模式
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Local, pres_part, "rcvdData");
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Local, pres_base, "recvData");
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Local, pres_emb, "rxData");
+        check_opt("Received data", NamingStyle::Camel, NameKind::Local, pres_part, "rcvdData");
+        check_opt("Received data", NamingStyle::Camel, NameKind::Local, pres_base, "recvData");
+        check_opt("Received data", NamingStyle::Camel, NameKind::Local, pres_emb, "rxData");
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Local, noun_base, "dataRecv");
+
+        // 6. EmbeddedShort 模式
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Local, noun_emb, "dataRx");
+        check_opt("串口接收的数据", NamingStyle::Camel, NameKind::Local, noun_emb, "uartDataRx");
+        check_opt("已发送的数据", NamingStyle::Camel, NameKind::Local, noun_emb, "dataTx");
+        check_opt("接收缓冲区", NamingStyle::Camel, NameKind::Local, noun_emb, "rxBuf");
+        check_opt("发送缓冲区", NamingStyle::Camel, NameKind::Local, noun_emb, "txBuf");
+        check_opt("发送标志", NamingStyle::Camel, NameKind::Local, noun_emb, "txFlag");
+        check_opt("接收中断", NamingStyle::Camel, NameKind::Local, noun_emb, "rxIrq");
+        check_opt("清空缓冲区", NamingStyle::Camel, NameKind::Local, noun_emb, "bufClr");
+        check_opt("读取温度", NamingStyle::Camel, NameKind::Local, noun_emb, "tempRd");
+        check_opt("使能外部中断", NamingStyle::Camel, NameKind::Local, noun_emb, "extiEn");
+
+        // 7. 自定义缩略词覆盖优先级
+        save_custom_abbreviations(&abbr, "received=rx\n");
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Local, noun_part, "dataRx");
+        save_custom_abbreviations(&abbr, "received=-\n");
+        check_opt("接受的数据", NamingStyle::Camel, NameKind::Local, noun_part, "dataReceived");
+
+        let _ = fs::remove_file(abbr);
+        let _ = fs::remove_file(ign);
+        let _ = fs::remove_file(pref);
     }
 }
